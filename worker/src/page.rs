@@ -161,7 +161,10 @@ pub fn default_counts() -> String {
 pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> String {
     format!(
         "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
+<link rel=icon href=\"/favicon.ico\" sizes=\"16x16 32x32 48x48\">\
 <title>{}</title><style>body{{font-family:system-ui;max-width:680px;margin:32px auto;padding:0 16px}}\
+.brand{{display:flex;gap:10px;align-items:center}}.brand img{{width:32px;height:32px}}\
+h1{{font-size:24px;margin:0}}\
 .r{{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid #eee}}\
 .d{{width:10px;height:10px;border-radius:50%;margin-top:6px}}s{{color:#666;text-decoration:none;margin-left:auto}}\
 .bars{{display:flex;gap:2px;margin:4px 0 12px}}.bars i{{width:14px;height:28px;border-radius:3px;display:block}}\
@@ -170,7 +173,7 @@ pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> Str
 .active{{background:#fff8c5}}.upcoming{{background:#f6f8fa}}\
 table{{border-collapse:collapse;width:100%;font-size:13px}}\
 td,th{{border-bottom:1px solid #eee;padding:6px;text-align:left}}</style>\
-<h1>{}</h1><p>{links}</p><p>{counts} &middot; {}</p>{body}",
+<header class=brand><img src=\"/logo.svg\" alt=\"Vigil logo\" width=32 height=32><h1>{}</h1></header><p>{links}</p><p>{counts} &middot; {}</p>{body}",
         esc(title),
         esc(title),
         vigil_core::time_label(at)

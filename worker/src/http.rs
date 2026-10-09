@@ -7,13 +7,20 @@ use worker::{Env, Request, Response, Result};
 
 /// Handle every incoming `fetch`: gate, migrate, then route by path.
 pub async fn handle(req: Request, env: Env) -> Result<Response> {
+    let url = req.url()?;
+    // Brand assets stay public so browsers can fetch the tab icon and the
+    // header logo without credentials.
+    match url.path() {
+        "/favicon.ico" => return crate::icons::favicon(),
+        "/logo.svg" => return crate::icons::logo(),
+        _ => {}
+    }
     let site = vigil::site();
     if !authed(&req, &site, &env) {
         return deny();
     }
     let db = Db::of(&env)?;
     db.init().await?;
-    let url = req.url()?;
     match url.path() {
         "/" | "/index.html" => crate::page::render(&db, &site).await,
         "/monitor" => match detail_id(&url) {

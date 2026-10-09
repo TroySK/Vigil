@@ -3,6 +3,7 @@ mod auth;
 mod db;
 mod detail;
 mod http;
+mod icons;
 mod page;
 mod probe;
 mod reads;
