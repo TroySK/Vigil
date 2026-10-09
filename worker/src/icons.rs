@@ -7,8 +7,8 @@ use worker::{Response, ResponseBody, Result};
 
 /// Multi-size ICO generated from `vigil.svg` (`worker/assets/favicon.ico`).
 const FAVICON_ICO: &[u8] = include_bytes!("../assets/favicon.ico");
-/// Source logo (`worker/assets/logo.svg`, copy of repo-root `vigil.svg`).
-const LOGO_SVG: &[u8] = include_bytes!("../assets/logo.svg");
+/// Source logo (`worker/assets/vigil.svg`).
+const LOGO_SVG: &[u8] = include_bytes!("../assets/vigil.svg");
 
 /// Serve `/favicon.ico` with a long immutable cache.
 pub fn favicon() -> Result<Response> {

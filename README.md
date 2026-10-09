@@ -111,8 +111,8 @@ npx wrangler secret put STATUS_PASSWORD
 - `/api/history?id=<id>` — raw latency samples for charts.
 - `/api/incidents?id=<id>&limit=<n>` — recent downtime windows.
 - `/api/latency?id=<id>` — latency percentiles plus raw samples.
-- `/favicon.ico` — tab icon generated from `vigil.svg` (public, long-cached).
-- `/logo.svg` — header brand mark (same artwork as `vigil.svg`).
+- `/favicon.ico` — tab icon generated from `worker/assets/vigil.svg` (public, long-cached).
+- `/logo.svg` — header brand mark (same artwork as `worker/assets/vigil.svg`).
 
 ## Behavior notes
 
