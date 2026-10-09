@@ -22,7 +22,13 @@ missing_panics_doc = "allow"
 
 [profile.release]
 lto = true
-strip = true
+# NOTE: `strip = true` (aka `strip = "symbols"`) also strips the wasm
+# `target_features` section advertising `reference-types`, which makes
+# wasm-bindgen >= 0.2.125 fail with
+# "externref table required for catch wrappers"
+# (cloudflare/workers-rs#1014). `strip = "debuginfo"` keeps the marker
+# while still dropping debug info for size.
+strip = "debuginfo"
 codegen-units = 1
 opt-level = "z"
 

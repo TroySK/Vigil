@@ -167,5 +167,6 @@ if you want required reviewers before a deploy):
   external prober that reports over HTTP.
 - Keep roughly 50 or fewer monitors per minute; each cron tick is
   CPU-bounded. The release profile uses size optimizations
-  (`opt-level = "z"`, LTO, stripped symbols); avoid heavy dependencies
-  in the worker crate to keep the bundle small.
+  (`opt-level = "z"`, LTO, `strip = "debuginfo"` — not `strip = true`,
+  which breaks wasm-bindgen's externref transform); avoid heavy
+  dependencies in the worker crate to keep the bundle small.
