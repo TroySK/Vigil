@@ -99,6 +99,45 @@ Optional: enable the access gate by storing the password as a secret
 npx wrangler secret put STATUS_PASSWORD
 ```
 
+## Deploy with GitHub Actions
+
+`.github/workflows/deploy.yml` automates test → migrate → deploy on every
+push to `main`, on manual dispatch, and every 6 hours (to re-pin the
+`worker-build` toolchain). What it does:
+
+1. Runs `cargo test -p vigil-core -p vigil` and
+   `cargo check -p vigil-worker --target wasm32-unknown-unknown`.
+2. Resolves the Cloudflare account id: uses the `CLOUDFLARE_ACCOUNT_ID`
+   secret when set, otherwise looks it up via the API token.
+3. Ensures the `vigil` D1 database exists (creates it on first run), pins
+   its id into `worker/wrangler.toml`, and runs
+   `wrangler d1 migrations apply DB --remote`.
+4. Sets the `STATUS_PASSWORD` worker secret when that repo secret exists
+   (skipped otherwise — the site stays public).
+5. Runs `wrangler deploy` from `worker/`.
+
+### Required secrets
+
+Add these under **Settings → Secrets and variables → Actions** (or make
+them [environment secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-environments)
+if you want required reviewers before a deploy):
+
+| Secret | Required | Purpose |
+| --- | --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Yes | API token with **Workers Scripts: Edit**, **D1: Edit**, and **Account: Read** permissions ([create one here](https://dash.cloudflare.com/profile/api-tokens)). First run without `CLOUDFLARE_ACCOUNT_ID` needs the account lookup to succeed. |
+| `CLOUDFLARE_ACCOUNT_ID` | No | Pins the deploy target; when omitted the workflow fetches it via the API token. Set it to skip the lookup and tighten token scopes. |
+| `STATUS_PASSWORD` | No | Value for the `STATUS_PASSWORD` worker secret (Basic-auth password when `pass_env = "STATUS_PASSWORD"` is configured). Omit to keep the status page public. |
+
+> Forks note: secrets are not available to pull-request runs from forks,
+> so the workflow will fail closed there rather than leak credentials.
+
+### Trigger a deploy
+
+- Push to `main` (a config edit in `config/src/lib.rs` redeploys monitors).
+- Or run it manually: **Actions → Deploy to Cloudflare → Run workflow**.
+- To deploy from your machine instead, follow
+  [Set up the database and deploy](#set-up-the-database-and-deploy) above.
+
 ## Routes
 
 - `/` — status page: per-monitor rows with 30-day history bars, latency
