@@ -1,0 +1,18 @@
+name = "vigil"
+main = "build/worker/shim.mjs"
+compatibility_date = "2025-04-02"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[triggers]
+crons = ["*/1 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vigil"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[vars]
+# Optional: set via `wrangler secret put` instead for real passwords.
+# STATUS_PASS_ENV = "STATUS_PASSWORD"

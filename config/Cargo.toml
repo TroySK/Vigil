@@ -1,0 +1,15 @@
+[package]
+name = "vigil"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Example Vigil monitor config compiled into the Worker"
+
+[lints]
+workspace = true
+
+[dependencies]
+vigil-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

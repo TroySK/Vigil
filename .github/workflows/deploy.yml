@@ -1,0 +1,95 @@
+name: Deploy to Cloudflare
+
+on:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run pure-logic tests
+        run: cargo test -p vigil-core -p vigil
+
+      - name: Check worker build
+        run: cargo check -p vigil-worker --target wasm32-unknown-unknown
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      # Automatically get an account id via the API Token
+      # if secrets.CLOUDFLARE_ACCOUNT_ID is not set.
+      - name: Fetch Account ID
+        id: fetch_account_id
+        run: |
+          if [[ -n "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]]; then
+            ACCOUNT_ID="${{ secrets.CLOUDFLARE_ACCOUNT_ID }}"
+            echo "Using provided CLOUDFLARE_ACCOUNT_ID from secrets."
+          else
+            ACCOUNT_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type:application/json" | jq ".result[0].id" -r)
+            if [[ "$ACCOUNT_ID" == "null" ]]; then
+              echo "Failed to get an account id, please make sure you have set up CLOUDFLARE_API_TOKEN correctly!"
+              exit 1
+            fi
+          fi
+          echo 'account_id='$ACCOUNT_ID >> $GITHUB_OUTPUT
+
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      # The repo ships wrangler.toml with a placeholder database_id.
+      # Create the D1 database on first run, then pin its id so that
+      # migrations and deploy target the same database.
+      - name: Ensure D1 database and apply migrations
+        run: |
+          cd worker
+          DB_ID=$(npx -y wrangler@3 d1 list --json | jq -r '.[] | select(.name == "vigil") | .uuid // empty')
+          if [[ -z "$DB_ID" ]]; then
+            echo "Creating D1 database 'vigil'..."
+            npx -y wrangler@3 d1 create vigil
+            DB_ID=$(npx -y wrangler@3 d1 list --json | jq -r '.[] | select(.name == "vigil") | .uuid // empty')
+          fi
+          if [[ -z "$DB_ID" ]]; then
+            echo "Could not find or create D1 database 'vigil'!"
+            exit 1
+          fi
+          echo "D1 database id: $DB_ID"
+          sed -i -E "s/^database_id = .*$/database_id = \"$DB_ID\"/" wrangler.toml
+          npx -y wrangler@3 d1 migrations apply DB --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
+
+      # Optional: enables Basic auth on the status page (Gate + STATUS_PASSWORD).
+      # Skipped unless the STATUS_PASSWORD secret is set.
+      - name: Set STATUS_PASSWORD secret
+        if: ${{ secrets.STATUS_PASSWORD != '' }}
+        run: |
+          cd worker
+          echo "${{ secrets.STATUS_PASSWORD }}" | npx -y wrangler@3 secret put STATUS_PASSWORD
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
+
+      - name: Deploy worker
+        run: |
+          cd worker
+          npx -y wrangler@3 deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
