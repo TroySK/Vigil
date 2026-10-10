@@ -14,6 +14,19 @@ pub fn date(sec: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
+/// Format seconds since the Unix epoch as `MM-DD HH:MM` (compact axis time).
+#[must_use]
+pub fn short(sec: i64) -> String {
+    let days = sec.div_euclid(SECS_PER_DAY);
+    let clock = sec.rem_euclid(SECS_PER_DAY);
+    let (_, month, day) = civil(days);
+    format!(
+        "{month:02}-{day:02} {:02}:{:02}",
+        clock / SECS_PER_HOUR,
+        clock % SECS_PER_HOUR / SECS_PER_MINUTE
+    )
+}
+
 /// Format seconds since the Unix epoch as `YYYY-MM-DD HH:MM:SS UTC`.
 ///
 /// Uses Howard Hinnant's civil-date algorithm;pure integer math so it

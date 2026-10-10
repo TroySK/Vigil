@@ -61,8 +61,19 @@ fn percentiles_and_spark() {
 fn spark_points_carry_time_tooltips() {
     let svg = sparkline_points(&[(1_000, 10), (2_000, 20)], 90, 28);
     assert!(svg.contains("<polyline"));
-    assert!(svg.contains("<title>"));
+    assert!(svg.contains("data-tip"));
     assert!(svg.contains("10ms"));
     assert!(svg.contains("20ms"));
     assert!(sparkline_points(&[], 90, 28).is_empty());
+}
+
+#[test]
+fn latency_chart_has_labeled_axes() {
+    use vigil_core::rollup::latency_chart;
+    let svg = latency_chart(&[(1_000, 10), (2_000, 20), (3_000, 15)], 600, 150);
+    assert!(svg.contains("20ms"));
+    assert!(svg.contains("10ms"));
+    assert!(svg.contains(">0<"));
+    assert!(svg.contains("data-tip"));
+    assert!(latency_chart(&[], 600, 150).is_empty());
 }

@@ -352,6 +352,18 @@ pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> Str
         .lat{{display:flex;gap:var(--space-sm);align-items:center;color:var(--color-muted);\
         font-size:var(--text-xs);font-variant-numeric:tabular-nums;margin:0 0 var(--space-md)}}\
         .lat svg{{flex:none;max-width:100%;height:auto}}\
+        .spark .line,.chart .line{{fill:none;stroke:var(--color-accent);stroke-width:1.5}}\
+        .spark circle,.chart circle{{fill:transparent;pointer-events:all;cursor:crosshair}}\
+        .chart{{width:100%;max-width:38rem;height:auto;display:block;margin-top:var(--space-sm)}}\
+        .chart text{{font-family:var(--font-body);font-size:var(--text-xs);fill:var(--color-muted)}}\
+        .chart .grid{{stroke:var(--color-rule);stroke-width:1}}\
+        .chart .axis{{stroke:var(--color-neutral);stroke-width:1}}\
+        .svg-tip{{position:fixed;left:0;top:0;z-index:var(--z-sticky);display:none;\
+        font-family:var(--font-body);font-size:var(--text-base);font-weight:600;line-height:1.4;\
+        color:var(--color-ink);background:var(--color-paper-2);\
+        border:1px solid var(--color-rule);border-radius:var(--radius-m);\
+        padding:var(--space-xs) var(--space-sm);white-space:nowrap;pointer-events:none}}\
+        .svg-tip.on{{display:block}}\
         .lat s{{text-decoration:none;white-space:nowrap}}\
         .r,.more,.lat{{transition:transform var(--dur-short) var(--ease-out)}}\
         @media (hover:hover) and (pointer:fine){{\
@@ -404,12 +416,25 @@ pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> Str
         <main>{body}</main>\
         <footer class=foot-line><span>{}</span><span class=meta>checked {}</span></footer>\
         </div><script>(function(){{var el=document.querySelector('[data-count]');\
-        if(!el)return;var raw=el.getAttribute('data-count');var target=parseInt(raw,10);\
-        if(!isFinite(target))return;\
-        if(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;\
+        if(el){{var raw=el.getAttribute('data-count');var target=parseInt(raw,10);\
+        if(isFinite(target)&&!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)){{\
         var t0=null,dur=600;function step(t){{if(!t0)t0=t;var p=Math.min(1,(t-t0)/dur);\
         var e=1-Math.pow(1-p,3);el.textContent=String(Math.round(target*e));\
-        if(p<1)requestAnimationFrame(step);}}requestAnimationFrame(step);}})();</script></body></html>",
+        if(p<1)requestAnimationFrame(step);}}requestAnimationFrame(step);}}}}\
+        var tip=document.createElement('div');tip.className='svg-tip';tip.setAttribute('role','status');\
+        document.body.appendChild(tip);var hideT=null;\
+        function dotAt(t){{return t&&t.closest?t.closest('circle[data-tip]'):null;}}\
+        function show(c,x,y){{tip.textContent=c.getAttribute('data-tip');tip.classList.add('on');\
+        var w=tip.offsetWidth;var lx=x+14;if(lx+w>window.innerWidth-8)lx=x-w-14;\
+        tip.style.left=lx+'px';tip.style.top=(y+18)+'px';}}\
+        function hideSoon(ms){{if(hideT)clearTimeout(hideT);hideT=setTimeout(function(){{tip.classList.remove('on');}},ms);}}\
+        document.addEventListener('mouseover',function(e){{var c=dotAt(e.target);\
+        if(c){{if(hideT){{clearTimeout(hideT);hideT=null;}}show(c,e.clientX,e.clientY);}}}});\
+        document.addEventListener('mousemove',function(e){{if(tip.classList.contains('on')){{var c=dotAt(e.target);\
+        if(c)show(c,e.clientX,e.clientY);}}}});\
+        document.addEventListener('mouseout',function(e){{if(dotAt(e.target))hideSoon(120);}});\
+        document.addEventListener('click',function(e){{var c=dotAt(e.target);\
+        if(c){{show(c,e.clientX,e.clientY);hideSoon(2500);}}}});}})();</script></body></html>",
         esc(title),
         esc(title),
         esc(title),
