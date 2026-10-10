@@ -136,3 +136,27 @@ fn last_probe_label(current: Option<&SampleOut>) -> String {
         },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::last_probe_label;
+    use crate::reads::SampleOut;
+
+    fn sample(up: i64) -> SampleOut {
+        SampleOut {
+            at: 1_000,
+            ms: 418,
+            up,
+            place: "BOM".into(),
+        }
+    }
+
+    #[test]
+    fn label_carries_latency_and_origin() {
+        assert_eq!(
+            last_probe_label(Some(&sample(1))),
+            "418ms last probe &middot; BOM"
+        );
+        assert_eq!(last_probe_label(None), "no probes yet");
+    }
+}

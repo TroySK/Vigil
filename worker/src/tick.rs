@@ -107,7 +107,7 @@ async fn due(db: &Db, id: &str, every_min: u64, now: i64) -> Result<bool> {
         if every_min <= 1 {
             return Ok(true);
         }
-        let offset = hash_id(id) % every_secs.max(1);
+        let offset = stagger_offset(id, every_secs);
         if offset == 0 {
             return Ok(true);
         }
@@ -116,8 +116,20 @@ async fn due(db: &Db, id: &str, every_min: u64, now: i64) -> Result<bool> {
             .await?;
         return Ok(false);
     };
-    let elapsed = u64::try_from(now.saturating_sub(last)).unwrap_or(u64::MAX);
-    Ok(elapsed >= every_secs)
+    Ok(is_due(Some(last), every_min, now))
+}
+
+/// Pure cadence math behind [`due`]: due with no history, or once at least
+/// `every_min` minutes elapsed since `last` (future stamps never count).
+#[must_use]
+pub fn is_due(last: Option<i64>, every_min: u64, now: i64) -> bool {
+    let every_secs = every_min.saturating_mul(60);
+    match last {
+        None => true,
+        Some(stamp) => {
+            u64::try_from(now.saturating_sub(stamp)).unwrap_or(0) >= every_secs
+        }
+    }
 }
 
 /// FNV-1a hash for staggering first-probe phases across monitors.
@@ -128,6 +140,47 @@ fn hash_id(id: &str) -> u64 {
         hash = hash.wrapping_mul(1_099_511_628_211);
     }
     hash
+}
+
+/// First-sighting phase within `[0, every_secs)`: deterministic per id so
+/// restarts don't reshuffle the fleet.
+fn stagger_offset(id: &str, every_secs: u64) -> u64 {
+    hash_id(id) % every_secs.max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_due, stagger_offset};
+
+    #[test]
+    fn due_without_history() {
+        assert!(is_due(None, 1, 1_000));
+        assert!(is_due(None, 60, 1_000));
+    }
+
+    #[test]
+    fn due_after_interval_elapses() {
+        assert!(is_due(Some(1_000), 1, 1_060));
+        assert!(!is_due(Some(1_000), 1, 1_059));
+        assert!(is_due(Some(1_000), 5, 1_300));
+        assert!(!is_due(Some(1_000), 5, 1_299));
+    }
+
+    #[test]
+    fn future_stamps_never_count_as_due() {
+        assert!(!is_due(Some(2_000), 1, 1_000));
+    }
+
+    #[test]
+    fn stagger_is_deterministic_bounded_and_spread() {
+        let a = stagger_offset("alpha", 300);
+        assert_eq!(a, stagger_offset("alpha", 300));
+        assert!(a < 300);
+        let phases: std::collections::BTreeSet<u64> = (0..30)
+            .map(|i| stagger_offset(&format!("monitor-{i}"), 300))
+            .collect();
+        assert!(phases.len() > 1, "offsets must spread, got {phases:?}");
+    }
 }
 
 /// Write one sample row and maintain the open/closed gap for a monitor.

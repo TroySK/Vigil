@@ -147,3 +147,23 @@ fn query_param(url: &url::Url, name: &str) -> Option<String> {
     let params: BTreeMap<String, String> = url.query_pairs().into_owned().collect();
     params.get(name).cloned()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{default_counts, parse_counts, query_param};
+
+    #[test]
+    fn health_counts_fall_back_to_zero() {
+        assert_eq!(parse_counts("28/2"), (28, 2));
+        assert_eq!(parse_counts(&default_counts()), (0, 0));
+        assert_eq!(parse_counts("bogus"), (0, 0));
+    }
+
+    #[test]
+    fn query_params_extract_by_name() {
+        let url = url::Url::parse("https://status.example/api/history?id=a&limit=5").unwrap();
+        assert_eq!(query_param(&url, "id").as_deref(), Some("a"));
+        assert_eq!(query_param(&url, "limit").as_deref(), Some("5"));
+        assert_eq!(query_param(&url, "missing"), None);
+    }
+}

@@ -88,3 +88,30 @@ pub fn deny() -> Result<Response> {
 pub fn esc(s: &str) -> String {
     vigil_core::views::escape_html(s)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{base64_decode, constant_time_eq, esc};
+
+    #[test]
+    fn base64_vectors() {
+        assert_eq!(base64_decode("YWRtaW46c2VjcmV0").as_deref(), Ok("admin:secret"));
+        assert_eq!(base64_decode("").as_deref(), Ok(""));
+        assert!(base64_decode("!!!").is_err());
+        assert!(base64_decode("/w==").is_err()); // 0xFF, not UTF-8
+    }
+
+    #[test]
+    fn equality_is_constant_time_and_exact() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn esc_neutralizes_markup() {
+        assert_eq!(esc("<b>&\"'"), "&lt;b&gt;&amp;&quot;&#39;");
+        assert_eq!(esc("plain"), "plain");
+    }
+}
