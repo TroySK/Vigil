@@ -73,23 +73,277 @@ links:
   Blog: https://blog.troysk.com
 
 monitors:
-  - id: site
-    name: Example Site
+  - id: troysk_monitor
+    name: TroySK.com
     expect: [200]
-    timeout_ms: 10000
-    tip: Homepage
-    href: https://example.com
+    tip: My Website
+    href: https://www.troysk.com
     check:
       via: http
-      url: https://example.com
-      method: GET
-      headers:
-        User-Agent: vigil/0.1
+      url: https://www.troysk.com
+
+  - id: blog_monitor
+    name: Blog
+    expect: [200]
+    tip: My Blog
+    href: https://blog.troysk.com
+    check:
+      via: http
+      url: https://blog.troysk.com
+
+  - id: thewall_monitor
+    name: TheWallCompanyIndia
+    expect: [200]
+    tip: TheWallCompanyIndia
+    href: https://TheWallCompanyIndia.com
+    check:
+      via: http
+      url: https://TheWallCompanyIndia.com
+
+  - id: screenrecordin_monitor
+    name: ScreenRecord.in
+    expect: [200]
+    tip: ScreenRecord
+    href: https://ScreenRecord.in
+    check:
+      via: http
+      url: https://ScreenRecord.in
+
+  - id: tenminutedate_monitor
+    name: TenMinuteDate
+    expect: [200]
+    tip: TenMinuteDate
+    href: https://TenMinuteDate.com
+    check:
+      via: http
+      url: https://TenMinuteDate.com
+
+  - id: auctionchai_monitor
+    name: AuctionChai
+    expect: [200]
+    tip: AuctionChai
+    href: https://AuctionChai.com
+    check:
+      via: http
+      url: https://AuctionChai.com
+
+  - id: onlinefreeinvoicegenerator_monitor
+    name: OnlineFreeInvoiceGenerator
+    expect: [200]
+    tip: OnlineFreeInvoiceGenerator
+    href: https://OnlineFreeInvoiceGenerator.com
+    check:
+      via: http
+      url: https://OnlineFreeInvoiceGenerator.com
+
+  - id: selfhostedapp_monitor
+    name: SelfHostedApp
+    expect: [200]
+    tip: SelfHostedApp
+    href: https://SelfHostedApp.com
+    check:
+      via: http
+      url: https://SelfHostedApp.com
+
+  - id: xrecommend_monitor
+    name: XRecommend
+    expect: [200]
+    tip: XRecommend
+    href: https://XRecommend.com
+    check:
+      via: http
+      url: https://XRecommend.com
+
+  - id: convertaudiovideo_monitor
+    name: ConvertAudioVideo
+    expect: [200]
+    tip: ConvertAudioVideo
+    href: https://ConvertAudioVideo.com
+    check:
+      via: http
+      url: https://ConvertAudioVideo.com
+
+  - id: aiphotoeditorapp_monitor
+    name: AIPhotoEditorApp
+    expect: [200]
+    tip: AIPhotoEditorApp
+    href: https://AIPhotoEditorApp.com
+    check:
+      via: http
+      url: https://AIPhotoEditorApp.com
+
+  - id: unhurriedmeditation_monitor
+    name: UnhurriedMeditation
+    expect: [200]
+    tip: UnhurriedMeditation
+    href: https://UnhurriedMeditation.com/en
+    check:
+      via: http
+      url: https://UnhurriedMeditation.com/en
+
+  - id: repscounter_monitor
+    name: RepsCounter
+    expect: [200]
+    tip: RepsCounter
+    href: https://RepsCounter.troysk.com
+    check:
+      via: http
+      url: https://RepsCounter.troysk.com
+
+  - id: watchtogetherparty_monitor
+    name: WatchTogetherParty
+    expect: [200]
+    tip: WatchTogetherParty
+    href: https://WatchTogetherParty.troysk.com
+    check:
+      via: http
+      url: https://WatchTogetherParty.troysk.com
+
+  - id: aalo_monitor
+    name: Aalo
+    expect: [200]
+    tip: Aalo
+    href: https://Aalo.troysk.com
+    check:
+      via: http
+      url: https://Aalo.troysk.com
+
+  - id: curiesense_monitor
+    name: CurieSense
+    expect: [200]
+    tip: CurieSense
+    href: https://CurieSense.troysk.com
+    check:
+      via: http
+      url: https://CurieSense.troysk.com
+
+  - id: pakkaslot_monitor
+    name: PakkaSlot
+    expect: [200]
+    tip: PakkaSlot
+    href: https://PakkaSlot.troysk.com
+    check:
+      via: http
+      url: https://PakkaSlot.troysk.com
+
+  - id: 1000truefans_monitor
+    name: 1000TrueFans.xyz
+    expect: [200]
+    tip: 1000TrueFans
+    href: https://1000TrueFans.xyz
+    check:
+      via: http
+      url: https://1000TrueFans.xyz
+
+  - id: petitionbot_monitor
+    name: PetitionBot
+    expect: [200]
+    tip: PetitionBot
+    href: https://PetitionBot.troysk.com
+    check:
+      via: http
+      url: https://PetitionBot.troysk.com
+
+  - id: vishwaskarma_monitor
+    name: VishwasKarma
+    expect: [200]
+    tip: TheWallCompanyIndia
+    href: https://VishwasKarma.troysk.com
+    check:
+      via: http
+      url: https://VishwasKarma.troysk.com
+
+  - id: oracle_monitor
+    name: Oracle
+    expect: [200]
+    tip: Oracle - Gogs
+    href: https://oracle.troysk.com
+    check:
+      via: http
+      url: https://oracle.troysk.com
+
+  - id: pulse_monitor
+    name: Pulse
+    expect: [200]
+    tip: Pulse - Plausible
+    href: https://pulse.troysk.com
+    check:
+      via: http
+      url: https://pulse.troysk.com
+
+  - id: sentinel_monitor
+    name: Sentinel
+    expect: [200]
+    tip: Sentinel - Chatwoot
+    href: https://sentinel.troysk.com
+    check:
+      via: http
+      url: https://sentinel.troysk.com
+
+  - id: socialite_monitor
+    name: Socialite
+    expect: [200]
+    tip: Socialite - Postiz
+    href: https://socialite.troysk.com/auth
+    check:
+      via: http
+      url: https://socialite.troysk.com/auth
+
+  - id: buzz_monitor
+    name: Buzz
+    expect: [200]
+    tip: Buzz
+    href: https://buzz.troysk.com
+    check:
+      via: http
+      url: https://buzz.troysk.com
+
+  - id: godseyeview_monitor
+    name: GodsEyeView
+    expect: [200]
+    tip: GodsEyeView
+    href: https://gods-eye-view.troysk.com
+    check:
+      via: http
+      url: https://gods-eye-view.troysk.com
+
+  - id: locus_monitor
+    name: Locus
+    expect: [200]
+    tip: Locus - Dawarich
+    href: https://locus.troysk.com
+    check:
+      via: http
+      url: https://locus.troysk.com
+
+  - id: photons_monitor
+    name: Photons
+    expect: [200]
+    tip: Photons - Immich
+    href: https://photons.troysk.com
+    check:
+      via: http
+      url: https://photons.troysk.com
+
+  - id: datahaven_monitor
+    name: Datahaven
+    expect: [200]
+    tip: Datahaven - NextCloud
+    href: https://datahaven.troysk.com/login
+    check:
+      via: http
+      url: https://datahaven.troysk.com/login
+
+  - id: keymaker_monitor
+    name: Keymaker
+    expect: [200]
+    tip: Keymaker - VaultGarden
+    href: https://keymaker.troysk.com
+    check:
+      via: http
+      url: https://keymaker.troysk.com
 
 notify:
   grace_min: 2
 
 upkeep:
-  - title: Example upkeep
-    body: Replace with real maintenance windows.
-    from: "2030-01-01T00:00:00Z"
