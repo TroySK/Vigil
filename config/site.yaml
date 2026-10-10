@@ -1,0 +1,64 @@
+# Vigil site config. Edit me instead of Rust: this file is compiled into the
+# Worker at build time, so deploy after changing it.
+#
+# Monitor ids are stable history keys in D1 — never rename one casually or
+# its uptime history starts over. Secrets don't belong here: webhook URLs
+# and passwords go in worker env / `wrangler secret`, referenced by name.
+
+title: Example Status
+
+links:
+  Home: https://example.com
+
+monitors:
+  - id: site
+    name: Example Site
+    expect: [200]
+    timeout_ms: 10000
+    tip: Homepage
+    href: https://example.com
+    check:
+      via: http
+      url: https://example.com
+      method: GET
+      headers:
+        User-Agent: vigil/0.1
+
+  - id: dns-tcp
+    name: DNS (TCP 53)
+    timeout_ms: 5000
+    quiet_chart: true
+    check:
+      via: tcp
+      host: "1.1.1.1"
+      port: 53
+
+notify:
+  grace_min: 2
+  # Muted monitors never page:
+  # mute: [dns-tcp]
+  # Webhooks fire on down-transitions (after grace) and every recovery.
+  # $STATUS / $NAME / $REASON / $TIME are templated per event.
+  # hooks:
+  #   - url: https://hooks.example/notify
+  #     method: POST
+  #     mode: json
+  #     text: "[$STATUS] $NAME: $REASON ($TIME)"
+
+# Optional group ordering for the index page (unlisted monitors fall
+# under "Other").
+# groups:
+#   Network: [dns-tcp]
+
+upkeep:
+  - title: Example upkeep
+    body: Replace with real maintenance windows.
+    from: "2030-01-01T00:00:00Z"
+    # until: "2030-01-02T00:00:00Z"
+    # only: [site]
+
+# Optional Basic-auth gate for the whole site. Prefer pass_env (a worker
+# secret set via `wrangler secret put`) over cleartext pass.
+# auth:
+#   user: admin
+#   pass_env: STATUS_PASSWORD
