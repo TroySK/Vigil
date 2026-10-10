@@ -225,8 +225,8 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     Ok(format!(
         "<article class=r data-up=\"{flag}\"{tip}>\
         <div class=r-head><span class=d aria-hidden=true></span>\
-        <b>{name}</b><i>{word}</i><s>{detail}</s></div>\
-        <div class=more><a href=\"/monitor?id={}\">details &rsaquo;</a></div>{extra}</article>",
+        <b>{name}</b><a class=det href=\"/monitor?id={}\">details &rsaquo;</a><i>{word}</i><s>{detail}</s></div>\
+        {extra}</article>",
         monitor.id
     ))
 }
@@ -425,7 +425,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .r-head{{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--space-2xs) var(--space-md);\
         align-items:baseline}}\
         @media (min-width:40rem){{\
-        .r-head{{grid-template-columns:12px minmax(0,1.4fr) auto minmax(0,1fr);align-items:center}}}}\
+        .r-head{{grid-template-columns:12px minmax(0,1.4fr) auto auto minmax(0,1fr);align-items:center}}}}\
         .d{{width:10px;height:10px;border-radius:50%;background:var(--color-neutral)}}\
         .r[data-up=\"1\"] .d{{background:var(--color-ok)}}\
         .r[data-up=\"0\"] .d{{background:var(--color-bad)}}\
@@ -442,8 +442,10 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .r s{{color:var(--color-muted);text-decoration:none;font-size:var(--text-sm);\
         font-variant-numeric:tabular-nums}}\
         @media (min-width:40rem){{.r s{{text-align:right}}}}\
-        .more{{font-size:var(--text-sm);margin-top:var(--space-2xs)}}\
-        .more a{{white-space:nowrap}}\
+        .det{{font-family:var(--font-display);font-weight:700;font-size:var(--text-sm);\
+        color:var(--color-accent);text-decoration:none;white-space:nowrap}}\
+        .det:hover{{color:var(--color-ink);text-decoration:underline}}\
+        .det:active{{color:var(--color-ink)}}\
         .bars{{display:flex;gap:var(--space-3xs);margin:var(--space-sm) 0 var(--space-xs)}}\
         .bars i,.bars90 i{{position:relative;box-sizing:border-box}}\
         .bars i.nodata,.bars90 i.nodata{{background:var(--color-paper-2);\
@@ -480,7 +482,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         padding:var(--space-xs) var(--space-sm);white-space:nowrap;pointer-events:none}}\
         .svg-tip.on{{display:block}}\
         .lat s{{text-decoration:none;white-space:nowrap}}\
-        .r,.more,.lat{{transition:transform var(--dur-short) var(--ease-out),box-shadow var(--dur-short) var(--ease-out)}}\
+        .r,.lat{{transition:transform var(--dur-short) var(--ease-out),box-shadow var(--dur-short) var(--ease-out)}}\
         @media (hover:hover) and (pointer:fine){{\
         .r:hover{{transform:translateY(-1px);box-shadow:var(--shadow)}}}}\
         main{{animation:rise var(--dur-long) var(--ease-out)}}\
