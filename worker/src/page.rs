@@ -311,49 +311,60 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         <link rel=icon href=\"/favicon.ico\" sizes=\"16x16 32x32 48x48\">\
         <link rel=preconnect href=\"https://fonts.googleapis.com\">\
         <link rel=preconnect href=\"https://fonts.gstatic.com\" crossorigin>\
-        <link rel=stylesheet href=\"https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap\">\
+        <link rel=stylesheet href=\"https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap\">\
         <script>(function(){{var t=null;try{{t=localStorage.getItem('vigil-theme');}}catch(e){{}}\
         if(!t)t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';\
         document.documentElement.setAttribute('data-theme',t);}})();</script>\
         <title>{}</title><style>\
-        /* Hallmark · macrostructure: Stat-Led · tone: technical · anchor hue: cobalt-blue */\
-        :root{{--color-paper:oklch(98% .004 250);--color-paper-2:oklch(94.5% .007 250);\
-        --color-rule:oklch(87% .009 250);--color-neutral:oklch(55% .012 250);\
-        --color-muted:oklch(42% .011 250);--color-ink:oklch(21% .011 250);\
-        --color-accent:oklch(55% .22 260);--color-focus:oklch(55% .22 260);\
+        /* Hallmark · genre: atmospheric · macrostructure: Catalogue + Long Document · design-system: design.md · designed-as-app */\
+        :root{{--color-paper:oklch(97% .008 270);--color-paper-2:oklch(94% .01 270);\
+        --color-rule:oklch(87% .01 270);--color-neutral:oklch(55% .012 270);\
+        --color-muted:oklch(44% .011 270);--color-ink:oklch(21% .012 270);\
+        --color-accent:oklch(55% .2 260);--color-focus:oklch(55% .2 260);\
         --color-ok:oklch(60% .16 150);--color-bad:oklch(55% .2 25);\
-        --font-display:\"Space Grotesk\",ui-sans-serif,system-ui,sans-serif;\
-        --font-body:\"IBM Plex Sans\",ui-sans-serif,system-ui,sans-serif;\
+        --font-display:\"Geist Sans\",ui-sans-serif,system-ui,sans-serif;\
+        --font-body:\"Geist Sans\",ui-sans-serif,system-ui,sans-serif;\
         --font-mono:\"JetBrains Mono\",ui-monospace,monospace;\
         --space-3xs:.125rem;--space-2xs:.25rem;--space-xs:.5rem;--space-sm:.75rem;\
         --space-md:1rem;--space-lg:1.5rem;--space-xl:2.5rem;--space-2xl:4rem;--space-3xl:6rem;\
         --text-xs:.8rem;--text-sm:.875rem;--text-base:1rem;--text-md:1.25rem;\
         --text-lg:1.5625rem;--text-xl:1.9531rem;\
-        --text-display:clamp(2.75rem,5vw + 1rem,5.25rem);\
+        --text-display:clamp(3rem,6vw + 1rem,6rem);\
         --ease-out:cubic-bezier(.16,1,.3,1);--ease-in:cubic-bezier(.7,0,.84,0);\
         --ease-in-out:cubic-bezier(.65,0,.35,1);\
         --dur-micro:120ms;--dur-short:220ms;--dur-long:420ms;\
-        --radius-s:6px;--radius-m:10px;--z-base:1;--z-sticky:200;}}\
-        [data-theme=\"dark\"]{{--color-paper:oklch(15% .01 250);--color-paper-2:oklch(19% .012 250);\
-        --color-rule:oklch(30% .01 250);--color-neutral:oklch(62% .01 250);\
-        --color-muted:oklch(74% .008 250);--color-ink:oklch(94% .006 250);\
-        --color-accent:oklch(72% .18 260);--color-focus:oklch(72% .18 260);\
-        --color-ok:oklch(72% .14 150);--color-bad:oklch(70% .17 25);}}\
+        --radius-s:6px;--radius-m:12px;--radius-pill:999px;--z-base:1;--z-sticky:200;\
+        --shadow:0 8px 32px oklch(20% .02 270 / .12);}}\
+        [data-theme=\"dark\"]{{--color-paper:oklch(14% .012 270);--color-paper-2:oklch(18% .014 270);\
+        --color-rule:oklch(30% .012 270);--color-neutral:oklch(62% .01 270);\
+        --color-muted:oklch(74% .008 270);--color-ink:oklch(93% .008 270);\
+        --color-accent:oklch(70% .16 250);--color-focus:oklch(70% .16 250);\
+        --color-ok:oklch(72% .14 150);--color-bad:oklch(70% .17 25);\
+        --shadow:0 10px 40px oklch(0% 0 0 / .45);}}\
         html{{overflow-x:clip}}\
         body{{overflow-x:clip;background:var(--color-paper);color:var(--color-ink);\
         font-family:var(--font-body);font-size:var(--text-base);line-height:1.6;\
         margin:0}}\
-        .wrap{{max-width:56rem;margin:0 auto;padding-inline:clamp(1rem,4vw,1.5rem);\
+        body::before{{content:\"\";position:fixed;inset:0;z-index:0;pointer-events:none;\
+        background:radial-gradient(38rem 30rem at 12% -6%,oklch(70% .12 190 / .14),transparent 70%),\
+        radial-gradient(42rem 32rem at 88% 2%,oklch(66% .13 300 / .12),transparent 70%);}}\
+        [data-theme=\"dark\"] body::before{{background:radial-gradient(40rem 32rem at 10% -8%,oklch(70% .16 190 / .22),transparent 70%),\
+        radial-gradient(44rem 34rem at 90% 0%,oklch(65% .17 305 / .2),transparent 70%);}}\
+        .wrap{{position:relative;z-index:1;max-width:56rem;margin:0 auto;padding-inline:clamp(1rem,4vw,1.5rem);\
         padding-block:var(--space-lg) var(--space-2xl)}}\
         a{{color:var(--color-accent);text-underline-offset:2px}}\
         a:hover{{color:var(--color-ink)}}\
         :focus-visible{{outline:2px solid var(--color-focus);outline-offset:2px}}\
-        .nav-edge{{display:flex;justify-content:space-between;align-items:center;gap:var(--space-md);\
-        padding-block:var(--space-md)}}\
+        .nav-edge{{position:sticky;top:var(--space-md);z-index:var(--z-sticky);\
+        display:flex;justify-content:space-between;align-items:center;gap:var(--space-md);\
+        max-width:44rem;margin-inline:auto;padding:var(--space-sm) var(--space-md);\
+        border:1px solid var(--color-rule);border-radius:var(--radius-pill);\
+        background:color-mix(in oklch,var(--color-paper) 78%,transparent);\
+        backdrop-filter:blur(12px) saturate(1.3);box-shadow:var(--shadow)}}\
         .brand{{display:flex;gap:var(--space-sm);align-items:center;min-width:0}}\
         .brand img{{width:32px;height:32px;flex:none}}\
-        .wordmark{{font-family:var(--font-display);font-weight:700;font-size:var(--text-md);\
-        letter-spacing:-.02em;color:var(--color-ink);text-decoration:none;white-space:nowrap;\
+        .wordmark{{font-family:var(--font-display);font-weight:600;font-size:var(--text-md);\
+        letter-spacing:-.03em;color:var(--color-ink);text-decoration:none;white-space:nowrap;\
         overflow-wrap:anywhere;min-width:0}}\
         .pill{{font-family:var(--font-body);font-size:var(--text-xs);white-space:nowrap;\
         border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
@@ -373,13 +384,13 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .links{{display:flex;flex-wrap:wrap;gap:var(--space-2xs) var(--space-md);\
         font-size:var(--text-sm);padding-block:var(--space-sm);border-block:1px solid var(--color-rule)}}\
         .links a{{white-space:nowrap}}\
-        .hero-stat{{padding-block:var(--space-md) var(--space-xl)}}\
+        .hero-stat{{padding-block:var(--space-md) var(--space-xl);text-align:center}}\
         .figure{{font-family:var(--font-display);font-weight:700;font-style:normal;\
         font-size:clamp(4rem,12vw,7rem);line-height:1;letter-spacing:-.03em;margin:0;\
         font-variant-numeric:tabular-nums;overflow-wrap:anywhere;min-width:0}}\
         .hero-stat[data-up=\"1\"] .figure{{color:var(--color-ink)}}\
         .hero-stat[data-up=\"0\"] .figure{{color:var(--color-bad)}}\
-        .qualifier{{font-size:var(--text-md);color:var(--color-muted);max-width:65ch;margin:var(--space-sm) 0 0}}\
+        .qualifier{{font-size:var(--text-md);color:var(--color-muted);max-width:65ch;margin:var(--space-sm) auto 0}}\
         .stat-strip{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-md);\
         margin-top:var(--space-lg);padding-block:var(--space-md);border-block:1px solid var(--color-rule)}}\
         .stat-strip b{{display:block;font-family:var(--font-display);font-weight:700;\
@@ -391,7 +402,8 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         h2.group{{font-family:var(--font-display);font-weight:700;font-style:normal;\
         font-size:var(--text-lg);letter-spacing:-.02em;margin:var(--space-xl) 0 var(--space-xs);\
         overflow-wrap:anywhere;min-width:0}}\
-        .r{{border-top:1px solid var(--color-rule);padding-block:var(--space-md)}}\
+        .r{{background:var(--color-paper-2);border:1px solid var(--color-rule);\
+        border-radius:var(--radius-m);padding:var(--space-lg);margin-bottom:var(--space-xl)}}\
         .r-head{{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--space-2xs) var(--space-md);\
         align-items:baseline}}\
         @media (min-width:40rem){{\
@@ -435,7 +447,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .bars90 i{{flex:1 1 0;min-width:4px;height:34px;border-radius:2px;display:block;\
         font-size:0;line-height:0}}\
         .lat{{color:var(--color-muted);font-size:var(--text-xs);\
-        font-variant-numeric:tabular-nums;margin:0 0 var(--space-md)}}\
+        font-variant-numeric:tabular-nums;margin:0}}\
         .lat s{{text-decoration:none}}\
         .spark .line,.chart .line{{fill:none;stroke:var(--color-accent);stroke-width:1.5}}\
         .spark circle,.chart circle{{fill:transparent;pointer-events:all;cursor:crosshair}}\
@@ -450,9 +462,11 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         padding:var(--space-xs) var(--space-sm);white-space:nowrap;pointer-events:none}}\
         .svg-tip.on{{display:block}}\
         .lat s{{text-decoration:none;white-space:nowrap}}\
-        .r,.more,.lat{{transition:transform var(--dur-short) var(--ease-out)}}\
+        .r,.more,.lat{{transition:transform var(--dur-short) var(--ease-out),box-shadow var(--dur-short) var(--ease-out)}}\
         @media (hover:hover) and (pointer:fine){{\
-        .r:hover{{transform:translateY(-1px)}}}}\
+        .r:hover{{transform:translateY(-1px);box-shadow:var(--shadow)}}}}\
+        main{{animation:rise var(--dur-long) var(--ease-out)}}\
+        @keyframes rise{{from{{opacity:0}}to{{opacity:1}}}}\
         .note{{padding:var(--space-sm) var(--space-md);border-radius:var(--radius-m);\
         margin:var(--space-md) 0;border:1px solid var(--color-rule);\
         background:var(--color-paper-2);font-size:var(--text-sm)}}\
@@ -486,11 +500,12 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         table.inc td{{display:block;border:0;padding:var(--space-3xs) 0}}\
         table.inc td::before{{content:attr(data-label);display:block;font-family:var(--font-body);\
         font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.08em;color:var(--color-muted)}}}}\
-        .foot-line{{border-top:1px solid var(--color-rule);margin-top:var(--space-2xl);\
-        padding-top:var(--space-md);font-size:var(--text-sm);color:var(--color-muted);\
-        display:flex;flex-wrap:wrap;gap:var(--space-2xs) var(--space-md)}}\
-        .foot-line a{{white-space:nowrap}}\
-        .meta{{font-family:var(--font-body);font-size:var(--text-xs);color:var(--color-muted)}}\
+        .foot-mast{{border-top:1px solid var(--color-rule);margin-top:var(--space-2xl);\
+        padding-top:var(--space-lg);display:flex;flex-wrap:wrap;align-items:baseline;\
+        gap:var(--space-2xs) var(--space-md)}}\
+        .foot-mast .wordmark{{font-family:var(--font-display);font-weight:600;font-size:var(--text-lg);\
+        letter-spacing:-.03em;color:var(--color-ink);white-space:nowrap}}\
+        .foot-mast .meta{{margin-left:auto;font-size:var(--text-sm);color:var(--color-muted)}}\
         a:active{{color:var(--color-ink)}}\
         @media (prefers-reduced-motion:reduce){{\
         *,*::before,*::after{{animation-duration:150ms !important;transition-duration:150ms !important}}\
@@ -499,7 +514,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         <header class=nav-edge><a class=wordmark href=\"/\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\">{uptotal}</span><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
         <nav class=links aria-label=\"Site\">{links}</nav>\
         <main>{body}</main>\
-        <footer class=foot-line><span>{}</span><span class=meta>checked {}</span></footer>\
+        <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>checked {}</span></footer>\
         </div><script>(function(){{var el=document.querySelector('[data-count]');\
         if(el){{var raw=el.getAttribute('data-count');var target=parseInt(raw,10);\
         if(isFinite(target)&&!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)){{\
