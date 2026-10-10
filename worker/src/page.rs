@@ -404,7 +404,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .r b a{{color:var(--color-ink);text-decoration:none}}\
         .r b a:hover{{color:var(--color-accent)}}\
         .r b .mlogo{{width:16px;height:16px;vertical-align:-3px;margin-right:var(--space-2xs);border-radius:3px}}\
-        .detail-hero h2 .mlogo{{width:26px;height:26px;vertical-align:-5px;margin-right:var(--space-xs);border-radius:5px}}\
+        .detail-hero h2 .mlogo{{height:1em;width:auto;vertical-align:-0.12em;margin-right:var(--space-xs);border-radius:5px}}\
         .r i{{font-style:normal;font-family:var(--font-mono);font-size:var(--text-xs);\
         font-weight:600;letter-spacing:.08em}}\
         .r[data-up=\"1\"] i{{color:var(--color-muted)}}\
