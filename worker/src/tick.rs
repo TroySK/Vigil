@@ -83,7 +83,7 @@ async fn record(
         .run()
         .await?;
     let gaps: Vec<GapRow> = db
-        .q("SELECT at, upto AS to, why FROM gaps WHERE id = ?1 ORDER BY at DESC LIMIT 1")
+        .q("SELECT at, upto, why FROM gaps WHERE id = ?1 ORDER BY at DESC LIMIT 1")
         .bind(&[id.into()])?
         .all()
         .await?
@@ -123,6 +123,7 @@ async fn record(
 #[derive(Debug, Deserialize)]
 struct GapRow {
     at: i64,
+    #[serde(alias = "upto")]
     to: Option<i64>,
     why: String,
 }

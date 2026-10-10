@@ -11,6 +11,9 @@ pub struct GapOut {
     /// Start (unix seconds).
     pub at: i64,
     /// End (unix seconds), or `None` while ongoing.
+    /// Deserialized from the `upto` column (`to` is reserved in SQLite, so
+    /// the query selects `upto` directly); serialized as `to` for the API.
+    #[serde(alias = "upto")]
     pub to: Option<i64>,
     /// Human-readable cause.
     pub why: String,
@@ -29,7 +32,7 @@ pub struct SampleOut {
 
 /// Most recent gaps for a monitor, newest first.
 pub async fn recent_gaps(db: &Db, id: &str, limit: i64) -> Result<Vec<GapOut>> {
-    db.q("SELECT at, upto AS to, why FROM gaps WHERE id = ?1 ORDER BY at DESC LIMIT ?2")
+    db.q("SELECT at, upto, why FROM gaps WHERE id = ?1 ORDER BY at DESC LIMIT ?2")
         .bind(&[id.into(), num(limit.max(1))])?
         .all()
         .await?
