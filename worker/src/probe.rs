@@ -153,7 +153,8 @@ async fn probe_tcp(host: &str, port: u16, timeout_ms: u64) -> Result<u64, String
 }
 
 /// Race `future` against a deadline; timeout yields a worker [`Error`].
-async fn with_timeout<T>(
+/// Shared with the tick path so webhook delivery honors a deadline too.
+pub(crate) async fn with_timeout<T>(
     future: impl Future<Output = Result<T, Error>>,
     ms: u64,
 ) -> Result<T, Error> {

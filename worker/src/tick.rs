@@ -13,7 +13,7 @@ use vigil_core::views;
 use worker::{console_log, Date, Env, Error, Fetch, Headers, Method, Request, RequestInit, Result};
 
 use crate::db::{num, Db};
-use crate::probe::{colo, probe};
+use crate::probe::{colo, probe, with_timeout};
 
 /// Seconds in one day.
 pub const SECS_PER_DAY: i64 = 86_400;
@@ -313,6 +313,9 @@ async fn notify(
     Ok(())
 }
 
+/// Webhook delivery deadline: a hung receiver must not stall the tick.
+pub const HOOK_TIMEOUT_MS: u64 = 10_000;
+
 /// Deliver one webhook (`json` mode or form-encoded fallback).
 async fn fire_hook(hook: &Hook, body: &str) -> Result<()> {
     let mut init = RequestInit::new();
@@ -333,9 +336,9 @@ async fn fire_hook(hook: &Hook, body: &str) -> Result<()> {
         init.with_body(Some(wasm_bindgen::JsValue::from_str(&payload)));
     }
     let req = Request::new_with_init(&hook.url, &init)?;
-    // Webhook delivery is best-effort: a failing endpoint must not fail
-    // the cron tick or block other hooks.
-    let _ = Fetch::Request(req).send().await;
+    // Webhook delivery is best-effort: a failing or hanging endpoint must
+    // not fail the cron tick or block other hooks.
+    let _ = with_timeout(Fetch::Request(req).send(), HOOK_TIMEOUT_MS).await;
     Ok(())
 }
 
