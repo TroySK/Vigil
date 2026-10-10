@@ -160,9 +160,10 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     let detail = match &current {
         Some(sample) if is_up => {
             format!(
-                "{}ms &middot; {}",
+                "{}ms &middot; {} &middot; {}",
                 sample.ms,
-                vigil_core::time_label(sample.at)
+                vigil_core::time_label(sample.at),
+                esc(&sample.place)
             )
         }
         Some(_) => "check failing".to_owned(),

@@ -19,6 +19,41 @@ fn now_ms() -> u64 {
     Date::now().as_millis()
 }
 
+/// This isolate's Cloudflare colo (`SIN`, `BOM`, …), if determinable.
+///
+/// Scheduled handlers receive no `Request`, so there is no `cf.colo` to
+/// read — instead one fast edge subrequest per tick hits `cdn-cgi/trace`
+/// and parses its `colo=` line. Any failure yields `None` and samples
+/// keep the `"CRON"` origin via [`place`](vigil_core::checks::place).
+pub async fn colo() -> Option<String> {
+    let url = url::Url::parse("https://www.cloudflare.com/cdn-cgi/trace").ok()?;
+    let mut resp = Fetch::Url(url).send().await.ok()?;
+    let body = resp.text().await.ok()?;
+    parse_colo(&body)
+}
+
+/// Extract the `colo=` line from a `cdn-cgi/trace` response body.
+fn parse_colo(body: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        line.strip_prefix("colo=")
+            .map(|colo| colo.trim().to_uppercase())
+            .filter(|colo| !colo.is_empty())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_colo;
+
+    #[test]
+    fn parses_colo_line() {
+        let body = "fl=1\nh=www.cloudflare.com\ncolo=BOM\nloc=IN\n";
+        assert_eq!(parse_colo(body).as_deref(), Some("BOM"));
+        assert_eq!(parse_colo("no colo here\n"), None);
+        assert_eq!(parse_colo("colo=\n"), None);
+    }
+}
+
 /// Run one monitor's probe; always returns a [`Seen`], never throws.
 pub async fn probe(monitor: &Monitor, colo: Option<&str>) -> (Seen, String) {
     let location = place(colo);
