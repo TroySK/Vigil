@@ -91,10 +91,15 @@ fn spark_points_carry_time_tooltips() {
 #[test]
 fn latency_chart_has_labeled_axes() {
     use vigil_core::rollup::latency_chart;
-    let svg = latency_chart(&[(1_000, 10), (2_000, 20), (3_000, 15)], 600, 150);
+    let svg = latency_chart(
+        &[(1_000, 10, "BOM"), (2_000, 20, "SIN"), (3_000, 15, "BOM")],
+        600,
+        150,
+    );
     assert!(svg.contains("20ms"));
     assert!(svg.contains("10ms"));
     assert!(svg.contains(">0<"));
     assert!(svg.contains("data-tip"));
+    assert!(svg.contains("SIN"));
     assert!(latency_chart(&[], 600, 150).is_empty());
 }

@@ -71,7 +71,8 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         }
     }
     let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
-    let points: Vec<(i64, i64)> = lat.iter().rev().map(|r| (r.at, r.ms)).collect();
+    let points: Vec<(i64, i64, &str)> =
+        lat.iter().rev().map(|r| (r.at, r.ms, r.place.as_str())).collect();
     let spark = latency_chart(&points, 600, 150);
     let spark_html = if spark.is_empty() {
         "<p class=empty>No latency samples yet — the chart fills in after the next probe.</p>"
