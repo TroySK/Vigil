@@ -448,7 +448,8 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .r[data-up=\"1\"] i{{color:var(--color-ok)}}\
         .r[data-up=\"0\"] i{{color:var(--color-bad)}}\
         .r s{{color:var(--color-muted);text-decoration:none;font-size:var(--text-sm);\
-        font-variant-numeric:tabular-nums}}\
+        font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;\
+        text-overflow:ellipsis;min-width:0}}\
         @media (min-width:40rem){{.r s{{text-align:right}}}}\
         .det{{font-family:var(--font-display);font-weight:700;font-size:var(--text-xs);\
         color:var(--color-ink);text-decoration:none;white-space:nowrap;\
