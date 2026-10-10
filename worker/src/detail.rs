@@ -102,13 +102,14 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
     }
     let body = format!(
         "<nav class=crumb><a href=\"/\">&lsaquo; all monitors</a></nav>\
-        <section class=detail-hero><h2>{}</h2>\
+        <section class=detail-hero><h2>{logo}{}</h2>\
         <p class=status-line><span class=status-word data-up=\"{flag}\">{word}</span> \
         <span class=tnum>{ms}</span></p>{notes}</section>\
         <h3 class=sect>90 days</h3><div class=bars90>{cells}</div>\
         <h3 class=sect>Latency</h3><p class=tnum>p50 {p50}ms &middot; p95 {p95}ms &middot; {n} samples</p>{spark} \
         <h3 class=sect>Incidents</h3><table class=inc><thead><tr><th>From</th><th>To</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
         esc(&monitor.name),
+        logo = crate::page::favicon_img(monitor, 24),
         word = if is_up { "UP" } else { "DOWN" },
         flag = if is_up { "1" } else { "0" },
         ms = current.map_or_else(|| "no probes yet".to_owned(), |r| format!("{}ms last probe", r.ms)),

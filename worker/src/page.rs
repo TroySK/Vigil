@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use crate::auth::esc;
 use crate::db::Db;
 use crate::reads::{first_sample_at, latest, recent_gaps, series, GapOut, SampleOut};
-use vigil_core::config::{Monitor, Site};
+use vigil_core::config::{Monitor, Probe, Site};
 use vigil_core::rollup::{bar_color, hour_bars, latency_chart, percentile};
 use vigil_core::state::Gap;
 use worker::{Response, Result};
@@ -219,10 +219,11 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         .as_deref()
         .map_or_else(String::new, |t| format!(" title=\"{}\"", esc(t)));
     let flag = if is_up { "1" } else { "0" };
-    let name = match &monitor.href {
+    let label = match &monitor.href {
         Some(href) => format!("<a href=\"{}\">{}</a>", esc(href), esc(&monitor.name)),
         None => esc(&monitor.name),
     };
+    let name = format!("{}{label}", favicon_img(monitor, 16));
     Ok(format!(
         "<article class=r data-up=\"{flag}\"{tip}>\
         <div class=r-head><span class=d aria-hidden=true></span>\
@@ -230,6 +231,33 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         <div class=more><a href=\"/monitor?id={}\">details &rsaquo;</a></div>{extra}</article>",
         monitor.id
     ))
+}
+
+/// Favicon URL for a monitor (`{origin}/favicon.ico`), if it has an origin.
+/// TCP monitors have no web origin and yield `None`.
+#[must_use]
+pub fn favicon_url(monitor: &Monitor) -> Option<String> {
+    let url = match &monitor.check {
+        Probe::Http { url, .. } => url,
+        Probe::Tcp { .. } => return None,
+    };
+    let parsed = url::Url::parse(url).ok()?;
+    Some(format!(
+        "{}://{}/favicon.ico",
+        parsed.scheme(),
+        parsed.host_str()?
+    ))
+}
+
+/// `<img>` for a monitor's favicon, logo-first per favicon-before-title
+/// convention. Removes itself when the site has no favicon.
+pub(crate) fn favicon_img(monitor: &Monitor, size: u32) -> String {
+    favicon_url(monitor).map_or_else(String::new, |src| {
+        format!(
+            "<img class=mlogo src=\"{}\" alt=\"\" width={size} height={size} loading=lazy onerror='this.remove()'>",
+            esc(&src),
+        )
+    })
 }
 
 /// Footer links (`label -> url`) joined with middots. External links open
@@ -377,6 +405,8 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         overflow-wrap:anywhere;min-width:0}}\
         .r b a{{color:var(--color-ink);text-decoration:none}}\
         .r b a:hover{{color:var(--color-accent)}}\
+        .r b .mlogo{{width:16px;height:16px;vertical-align:-3px;margin-right:var(--space-2xs);border-radius:3px}}\
+        .detail-hero h2 .mlogo{{width:26px;height:26px;vertical-align:-5px;margin-right:var(--space-xs);border-radius:5px}}\
         .r i{{font-style:normal;font-family:var(--font-mono);font-size:var(--text-xs);\
         font-weight:600;letter-spacing:.08em}}\
         .r[data-up=\"1\"] i{{color:var(--color-muted)}}\
