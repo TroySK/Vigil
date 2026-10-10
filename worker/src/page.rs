@@ -560,3 +560,72 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         vigil_core::time_label(at.max(0))
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{favicon_origin, links_html, parse_counts};
+    use std::collections::BTreeMap;
+    use vigil_core::config::{Monitor, Probe};
+
+    #[test]
+    fn counts_parse_and_reject_garbage() {
+        assert_eq!(parse_counts("30/0"), (30, 0));
+        assert_eq!(parse_counts("0/0"), (0, 0));
+        assert_eq!(parse_counts("nope"), (0, 0));
+        assert_eq!(parse_counts(""), (0, 0));
+    }
+
+    #[test]
+    fn links_open_new_tab_without_opener() {
+        let html = links_html(
+            &BTreeMap::from([("Home".to_owned(), "https://example.com".to_owned())]),
+        );
+        assert!(html.contains("target=_blank"));
+        assert!(html.contains("noopener noreferrer"));
+        let evil = links_html(&BTreeMap::from([(
+            "<x>".to_owned(),
+            "https://example.com/?a=\"b\"".to_owned(),
+        )]));
+        assert!(!evil.contains("<x>"));
+    }
+
+    fn http_monitor(url: &str) -> Monitor {
+        Monitor {
+            id: "m".into(),
+            name: "M".into(),
+            check: Probe::Http {
+                url: url.into(),
+                method: "GET".into(),
+                headers: BTreeMap::new(),
+                body: None,
+            },
+            expect: vec![],
+            timeout_ms: 10_000,
+            has: None,
+            lacks: None,
+            tip: None,
+            href: None,
+            quiet_chart: false,
+            every_min: None,
+        }
+    }
+
+    #[test]
+    fn favicon_uses_probe_origin() {
+        assert_eq!(
+            favicon_origin(&http_monitor("https://example.com/some/page?x=1")).as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(favicon_origin(&http_monitor("not a url")), None);
+    }
+
+    #[test]
+    fn tcp_monitors_have_no_favicon() {
+        let mut m = http_monitor("https://example.com");
+        m.check = Probe::Tcp {
+            host: "1.1.1.1".into(),
+            port: 53,
+        };
+        assert_eq!(favicon_origin(&m), None);
+    }
+}
