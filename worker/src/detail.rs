@@ -109,5 +109,5 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         spark = spark_html,
     );
     let links = links_html(&site.links);
-    Response::from_html(shell(&monitor.name, &links, &counts, at, &body))
+    Response::from_html(shell(&monitor.name, &site.title, &links, &counts, at, &body))
 }
