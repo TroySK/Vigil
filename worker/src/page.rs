@@ -222,7 +222,11 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         .map_or_else(String::new, |t| format!(" title=\"{}\"", esc(t)));
     let flag = if is_up { "1" } else { "0" };
     let label = match &monitor.href {
-        Some(href) => format!("<a href=\"{}\">{}</a>", esc(href), esc(&monitor.name)),
+        Some(href) => format!(
+            "<a href=\"{}\" target=_blank rel=\"noopener noreferrer\">{}</a>",
+            esc(href),
+            esc(&monitor.name)
+        ),
         None => esc(&monitor.name),
     };
     let name = format!("{}{label}", favicon_img(monitor, 16));
