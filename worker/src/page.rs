@@ -7,7 +7,7 @@ use crate::auth::esc;
 use crate::db::Db;
 use crate::reads::{latest, recent_gaps, series};
 use vigil_core::config::{Monitor, Site};
-use vigil_core::rollup::{bar_color, month_bars, percentile, sparkline};
+use vigil_core::rollup::{bar_color, month_bars, percentile, sparkline_points};
 use vigil_core::state::Gap;
 use worker::{Response, Result};
 
@@ -162,10 +162,16 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     if !monitor.quiet_chart {
         let lat = series(db, &monitor.id, INDEX_LATENCY_SAMPLES).await?;
         let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
+        let points: Vec<(i64, i64)> = lat.iter().rev().map(|r| (r.at, r.ms)).collect();
+        let spark = sparkline_points(&points, 180, 28);
+        let chart = if spark.is_empty() {
+            "<s>no samples yet</s>".to_owned()
+        } else {
+            spark
+        };
         let _ = write!(
             extra,
-            "<div class=lat>{} <s>p50 {}ms &middot; p95 {}ms</s></div>",
-            sparkline(&vals, 180, 28),
+            "<div class=lat>{chart} <s>p50 {}ms &middot; p95 {}ms</s></div>",
             percentile(&vals, 50.0),
             percentile(&vals, 95.0)
         );
@@ -342,6 +348,7 @@ pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> Str
         .note{{padding:var(--space-sm) var(--space-md);border-radius:var(--radius-m);\
         margin:var(--space-md) 0;border:1px solid var(--color-rule);\
         background:var(--color-paper-2);font-size:var(--text-sm)}}\
+        .empty{{color:var(--color-muted);font-size:var(--text-sm)}}\
         .active{{border-color:var(--color-bad)}}\
         .upcoming{{border-color:var(--color-rule)}}\
         .detail-hero{{padding-block:var(--space-lg) 0}}\

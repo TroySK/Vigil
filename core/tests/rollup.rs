@@ -1,4 +1,4 @@
-use vigil_core::rollup::{bar_color, month_bars, percentile, sparkline};
+use vigil_core::rollup::{bar_color, month_bars, percentile, sparkline, sparkline_points};
 use vigil_core::state::Gap;
 
 #[test]
@@ -34,4 +34,14 @@ fn percentiles_and_spark() {
     let svg = sparkline(&[10, 20, 15], 90, 28);
     assert!(svg.contains("<polyline"));
     assert!(sparkline(&[], 90, 28).is_empty());
+}
+
+#[test]
+fn spark_points_carry_time_tooltips() {
+    let svg = sparkline_points(&[(1_000, 10), (2_000, 20)], 90, 28);
+    assert!(svg.contains("<polyline"));
+    assert!(svg.contains("<title>"));
+    assert!(svg.contains("10ms"));
+    assert!(svg.contains("20ms"));
+    assert!(sparkline_points(&[], 90, 28).is_empty());
 }

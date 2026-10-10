@@ -7,7 +7,7 @@ use crate::db::Db;
 use crate::page::{default_counts, last_tick_at, links_html, shell};
 use crate::reads::{latest, recent_gaps, series};
 use vigil_core::config::Site;
-use vigil_core::rollup::{month_bars, percentile, sparkline};
+use vigil_core::rollup::{bar_color, month_bars, percentile, sparkline_points};
 use vigil_core::state::Gap;
 use worker::{Response, Result};
 
@@ -41,7 +41,8 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
     for bar in month_bars(&core, at.max(1), DETAIL_HISTORY_DAYS) {
         let _ = write!(
             cells,
-            "<i title=\"{tip}\" data-tip=\"{tip}\">{:.1}%</i>",
+            "<i title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\">{:.1}%</i>",
+            bar_color(bar.pct),
             bar.pct,
             tip = format!(
                 "{}: {:.1}%",
@@ -52,6 +53,14 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
     }
     let lat = series(db, id, DETAIL_LATENCY_SAMPLES).await?;
     let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
+    let points: Vec<(i64, i64)> = lat.iter().rev().map(|r| (r.at, r.ms)).collect();
+    let spark = sparkline_points(&points, 600, 60);
+    let spark_html = if spark.is_empty() {
+        "<p class=empty>No latency samples yet — the chart fills in after the next probe.</p>"
+            .to_owned()
+    } else {
+        spark
+    };
     let mut rows = String::new();
     for gap in gaps.iter().take(DETAIL_INCIDENTS) {
         let to = gap
@@ -88,7 +97,7 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         p50 = percentile(&vals, 50.0),
         p95 = percentile(&vals, 95.0),
         n = vals.len(),
-        spark = sparkline(&vals, 600, 60),
+        spark = spark_html,
     );
     let links = links_html(&site.links);
     Response::from_html(shell(&monitor.name, &links, &counts, at, &body))

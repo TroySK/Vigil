@@ -85,7 +85,52 @@ pub fn percentile(values: &[i64], p: f64) -> i64 {
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
-/// Dependency-free SVG sparkline for latency samples (oldest → newest).
+/// Dependency-free SVG sparkline with per-point time tooltips
+/// (oldest → newest). Each sample gets an invisible hover target carrying
+/// `<title>{time}: {ms}ms</title>`; empty input yields an empty string.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
+    if points.is_empty() {
+        return String::new();
+    }
+    let max = points
+        .iter()
+        .map(|&(_, ms)| ms)
+        .max()
+        .unwrap_or(0)
+        .max(1) as f64;
+    let step = if points.len() < 2 {
+        0.0
+    } else {
+        f64::from(w) / (points.len() as f64 - 1.0)
+    };
+    let mut pts = String::with_capacity(points.len() * 12);
+    let mut dots = String::with_capacity(points.len() * 64);
+    for (i, &(at, ms)) in points.iter().enumerate() {
+        let x = (i as f64 * step).round() as u32;
+        let scaled = (ms.max(0) as f64 / max) * f64::from(h.saturating_sub(4));
+        let y = h.saturating_sub(scaled.round() as u32 + 2);
+        // `write!` on a `String` is infallible; ignore the result.
+        let _ = write!(pts, "{x},{y} ");
+        let _ = write!(
+            dots,
+            "<circle cx=\"{x}\" cy=\"{y}\" r=\"7\" fill=\"transparent\">\
+            <title>{}: {ms}ms</title></circle>",
+            crate::time_label(at),
+        );
+    }
+    format!(
+        "<svg width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-hidden=\"true\">\
+<polyline points=\"{}\" fill=\"none\" stroke=\"#0969da\" stroke-width=\"1.5\"/>{dots}</svg>",
+        pts.trim_end()
+    )
+}
+
 /// `vals` are milliseconds; empty input yields an empty-string placeholder.
 #[must_use]
 #[allow(
