@@ -11,7 +11,7 @@ use vigil_core::state::{Gap, Track};
 use vigil_core::views;
 use worker::{console_log, Date, Env, Error, Fetch, Headers, Method, Request, RequestInit, Result};
 
-use crate::db::Db;
+use crate::db::{num, Db};
 use crate::probe::probe;
 
 /// Seconds in one day.
@@ -75,9 +75,9 @@ async fn record(
     db.q("INSERT INTO samples (id, at, ms, up, place) VALUES (?1, ?2, ?3, ?4, ?5)")
         .bind(&[
             id.into(),
-            now.into(),
-            elapsed_ms.into(),
-            up_flag.into(),
+            num(now),
+            num(elapsed_ms),
+            num(up_flag),
             location.into(),
         ])?
         .run()
@@ -99,7 +99,7 @@ async fn record(
     if verdict.up {
         if track.note_up(now) {
             db.q("UPDATE gaps SET upto = ?1 WHERE id = ?2 AND upto IS NULL")
-                .bind(&[now.into(), id.into()])?
+                .bind(&[num(now), id.into()])?
                 .run()
                 .await?;
         }
@@ -111,7 +111,7 @@ async fn record(
                 .await?;
         } else {
             db.q("INSERT INTO gaps (id, at, upto, why) VALUES (?1, ?2, NULL, ?3)")
-                .bind(&[id.into(), now.into(), verdict.why.clone().into()])?
+                .bind(&[id.into(), num(now), verdict.why.clone().into()])?
                 .run()
                 .await?;
         }
@@ -220,11 +220,11 @@ async fn fire_hook(hook: &Hook, body: &str) -> Result<()> {
 async fn prune(db: &Db, now: i64) -> Result<()> {
     let cutoff = now.saturating_sub(RETENTION_DAYS.saturating_mul(SECS_PER_DAY));
     db.q("DELETE FROM samples WHERE at < ?1")
-        .bind(&[cutoff.into()])?
+        .bind(&[num(cutoff)])?
         .run()
         .await?;
     db.q("DELETE FROM gaps WHERE upto IS NOT NULL AND upto < ?1")
-        .bind(&[cutoff.into()])?
+        .bind(&[num(cutoff)])?
         .run()
         .await?;
     Ok(())

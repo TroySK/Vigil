@@ -6,6 +6,19 @@ use worker::{Env, Result};
 /// D1 binding name in `wrangler.toml`.
 pub const DB_BINDING: &str = "DB";
 
+/// Bind an integer to D1 as a JS `Number`.
+///
+/// D1 rejects `BigInt` values, and `wasm-bindgen` converts Rust
+/// `i64`/`u64` to `BigInt` via `From`/`Into`. Every integer bind must go
+/// through this helper (or an `f64`/`i32` conversion) so D1 sees a `Number`.
+/// All Vigil integers (epoch seconds, millis, flags, limits) fit exactly in
+/// an `f64` (`< 2^53`), so the cast is lossless in practice.
+#[must_use]
+#[allow(clippy::cast_precision_loss)] // all bound values are < 2^53, exactly representable
+pub fn num(value: i64) -> wasm_bindgen::JsValue {
+    wasm_bindgen::JsValue::from_f64(value as f64)
+}
+
 /// Thin wrapper around the D1 database with query helpers.
 #[derive(Debug)]
 pub struct Db {

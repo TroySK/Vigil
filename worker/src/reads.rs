@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use worker::Result;
 
-use crate::db::Db;
+use crate::db::{num, Db};
 
 /// One downtime window row for API responses and rollups.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub struct SampleOut {
 /// Most recent gaps for a monitor, newest first.
 pub async fn recent_gaps(db: &Db, id: &str, limit: i64) -> Result<Vec<GapOut>> {
     db.q("SELECT at, upto AS to, why FROM gaps WHERE id = ?1 ORDER BY at DESC LIMIT ?2")
-        .bind(&[id.into(), limit.max(1).into()])?
+        .bind(&[id.into(), num(limit.max(1))])?
         .all()
         .await?
         .results()
@@ -50,7 +50,7 @@ pub async fn latest(db: &Db, id: &str) -> Result<Option<SampleOut>> {
 /// Recent samples for a monitor, newest first.
 pub async fn series(db: &Db, id: &str, limit: i64) -> Result<Vec<SampleOut>> {
     db.q("SELECT at, ms, up FROM samples WHERE id = ?1 ORDER BY at DESC LIMIT ?2")
-        .bind(&[id.into(), limit.max(1).into()])?
+        .bind(&[id.into(), num(limit.max(1))])?
         .all()
         .await?
         .results()
