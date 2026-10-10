@@ -5,9 +5,22 @@ use crate::auth::{authed, deny};
 use crate::db::Db;
 use worker::{Env, Request, Response, Result};
 
-/// Handle every incoming `fetch`: gate, migrate, then route by path.
+/// Handle every incoming `fetch`: gate, migrate, route, then harden and
+/// cache-tag the response on the single exit path.
 pub async fn handle(req: Request, env: Env) -> Result<Response> {
     let url = req.url()?;
+    let mut resp = route(req, env, &url).await?;
+    for (name, value) in security_headers() {
+        resp.headers_mut().set(name, value)?;
+    }
+    if let Some(policy) = cache_control(url.path()) {
+        resp.headers_mut().set("cache-control", policy)?;
+    }
+    Ok(resp)
+}
+
+/// Gate, migrate, then route by path.
+async fn route(req: Request, env: Env, url: &url::Url) -> Result<Response> {
     // Brand assets stay public so browsers can fetch the tab icon and the
     // header logo without credentials.
     match url.path() {
@@ -21,23 +34,19 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
     }
     let db = Db::of(&env)?;
     db.init().await?;
-    let mut resp = match url.path() {
+    match url.path() {
         "/" | "/index.html" => crate::page::render(&db, &site).await,
-        "/monitor" => match detail_id(&url) {
+        "/monitor" => match detail_id(url) {
             Some(id) => crate::detail::render(&db, &site, &id).await,
             None => Response::error("missing id", 400),
         },
         "/api/health" => api::health(&db, &site).await,
-        "/api/badge" => api::badge(&db, &site, &url).await,
-        "/api/history" => api::history(&db, &url).await,
-        "/api/incidents" => api::incidents(&db, &url).await,
-        "/api/latency" => api::latency(&db, &url).await,
+        "/api/badge" => api::badge(&db, &site, url).await,
+        "/api/history" => api::history(&db, url).await,
+        "/api/incidents" => api::incidents(&db, url).await,
+        "/api/latency" => api::latency(&db, url).await,
         _ => Response::error("not found", 404),
-    }?;
-    if let Some(policy) = cache_control(url.path()) {
-        resp.headers_mut().set("cache-control", policy)?;
     }
-    Ok(resp)
 }
 
 /// Extract `?id=` from a detail/API URL.
@@ -58,9 +67,33 @@ fn cache_control(path: &str) -> Option<&'static str> {
     }
 }
 
+/// Baseline hardening headers applied to every response leaving `handle`.
+/// No CSP here: scripts and styles are inline, so a strict policy would
+/// need a nonce refactor first.
+fn security_headers() -> [(&'static str, &'static str); 3] {
+    [
+        ("referrer-policy", "no-referrer"),
+        ("x-content-type-options", "nosniff"),
+        ("x-frame-options", "DENY"),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
-    use super::cache_control;
+    use super::{cache_control, security_headers};
+
+    #[test]
+    fn every_response_carries_hardening_headers() {
+        let headers = security_headers();
+        let get = |name: &str| headers.iter().find(|(k, _)| *k == name).map(|(_, v)| *v);
+        // No referrer leaks to third-party favicon hosts.
+        assert_eq!(get("referrer-policy"), Some("no-referrer"));
+        // No MIME sniffing of API/JSON bodies.
+        assert_eq!(get("x-content-type-options"), Some("nosniff"));
+        // Status pages embed as data, never as framed documents.
+        assert_eq!(get("x-frame-options"), Some("DENY"));
+    }
+
 
     #[test]
     fn tick_granular_routes_share_short_cache() {
