@@ -272,7 +272,7 @@ pub fn links_html(links: &BTreeMap<String, String>) -> String {
             )
         })
         .collect::<Vec<_>>()
-        .join(" &middot; ")
+        .join(" ")
 }
 
 /// Last cron tick time, `0` when the worker never ticked.
@@ -381,9 +381,15 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         [data-theme=\"dark\"] .theme-toggle .icon-sun{{display:block}}\
         [data-theme=\"dark\"] .theme-toggle .icon-moon{{display:none}}\
         .head-right{{display:flex;gap:var(--space-sm);align-items:center;flex:none}}\
-        .links{{display:flex;flex-wrap:wrap;gap:var(--space-2xs) var(--space-md);\
-        font-size:var(--text-sm);padding-block:var(--space-sm);border-block:1px solid var(--color-rule)}}\
-        .links a{{white-space:nowrap}}\
+        .links{{display:flex;flex-wrap:wrap;gap:var(--space-sm);\
+        margin:var(--space-md) 0 var(--space-xl);padding:0;border:0}}\
+        .links a{{white-space:nowrap;font-size:var(--text-sm);color:var(--color-muted);\
+        text-decoration:none;border:1px solid var(--color-rule);\
+        border-radius:var(--radius-pill);padding:var(--space-3xs) var(--space-sm);\
+        background:color-mix(in oklch,var(--color-paper-2) 72%,transparent);\
+        transition:color var(--dur-short) var(--ease-out),border-color var(--dur-short) var(--ease-out)}}\
+        .links a:hover{{color:var(--color-ink);border-color:var(--color-accent)}}\
+        .links a:active{{color:var(--color-ink)}}\
         .hero-stat{{padding-block:var(--space-md) var(--space-xl);text-align:center}}\
         .figure{{font-family:var(--font-display);font-weight:700;font-style:normal;\
         font-size:clamp(4rem,12vw,7rem);line-height:1;letter-spacing:-.03em;margin:0;\
@@ -474,7 +480,11 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .active{{border-color:var(--color-bad)}}\
         .upcoming{{border-color:var(--color-rule)}}\
         .detail-hero{{padding-block:var(--space-lg) 0}}\
-        .crumb{{font-size:var(--text-sm);white-space:nowrap}}\
+        .crumb{{margin:var(--space-lg) 0 var(--space-md)}}\
+        .crumb a{{font-family:var(--font-mono);font-size:var(--text-xs);\
+        text-transform:uppercase;letter-spacing:.08em;color:var(--color-muted);\
+        text-decoration:none;white-space:nowrap}}\
+        .crumb a:hover{{color:var(--color-accent)}}\
         .detail-hero h2{{font-family:var(--font-display);font-weight:700;font-style:normal;\
         font-size:clamp(2rem,4vw + 1rem,3rem);letter-spacing:-.025em;line-height:1.05;\
         margin:var(--space-sm) 0 var(--space-2xs);overflow-wrap:anywhere;min-width:0}}\
