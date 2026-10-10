@@ -76,7 +76,12 @@ pub async fn tick(env: Env) -> Result<()> {
             maybe_alert(&db, &site, &monitor.id, &monitor.name, now, &verdict).await?;
         }
     }
-    db.put("counts", &format!("{up}/{down}")).await?;
+    // A skip-only tick probed nothing, so its 0/0 would overwrite the last
+    // real counts with a lie: skipped monitors keep their state, making the
+    // previous counts still accurate. Only publish when something probed.
+    if up + down > 0 {
+        db.put("counts", &format!("{up}/{down}")).await?;
+    }
     db.put("at", &now.to_string()).await?;
     prune(&db, now).await?;
     Ok(())
@@ -84,16 +89,41 @@ pub async fn tick(env: Env) -> Result<()> {
 
 /// Whether a monitor is due for probing: never probed before, or at least
 /// `every_min` minutes elapsed since its last probe (tracked in `kv`).
+///
+/// First sightings spread across the interval by id hash so a fleet with
+/// the same cadence doesn't synchronize onto one tick (and into a shared
+/// skip window). The default every-tick cadence always probes immediately.
 async fn due(db: &Db, id: &str, every_min: u64, now: i64) -> Result<bool> {
+    let every_secs = every_min.saturating_mul(60);
     let last: Option<i64> = db
         .get(&format!("last:{id}"))
         .await?
         .and_then(|s| s.parse().ok());
     let Some(last) = last else {
-        return Ok(true);
+        if every_min <= 1 {
+            return Ok(true);
+        }
+        let offset = hash_id(id) % every_secs.max(1);
+        if offset == 0 {
+            return Ok(true);
+        }
+        let phased = now.saturating_sub(i64::try_from(offset).unwrap_or(i64::MAX));
+        db.put(&format!("last:{id}"), &phased.to_string())
+            .await?;
+        return Ok(false);
     };
     let elapsed = u64::try_from(now.saturating_sub(last)).unwrap_or(u64::MAX);
-    Ok(elapsed >= every_min.saturating_mul(60))
+    Ok(elapsed >= every_secs)
+}
+
+/// FNV-1a hash for staggering first-probe phases across monitors.
+fn hash_id(id: &str) -> u64 {
+    let mut hash: u64 = 14_695_981_039_346_656_037;
+    for byte in id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(1_099_511_628_211);
+    }
+    hash
 }
 
 /// Write one sample row and maintain the open/closed gap for a monitor.
