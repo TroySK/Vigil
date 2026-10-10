@@ -19,6 +19,7 @@ fn web() -> Monitor {
         tip: None,
         href: None,
         quiet_chart: false,
+        every_min: None,
     }
 }
 
@@ -201,6 +202,7 @@ fn config_check_reports_typed_errors() {
                 tip: None,
                 href: None,
                 quiet_chart: false,
+                every_min: None,
             },
             Monitor {
                 id: "dup".into(), // duplicate
@@ -218,6 +220,7 @@ fn config_check_reports_typed_errors() {
                 tip: None,
                 href: None,
                 quiet_chart: false,
+                every_min: None,
             },
         ],
         ..Site::default()
@@ -227,4 +230,36 @@ fn config_check_reports_typed_errors() {
     assert!(errors.iter().any(|e| e.to_string().contains("bad timeout")));
     assert!(errors.iter().any(|e| e.to_string().contains("dup id")));
     assert!(errors.iter().any(|e| e.to_string().contains("bad url")));
+}
+
+#[test]
+fn cadence_prefers_monitor_override_then_global() {
+    use vigil_core::config::{Monitor, Site};
+    let site = Site {
+        check_every_min: 5,
+        ..Site::default()
+    };
+    let mut inherited = web();
+    inherited.every_min = None;
+    assert_eq!(site.cadence_min(&inherited), 5);
+    let mut overridden = web();
+    overridden.every_min = Some(15);
+    assert_eq!(site.cadence_min(&overridden), 15);
+    // Unset everywhere still probes every tick, never zero.
+    let bare = Site::default();
+    assert_eq!(bare.cadence_min(&inherited), 1);
+}
+
+#[test]
+fn zero_every_min_is_rejected() {
+    use vigil_core::config::Site;
+    let mut bad = web();
+    bad.id = "z".into();
+    bad.every_min = Some(0);
+    let site = Site {
+        monitors: vec![bad],
+        ..Site::default()
+    };
+    let errors = site.check().unwrap_err();
+    assert!(errors.iter().any(|e| e.to_string().contains("bad every_min")));
 }

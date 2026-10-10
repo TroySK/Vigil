@@ -38,6 +38,19 @@ pub struct Site {
     /// Optional Basic-auth gate for the whole site.
     #[serde(default)]
     pub auth: Option<Gate>,
+    /// Default probe cadence in minutes for monitors without an
+    /// [`Monitor::every_min`] override (`0`/unset means every tick).
+    #[serde(default)]
+    pub check_every_min: u64,
+}
+
+impl Site {
+    /// Probe cadence for a monitor in minutes: its own `every_min` when
+    /// set, else the global `check_every_min`; always at least 1.
+    #[must_use]
+    pub fn cadence_min(&self, monitor: &Monitor) -> u64 {
+        monitor.every_min.unwrap_or(self.check_every_min).max(1)
+    }
 }
 
 fn default_title() -> String {
@@ -74,6 +87,11 @@ pub struct Monitor {
     /// Hide the latency sparkline for this monitor.
     #[serde(default)]
     pub quiet_chart: bool,
+    /// Probe every N minutes instead of every tick (`None` inherits the
+    /// global [`Site::check_every_min`]). Explicit `0` is rejected by
+    /// [`Site::check`].
+    #[serde(default)]
+    pub every_min: Option<u64>,
 }
 
 fn default_timeout() -> u64 {

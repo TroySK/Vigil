@@ -43,6 +43,12 @@ pub async fn tick(env: Env) -> Result<()> {
     let mut up = 0_u32;
     let mut down = 0_u32;
     for monitor in &site.monitors {
+        // Cadence gate: the cron fires every minute, but a monitor set to
+        // `every_min: N` (or the global `check_every_min`) only probes when
+        // due. Skipped monitors keep their last state; nothing is recorded.
+        if !due(&db, &monitor.id, site.cadence_min(monitor), now).await? {
+            continue;
+        }
         let (seen, location) = probe(monitor, None).await;
         let verdict = judge(monitor, &seen);
         if verdict.up {
@@ -51,6 +57,8 @@ pub async fn tick(env: Env) -> Result<()> {
             down += 1;
         }
         record(&db, &monitor.id, now, &seen, &verdict, &location).await?;
+        db.put(&format!("last:{}", monitor.id), &now.to_string())
+            .await?;
         if !site.notify.mute.iter().any(|muted| muted == &monitor.id) {
             maybe_alert(&db, &site, &monitor.id, &monitor.name, now, &verdict).await?;
         }
@@ -59,6 +67,20 @@ pub async fn tick(env: Env) -> Result<()> {
     db.put("at", &now.to_string()).await?;
     prune(&db, now).await?;
     Ok(())
+}
+
+/// Whether a monitor is due for probing: never probed before, or at least
+/// `every_min` minutes elapsed since its last probe (tracked in `kv`).
+async fn due(db: &Db, id: &str, every_min: u64, now: i64) -> Result<bool> {
+    let last: Option<i64> = db
+        .get(&format!("last:{id}"))
+        .await?
+        .and_then(|s| s.parse().ok());
+    let Some(last) = last else {
+        return Ok(true);
+    };
+    let elapsed = u64::try_from(now.saturating_sub(last)).unwrap_or(u64::MAX);
+    Ok(elapsed >= every_min.saturating_mul(60))
 }
 
 /// Write one sample row and maintain the open/closed gap for a monitor.

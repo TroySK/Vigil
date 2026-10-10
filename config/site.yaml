@@ -16,6 +16,10 @@
 #   links   footer label -> url map            (default: {})
 #   groups  group name -> [monitor ids]        (default: {}; unlisted ids
 #           render under "Other")
+#   check_every_min  default probe cadence in minutes for monitors
+#           without their own `every_min`      (default: 1 = every tick;
+#           the cron itself still fires every minute and skips
+#           monitors that aren't due)
 #   monitors  list of monitors (see below)
 #   notify  { hooks, grace_min, mute }
 #   upkeep  list of maintenance windows
@@ -26,6 +30,8 @@
 #     name: Search API        # required, display name
 #     expect: [200, 429]      # accepted HTTP codes (default: [] = any 2xx)
 #     timeout_ms: 8000        # per-probe timeout, 1..60000 (default: 10000)
+#     every_min: 5            # probe every 5m instead of every tick
+#                             # (default: unset = global check_every_min)
 #     has: "results"          # body must contain this (default: unset)
 #     lacks: "maintenance"    # body must NOT contain this (default: unset)
 #     tip: "Backed by us-e1"  # hover tooltip on the status page
@@ -67,6 +73,7 @@
 # =====================================================================
 
 title: Vigil Status
+check_every_min: 5
 
 links:
   Home: https://www.troysk.com
