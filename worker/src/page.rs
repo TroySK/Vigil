@@ -25,7 +25,7 @@ pub async fn render(db: &Db, site: &Site) -> Result<Response> {
     let mut body = hero;
     body.push_str(&sections(db, site, at, None).await?);
     let links = links_html(&site.links);
-    Response::from_html(shell(&site.title, &links, &counts, at, &body))
+    Response::from_html(shell(&site.title, &site.title, &links, &counts, at, &body))
 }
 
 /// Parse an `up/down` counts string; malformed input yields `(0, 0)`.
@@ -230,11 +230,15 @@ pub fn default_counts() -> String {
 
 /// Full HTML shell: head, Cobalt tokens, N9 header, body, Ft2 footer.
 ///
+/// `page_title` names the browser tab; `brand` (always the site title) names
+/// the header wordmark and footer so every page shares one header.
+/// Theme: light by default, dark via toggle or OS preference, persisted.
+///
 /// Stamp: Hallmark genre modern-minimal · macrostructure Stat-Led ·
 /// theme Cobalt · nav N9 · footer Ft2 · enrichment none.
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> String {
+pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, body: &str) -> String {
     let down: u32 = counts
         .split_once('/')
         .and_then(|(_, d)| d.parse().ok())
@@ -247,6 +251,9 @@ pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> Str
         <link rel=preconnect href=\"https://fonts.googleapis.com\">\
         <link rel=preconnect href=\"https://fonts.gstatic.com\" crossorigin>\
         <link rel=stylesheet href=\"https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap\">\
+        <script>(function(){{var t=null;try{{t=localStorage.getItem('vigil-theme');}}catch(e){{}}\
+        if(!t&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)t='dark';\
+        if(t)document.documentElement.setAttribute('data-theme',t);}})();</script>\
         <title>{}</title><style>\
         /* Hallmark · macrostructure: Stat-Led · tone: technical · anchor hue: cobalt-blue */\
         :root{{--color-paper:oklch(98% .004 250);--color-paper-2:oklch(94.5% .007 250);\
@@ -266,6 +273,11 @@ pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> Str
         --ease-in-out:cubic-bezier(.65,0,.35,1);\
         --dur-micro:120ms;--dur-short:220ms;--dur-long:420ms;\
         --radius-s:6px;--radius-m:10px;--z-base:1;--z-sticky:200;}}\
+        [data-theme=\"dark\"]{{--color-paper:oklch(15% .01 250);--color-paper-2:oklch(19% .012 250);\
+        --color-rule:oklch(30% .01 250);--color-neutral:oklch(62% .01 250);\
+        --color-muted:oklch(74% .008 250);--color-ink:oklch(94% .006 250);\
+        --color-accent:oklch(72% .18 260);--color-focus:oklch(72% .18 260);\
+        --color-ok:oklch(72% .14 150);--color-bad:oklch(70% .17 25);}}\
         html{{overflow-x:clip}}\
         body{{overflow-x:clip;background:var(--color-paper);color:var(--color-ink);\
         font-family:var(--font-body);font-size:var(--text-base);line-height:1.6;\
@@ -287,6 +299,12 @@ pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> Str
         color:var(--color-muted);background:var(--color-paper-2)}}\
         .pill[data-up=\"1\"]{{color:var(--color-ink);border-color:var(--color-ok)}}\
         .pill[data-up=\"0\"]{{color:var(--color-ink);border-color:var(--color-bad)}}\
+        .theme-toggle{{font-family:var(--font-body);font-size:var(--text-sm);white-space:nowrap;\
+        border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
+        color:var(--color-muted);background:transparent;cursor:pointer}}\
+        .theme-toggle:hover{{color:var(--color-ink);border-color:var(--color-neutral)}}\
+        .theme-toggle:active{{color:var(--color-ink)}}\
+        .head-right{{display:flex;gap:var(--space-sm);align-items:center;flex:none}}\
         .links{{display:flex;flex-wrap:wrap;gap:var(--space-2xs) var(--space-md);\
         font-size:var(--text-sm);padding-block:var(--space-sm);border-block:1px solid var(--color-rule)}}\
         .links a{{white-space:nowrap}}\
@@ -411,7 +429,7 @@ pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> Str
         *,*::before,*::after{{animation-duration:150ms !important;transition-duration:150ms !important}}\
         .r:hover{{transform:none}}}}\
         </style></head><body><div class=wrap>\
-        <header class=nav-edge><a class=wordmark href=\"/\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=pill data-up=\"{pill}\">{counts}</span></header>\
+        <header class=nav-edge><a class=wordmark href=\"/\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\">{counts}</span><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\">Theme</button></span></header>\
         <nav class=links aria-label=\"Site\">{links}</nav>\
         <main>{body}</main>\
         <footer class=foot-line><span>{}</span><span class=meta>checked {}</span></footer>\
@@ -434,10 +452,18 @@ pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> Str
         if(c)show(c,e.clientX,e.clientY);}}}});\
         document.addEventListener('mouseout',function(e){{if(dotAt(e.target))hideSoon(120);}});\
         document.addEventListener('click',function(e){{var c=dotAt(e.target);\
-        if(c){{show(c,e.clientX,e.clientY);hideSoon(2500);}}}});}})();</script></body></html>",
-        esc(title),
-        esc(title),
-        esc(title),
+        if(c){{show(c,e.clientX,e.clientY);hideSoon(2500);}}}});\
+        var tb=document.getElementById('theme-toggle');\
+        function eff(){{var a=document.documentElement.getAttribute('data-theme');\
+        if(a)return a;\
+        return (window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}}\
+        function paintBtn(){{if(tb)tb.textContent=(eff()==='dark')?'Light':'Dark';}}\
+        if(tb){{paintBtn();tb.addEventListener('click',function(){{var n=(eff()==='dark')?'light':'dark';\
+        document.documentElement.setAttribute('data-theme',n);\
+        try{{localStorage.setItem('vigil-theme',n);}}catch(e){{}}paintBtn();}});}}}})();</script></body></html>",
+        esc(page_title),
+        esc(brand),
+        esc(brand),
         vigil_core::time_label(at.max(0))
     )
 }
