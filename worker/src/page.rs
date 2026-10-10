@@ -232,6 +232,8 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
 }
 
 /// Web origin for a monitor's site icons, if it has an origin.
+/// Always `https`: icons are decorative third-party loads, so they use TLS
+/// even when the probe itself targets plain HTTP (avoids mixed content).
 /// TCP monitors have no web origin and yield `None`.
 #[must_use]
 pub fn favicon_origin(monitor: &Monitor) -> Option<String> {
@@ -240,7 +242,7 @@ pub fn favicon_origin(monitor: &Monitor) -> Option<String> {
         Probe::Tcp { .. } => return None,
     };
     let parsed = url::Url::parse(url).ok()?;
-    Some(format!("{}://{}", parsed.scheme(), parsed.host_str()?))
+    Some(format!("https://{}", parsed.host_str()?))
 }
 
 /// `<img>` for a monitor's favicon, logo-first per favicon-before-title
@@ -657,6 +659,16 @@ mod tests {
             Some("https://example.com")
         );
         assert_eq!(favicon_origin(&http_monitor("not a url")), None);
+    }
+
+    #[test]
+    fn favicon_origin_upgrades_plain_http() {
+        // Icons are decorative third-party loads: always fetch them over
+        // TLS even when the probe itself targets plain HTTP.
+        assert_eq!(
+            favicon_origin(&http_monitor("http://example.com/status")).as_deref(),
+            Some("https://example.com")
+        );
     }
 
     #[test]
