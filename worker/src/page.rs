@@ -25,7 +25,7 @@ pub async fn render(db: &Db, site: &Site) -> Result<Response> {
     let mut body = hero;
     body.push_str(&sections(db, site, at, None).await?);
     let links = links_html(&site.links);
-    Response::from_html(shell(&site.title, &site.title, &links, &counts, at, &body))
+    Response::from_html(shell(&site.title, &site.title, &links, &counts, at, site.refresh_ms(), &body))
 }
 
 /// Parse an `up/down` counts string; malformed input yields `(0, 0)`.
@@ -317,7 +317,7 @@ pub fn default_counts() -> String {
 /// theme Cobalt · nav N9 · footer Ft2 · enrichment none.
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, body: &str) -> String {
+pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, refresh_ms: u64, body: &str) -> String {
     let (cup, cdown) = parse_counts(counts);
     let pill = if cdown == 0 { "1" } else { "0" };
     let uptotal = format!("{cup}/{}", cup.saturating_add(cdown));
@@ -579,12 +579,12 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         document.documentElement.setAttribute('data-theme',n);\
         try{{localStorage.setItem('vigil-theme',n);}}catch(e){{}}paintBtn();}});}}\
         var mainEl=document.querySelector('main[data-at]');\
-        if(mainEl){{var seen=parseInt(mainEl.getAttribute('data-at'),10)||0;\
+        if(mainEl&&{refresh_ms}>0){{var seen=parseInt(mainEl.getAttribute('data-at'),10)||0;\
         setInterval(function(){{if(document.hidden)return;\
         fetch('/api/health',{{headers:{{'accept':'application/json'}}}})\
         .then(function(r){{return r.ok?r.json():null;}})\
         .then(function(j){{if(j&&j.at>seen)location.reload();}})\
-        .catch(function(){{}});}},30000);}}}})();</script><script>var FB=[\"/favicon.ico\",\"/favicon.png\",\"/favicon.svg\",\"/icon.svg\",\"/icon.png\",\"/apple-touch-icon.png\"];function nextFavicon(el){{var i=parseInt(el.getAttribute('data-fb')||'0',10)+1;if(i<FB.length){{el.setAttribute('data-fb',String(i));el.src=el.getAttribute('data-origin')+FB[i];}}else{{el.remove();}}}}</script></body></html>",
+        .catch(function(){{}});}},{refresh_ms});}}}})();</script><script>var FB=[\"/favicon.ico\",\"/favicon.png\",\"/favicon.svg\",\"/icon.svg\",\"/icon.png\",\"/apple-touch-icon.png\"];function nextFavicon(el){{var i=parseInt(el.getAttribute('data-fb')||'0',10)+1;if(i<FB.length){{el.setAttribute('data-fb',String(i));el.src=el.getAttribute('data-origin')+FB[i];}}else{{el.remove();}}}}</script></body></html>",
         esc(page_title),
         esc(brand),
         esc(brand),
