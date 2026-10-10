@@ -25,6 +25,8 @@
 #           without their own `every_min`      (default: 1 = every tick;
 #           the cron itself still fires every minute and skips
 #           monitors that aren't due)
+#   refresh_secs  page auto-refresh interval in seconds (default: 30;
+#           0 disables polling entirely)
 #   monitors  list of monitors (see below)
 #   notify  { hooks, grace_min, mute }
 #   upkeep  list of maintenance windows
@@ -78,6 +80,7 @@
 
 title: Vigil Status
 check_every_min: 5
+refresh_secs: 300
 
 links:
   Home: https://www.troysk.com

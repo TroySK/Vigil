@@ -121,7 +121,7 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
     );
 
     let links = links_html(&site.links);
-    Response::from_html(shell(&monitor.name, &site.title, &links, &counts, at, &body))
+    Response::from_html(shell(&monitor.name, &site.title, &links, &counts, at, site.refresh_ms(), &body))
 }
 
 /// "418ms last probe · BOM" for the detail hero, or the empty state.

@@ -42,6 +42,10 @@ pub struct Site {
     /// [`Monitor::every_min`] override (`0`/unset means every tick).
     #[serde(default)]
     pub check_every_min: u64,
+    /// Auto-refresh interval in seconds for status pages (`None` means the
+    /// 30s default; `Some(0)` disables polling entirely).
+    #[serde(default)]
+    pub refresh_secs: Option<u64>,
 }
 
 impl Site {
@@ -50,6 +54,17 @@ impl Site {
     #[must_use]
     pub fn cadence_min(&self, monitor: &Monitor) -> u64 {
         monitor.every_min.unwrap_or(self.check_every_min).max(1)
+    }
+
+    /// Page auto-refresh interval in milliseconds: configured seconds, or
+    /// the 30s default when unset; `0` disables polling.
+    #[must_use]
+    pub fn refresh_ms(&self) -> u64 {
+        match self.refresh_secs {
+            None => 30_000,
+            Some(0) => 0,
+            Some(secs) => secs.saturating_mul(1_000),
+        }
     }
 }
 

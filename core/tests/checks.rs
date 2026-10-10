@@ -251,6 +251,27 @@ fn cadence_prefers_monitor_override_then_global() {
 }
 
 #[test]
+fn refresh_interval_defaults_and_disables() {
+    use vigil_core::config::Site;
+    assert_eq!(Site::default().refresh_ms(), 30_000);
+    let off = Site {
+        refresh_secs: Some(0),
+        ..Site::default()
+    };
+    assert_eq!(off.refresh_ms(), 0);
+    let custom = Site {
+        refresh_secs: Some(45),
+        ..Site::default()
+    };
+    assert_eq!(custom.refresh_ms(), 45_000);
+    let huge = Site {
+        refresh_secs: Some(u64::MAX),
+        ..Site::default()
+    };
+    assert_eq!(huge.refresh_ms(), u64::MAX);
+}
+
+#[test]
 fn zero_every_min_is_rejected() {
     use vigil_core::config::Site;
     let mut bad = web();
