@@ -250,8 +250,11 @@ pub fn favicon_origin(monitor: &Monitor) -> Option<String> {
 /// image when none exists.
 pub(crate) fn favicon_img(monitor: &Monitor, size: u32) -> String {
     favicon_origin(monitor).map_or_else(String::new, |origin| {
+        // `origin` is parser-constrained, but attribute context demands
+        // escaping regardless of what today's parser guarantees.
+        let src = esc(&origin);
         format!(
-            "<img class=mlogo src=\"{origin}/favicon.ico\" data-origin=\"{origin}\" data-fb=0 alt=\"\" width={size} height={size} loading=lazy onerror='nextFavicon(this)'>",
+            "<img class=mlogo src=\"{src}/favicon.ico\" data-origin=\"{src}\" data-fb=0 alt=\"\" width={size} height={size} loading=lazy onerror='nextFavicon(this)'>",
         )
     })
 }
@@ -664,5 +667,17 @@ mod tests {
             port: 53,
         };
         assert_eq!(favicon_origin(&m), None);
+    }
+
+    #[test]
+    fn favicon_markup_agrees_on_origin_and_fallback() {
+        use super::favicon_img;
+        let m = http_monitor("https://example.com/some/page");
+        let img = favicon_img(&m, 16);
+        // src and data-origin derive from the same escaped origin, and the
+        // client-side fallback chain is wired.
+        assert!(img.contains("src=\"https://example.com/favicon.ico\""));
+        assert!(img.contains("data-origin=\"https://example.com\""));
+        assert!(img.contains("onerror='nextFavicon(this)'"));
     }
 }
