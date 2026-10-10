@@ -4,6 +4,7 @@
 //! plus webhook notifications with consecutive-failure grace. Old rows
 //! beyond [`RETENTION_DAYS`] are pruned.
 
+use futures_util::future::join_all;
 use serde::Deserialize;
 use vigil_core::checks::{judge, Say, Seen};
 use vigil_core::config::{Hook, Site};
@@ -40,16 +41,28 @@ pub async fn tick(env: Env) -> Result<()> {
     let db = Db::of(&env)?;
     db.init().await?;
     let now = sec_now();
-    let mut up = 0_u32;
-    let mut down = 0_u32;
-    for monitor in &site.monitors {
-        // Cadence gate: the cron fires every minute, but a monitor set to
-        // `every_min: N` (or the global `check_every_min`) only probes when
-        // due. Skipped monitors keep their last state; nothing is recorded.
-        if !due(&db, &monitor.id, site.cadence_min(monitor), now).await? {
-            continue;
+    // Probe every due monitor concurrently: 30 sequential fetches (each up
+    // to `timeout_ms`) outlast the cron worker, so the tick died before
+    // ever writing `counts`. `join_all` preserves order for the record
+    // pass below; skipped monitors yield `None` and keep their last state.
+    // (`&Db`/`&Site` are shared borrows: `Db` is not `Clone`, and the worker
+    // runtime is single-threaded so sharing across futures is safe.)
+    let db_ref = &db;
+    let site_ref = &site;
+    let probes = join_all(site_ref.monitors.iter().map(|monitor| async move {
+        if !due(db_ref, &monitor.id, site_ref.cadence_min(monitor), now).await? {
+            return Ok::<_, worker::Error>(None);
         }
         let (seen, location) = probe(monitor, None).await;
+        Ok(Some((seen, location)))
+    }))
+    .await;
+    let mut up = 0_u32;
+    let mut down = 0_u32;
+    for (monitor, probed) in site.monitors.iter().zip(probes) {
+        let Some((seen, location)) = probed? else {
+            continue;
+        };
         let verdict = judge(monitor, &seen);
         if verdict.up {
             up += 1;
