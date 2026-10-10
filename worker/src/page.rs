@@ -232,12 +232,19 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     ))
 }
 
-/// Footer links (`label -> url`) joined with middots.
+/// Footer links (`label -> url`) joined with middots. External links open
+/// in a new tab without opener access.
 #[must_use]
 pub fn links_html(links: &BTreeMap<String, String>) -> String {
     links
         .iter()
-        .map(|(label, url)| format!("<a href=\"{}\">{}</a>", esc(url), esc(label)))
+        .map(|(label, url)| {
+            format!(
+                "<a href=\"{}\" target=_blank rel=\"noopener noreferrer\">{}</a>",
+                esc(url),
+                esc(label)
+            )
+        })
         .collect::<Vec<_>>()
         .join(" &middot; ")
 }
@@ -329,7 +336,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .pill[data-up=\"0\"]{{color:var(--color-ink);border-color:var(--color-bad)}}\
         .theme-toggle{{font-family:var(--font-body);font-size:var(--text-sm);white-space:nowrap;\
         border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
-        color:var(--color-muted);background:transparent;cursor:pointer}}\
+        color:var(--color-ink);background:transparent;cursor:pointer}}\
         .theme-toggle:hover{{color:var(--color-ink);border-color:var(--color-neutral)}}\
         .theme-toggle:active{{color:var(--color-ink)}}\
         .theme-toggle svg{{width:16px;height:16px;display:block}}\
