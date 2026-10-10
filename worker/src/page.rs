@@ -233,29 +233,27 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     ))
 }
 
-/// Favicon URL for a monitor (`{origin}/favicon.ico`), if it has an origin.
+/// Web origin for a monitor's site icons, if it has an origin.
 /// TCP monitors have no web origin and yield `None`.
 #[must_use]
-pub fn favicon_url(monitor: &Monitor) -> Option<String> {
+pub fn favicon_origin(monitor: &Monitor) -> Option<String> {
     let url = match &monitor.check {
         Probe::Http { url, .. } => url,
         Probe::Tcp { .. } => return None,
     };
     let parsed = url::Url::parse(url).ok()?;
-    Some(format!(
-        "{}://{}/favicon.ico",
-        parsed.scheme(),
-        parsed.host_str()?
-    ))
+    Some(format!("{}://{}", parsed.scheme(), parsed.host_str()?))
 }
 
 /// `<img>` for a monitor's favicon, logo-first per favicon-before-title
-/// convention. Removes itself when the site has no favicon.
+/// convention. Sites keep icons at different paths (`favicon.ico`,
+/// `favicon.png`, …), so the tag carries the origin and a global
+/// `nextFavicon` script walks the candidates on error, removing the
+/// image when none exists.
 pub(crate) fn favicon_img(monitor: &Monitor, size: u32) -> String {
-    favicon_url(monitor).map_or_else(String::new, |src| {
+    favicon_origin(monitor).map_or_else(String::new, |origin| {
         format!(
-            "<img class=mlogo src=\"{}\" alt=\"\" width={size} height={size} loading=lazy onerror='this.remove()'>",
-            esc(&src),
+            "<img class=mlogo src=\"{origin}/favicon.ico\" data-origin=\"{origin}\" data-fb=0 alt=\"\" width={size} height={size} loading=lazy onerror='nextFavicon(this)'>",
         )
     })
 }
@@ -529,7 +527,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         function paintBtn(){{if(tb)tb.setAttribute('aria-pressed',(eff()==='dark')?'true':'false');}}\
         if(tb){{paintBtn();tb.addEventListener('click',function(){{var n=(eff()==='dark')?'light':'dark';\
         document.documentElement.setAttribute('data-theme',n);\
-        try{{localStorage.setItem('vigil-theme',n);}}catch(e){{}}paintBtn();}});}}}})();</script></body></html>",
+        try{{localStorage.setItem('vigil-theme',n);}}catch(e){{}}paintBtn();}});}}}})();</script><script>var FB=[\"/favicon.ico\",\"/favicon.png\",\"/favicon.svg\",\"/icon.svg\",\"/icon.png\",\"/apple-touch-icon.png\"];function nextFavicon(el){{var i=parseInt(el.getAttribute('data-fb')||'0',10)+1;if(i<FB.length){{el.setAttribute('data-fb',String(i));el.src=el.getAttribute('data-origin')+FB[i];}}else{{el.remove();}}}}</script></body></html>",
         esc(page_title),
         esc(brand),
         esc(brand),
