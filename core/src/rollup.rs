@@ -10,6 +10,9 @@ pub const GREEN_PCT: f64 = 99.9;
 /// Uptime thresholds for green / amber / red history cells.
 pub const AMBER_PCT: f64 = 95.0;
 
+/// Seconds in an hour.
+pub const SECS_PER_HOUR: i64 = 3_600;
+
 /// One calendar day cell for history bars: percent of day up.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DayBar {
@@ -49,6 +52,39 @@ pub fn month_bars(gaps: &[Gap], now: i64, days: usize, since: Option<i64>) -> Ve
         }
         #[allow(clippy::cast_precision_loss)]
         let up = (SECS_PER_DAY - down).max(0) as f64 / SECS_PER_DAY as f64 * 100.0;
+        out.push(DayBar {
+            day: start,
+            pct: (up * 10.0).round() / 10.0,
+            has_data,
+        });
+    }
+    out
+}
+
+/// Build `hours` hourly cells ending now from gap records.
+///
+/// Same contract as [`month_bars`], but each cell covers one hour — used
+/// for the last-24-hours strip where daily cells would hide intraday
+/// outages. `since` marks the earliest recorded sample; earlier cells
+/// report [`DayBar::has_data`] `= false`.
+#[must_use]
+pub fn hour_bars(gaps: &[Gap], now: i64, hours: usize, since: Option<i64>) -> Vec<DayBar> {
+    let mut out = Vec::with_capacity(hours);
+    for back in (0..hours).rev() {
+        #[allow(clippy::cast_possible_wrap)]
+        let start = now.saturating_sub((back as i64).saturating_mul(SECS_PER_HOUR));
+        let end = start.saturating_add(SECS_PER_HOUR);
+        let has_data = since.is_some_and(|s| end > s);
+        let mut down = 0_i64;
+        for g in gaps {
+            let s = g.at.max(start);
+            let e = g.to.unwrap_or(now).min(end);
+            if e > s {
+                down = down.saturating_add(e - s);
+            }
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let up = (SECS_PER_HOUR - down).max(0) as f64 / SECS_PER_HOUR as f64 * 100.0;
         out.push(DayBar {
             day: start,
             pct: (up * 10.0).round() / 10.0,

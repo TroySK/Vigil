@@ -7,12 +7,12 @@ use crate::auth::esc;
 use crate::db::Db;
 use crate::reads::{first_sample_at, latest, recent_gaps, series, GapOut, SampleOut};
 use vigil_core::config::{Monitor, Site};
-use vigil_core::rollup::{bar_color, month_bars, percentile, sparkline_points};
+use vigil_core::rollup::{bar_color, hour_bars, latency_chart, percentile};
 use vigil_core::state::Gap;
 use worker::{Response, Result};
 
-/// Days of history shown on the index page.
-pub const INDEX_HISTORY_DAYS: usize = 30;
+/// Hours of history shown on the index page (last 24 hours, hourly cells).
+pub const INDEX_HISTORY_HOURS: usize = 24;
 /// Latency samples per sparkline on the index page.
 pub const INDEX_LATENCY_SAMPLES: i64 = 60;
 
@@ -177,7 +177,7 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         })
         .collect();
     let mut cells = String::new();
-    for bar in month_bars(&core, at.max(1), INDEX_HISTORY_DAYS, since) {
+    for bar in hour_bars(&core, at.max(1), INDEX_HISTORY_HOURS, since) {
         if bar.has_data {
             let _ = write!(
                 cells,
@@ -185,7 +185,7 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
                 bar_color(bar.pct),
                 tip = format!(
                     "{}: {:.1}%",
-                    vigil_core::date_label(bar.day),
+                    vigil_core::short_label(bar.day),
                     bar.pct
                 ),
             );
@@ -193,7 +193,7 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
             let _ = write!(
                 cells,
                 "<i class=nodata title=\"{tip}\" data-tip=\"{tip}\"></i>",
-                tip = format!("{}: no data", vigil_core::date_label(bar.day)),
+                tip = format!("{}: no data", vigil_core::short_label(bar.day)),
             );
         }
     }
@@ -201,7 +201,7 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     if !monitor.quiet_chart {
         let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
         let points: Vec<(i64, i64)> = lat.iter().rev().map(|r| (r.at, r.ms)).collect();
-        let spark = sparkline_points(&points, 180, 28);
+        let spark = latency_chart(&points, 560, 120);
         let chart = if spark.is_empty() {
             "<s>no samples yet</s>".to_owned()
         } else {
@@ -399,12 +399,12 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .bars90{{display:flex;flex-wrap:wrap;gap:var(--space-3xs);margin:var(--space-sm) 0}}\
         .bars90 i{{flex:1 1 0;min-width:4px;height:34px;border-radius:2px;display:block;\
         font-size:0;line-height:0}}\
-        .lat{{display:flex;gap:var(--space-sm);align-items:center;color:var(--color-muted);\
-        font-size:var(--text-xs);font-variant-numeric:tabular-nums;margin:0 0 var(--space-md)}}\
-        .lat svg{{flex:none;max-width:100%;height:auto}}\
+        .lat{{color:var(--color-muted);font-size:var(--text-xs);\
+        font-variant-numeric:tabular-nums;margin:0 0 var(--space-md)}}\
+        .lat s{{text-decoration:none}}\
         .spark .line,.chart .line{{fill:none;stroke:var(--color-accent);stroke-width:1.5}}\
         .spark circle,.chart circle{{fill:transparent;pointer-events:all;cursor:crosshair}}\
-        .chart{{width:100%;max-width:38rem;height:auto;display:block;margin-top:var(--space-sm)}}\
+        .chart{{width:100%;height:auto;display:block;margin-top:var(--space-sm)}}\
         .chart text{{font-family:var(--font-body);font-size:var(--text-xs);fill:var(--color-muted)}}\
         .chart .grid{{stroke:var(--color-rule);stroke-width:1}}\
         .chart .axis{{stroke:var(--color-neutral);stroke-width:1}}\

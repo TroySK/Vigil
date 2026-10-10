@@ -28,6 +28,27 @@ fn bars_before_first_sample_have_no_data() {
 }
 
 #[test]
+fn hour_bars_cover_last_24_hours() {
+    use vigil_core::rollup::hour_bars;
+    let now = 30 * 86_400 + 3_600;
+    let bars = hour_bars(&[], now, 24, Some(0));
+    assert_eq!(bars.len(), 24);
+    assert!(bars.iter().all(|b| b.has_data));
+    assert!(bars.iter().all(|b| (b.pct - 100.0).abs() < f64::EPSILON));
+    // A 30-minute outage inside one hour cell halves that cell.
+    let gaps = vec![Gap {
+        at: now - 1_800,
+        to: Some(now),
+        why: "x".into(),
+    }];
+    let bars = hour_bars(&gaps, now, 24, Some(0));
+    assert!((bars[22].pct - 50.0).abs() < 0.11);
+    assert!((bars[21].pct - 100.0).abs() < f64::EPSILON);
+    // No samples: every hour is missing data.
+    let bars = hour_bars(&[], now, 24, None);
+    assert!(bars.iter().all(|b| !b.has_data));
+}
+#[test]
 fn date_label_is_date_only() {
     assert_eq!(vigil_core::date_label(0), "1970-01-01");
     assert_eq!(vigil_core::date_label(1_791_000_000), "2026-10-03");
