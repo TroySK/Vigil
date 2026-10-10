@@ -1,14 +1,76 @@
-# Vigil site config. Edit me instead of Rust: this file is compiled into the
-# Worker at build time, so deploy after changing it.
+# =====================================================================
+# Vigil site config reference
+# ---------------------------------------------------------------------
+# This file is compiled into the Worker at build time: deploy after
+# changing it. Lines starting with `#` are comments. Delete or uncomment
+# the examples below to suit your site.
 #
-# Monitor ids are stable history keys in D1 — never rename one casually or
-# its uptime history starts over. Secrets don't belong here: webhook URLs
-# and passwords go in worker env / `wrangler secret`, referenced by name.
+# Rules that bite:
+# - `id` is a stable D1 history key. Never rename one casually or its
+#   uptime history starts over.
+# - Secrets don't belong here. Webhook URLs are fine, but passwords go in
+#   worker env / `wrangler secret` and are referenced via `pass_env`.
+#
+# Top-level keys (all optional; shown with defaults):
+#   title   dashboard title                    (default: "Status")
+#   links   footer label -> url map            (default: {})
+#   groups  group name -> [monitor ids]        (default: {}; unlisted ids
+#           render under "Other")
+#   monitors  list of monitors (see below)
+#   notify  { hooks, grace_min, mute }
+#   upkeep  list of maintenance windows
+#   auth    Basic-auth gate for the whole site
+#
+# A monitor with every feature (commented out so it doesn't probe):
+#   - id: api-search          # required, unique, stable
+#     name: Search API        # required, display name
+#     expect: [200, 429]      # accepted HTTP codes (default: [] = any 2xx)
+#     timeout_ms: 8000        # per-probe timeout, 1..60000 (default: 10000)
+#     has: "results"          # body must contain this (default: unset)
+#     lacks: "maintenance"    # body must NOT contain this (default: unset)
+#     tip: "Backed by us-e1"  # hover tooltip on the status page
+#     href: https://status.example.com/search  # link on the monitor name
+#     quiet_chart: true       # hide the latency sparkline (default: false)
+#     check:
+#       via: http             # "http" or "tcp"
+#       url: https://api.example.com/search?q=ping
+#       method: POST          # default: GET
+#       headers:
+#         Authorization: Bearer $TOKEN   # NB: prefer static tokens only;
+#                                        # secrets can't be referenced here
+#       body: '{"q":"ping"}'  # optional request body
+#     # ...or a TCP check instead of `check:` above:
+#     # check:
+#     #   via: tcp
+#     #   host: "1.1.1.1"
+#     #   port: 53
+#
+# notify:
+#   grace_min: 2    # consecutive failing ticks before paging (min 1 at use)
+#   mute: [dns-tcp] # ids that never page
+#   hooks:          # fired on down-after-grace, and on every recovery
+#     - url: https://hooks.example/notify
+#       method: POST          # default: POST
+#       mode: json            # "json" -> {"text": ...}, else form text=...
+#       text: "[$STATUS] $NAME: $REASON ($TIME)"  # template vars
+#
+# upkeep (maintenance windows mute the red without paging):
+#   - title: DB upgrade
+#     body: Writes may be slow.
+#     from: "2030-01-01T00:00:00Z"   # RFC-3339 or unix seconds
+#     until: "2030-01-01T01:00:00Z"  # omit for open-ended
+#     only: [site]                   # omit or empty for site-wide
+#
+# auth (whole-site Basic auth):
+#   user: admin
+#   pass_env: STATUS_PASSWORD  # env var name; prefer over cleartext `pass`
+# =====================================================================
 
-title: Example Status
+title: Vigil Status
 
 links:
-  Home: https://example.com
+  Home: https://www.troysk.com
+  Blog: https://blog.troysk.com
 
 monitors:
   - id: site
@@ -24,41 +86,10 @@ monitors:
       headers:
         User-Agent: vigil/0.1
 
-  - id: dns-tcp
-    name: DNS (TCP 53)
-    timeout_ms: 5000
-    quiet_chart: true
-    check:
-      via: tcp
-      host: "1.1.1.1"
-      port: 53
-
 notify:
   grace_min: 2
-  # Muted monitors never page:
-  # mute: [dns-tcp]
-  # Webhooks fire on down-transitions (after grace) and every recovery.
-  # $STATUS / $NAME / $REASON / $TIME are templated per event.
-  # hooks:
-  #   - url: https://hooks.example/notify
-  #     method: POST
-  #     mode: json
-  #     text: "[$STATUS] $NAME: $REASON ($TIME)"
-
-# Optional group ordering for the index page (unlisted monitors fall
-# under "Other").
-# groups:
-#   Network: [dns-tcp]
 
 upkeep:
   - title: Example upkeep
     body: Replace with real maintenance windows.
     from: "2030-01-01T00:00:00Z"
-    # until: "2030-01-02T00:00:00Z"
-    # only: [site]
-
-# Optional Basic-auth gate for the whole site. Prefer pass_env (a worker
-# secret set via `wrangler secret put`) over cleartext pass.
-# auth:
-#   user: admin
-#   pass_env: STATUS_PASSWORD
