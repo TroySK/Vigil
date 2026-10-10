@@ -112,7 +112,7 @@ pub fn sparkline(vals: &[i64], w: u32, h: u32) -> String {
         let _ = write!(pts, "{x},{y} ");
     }
     format!(
-        "<svg width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\">\
+        "<svg width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-hidden=\"true\">\
 <polyline points=\"{}\" fill=\"none\" stroke=\"#0969da\" stroke-width=\"1.5\"/></svg>",
         pts.trim_end()
     )

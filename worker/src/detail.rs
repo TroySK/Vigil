@@ -55,7 +55,7 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
             .map_or_else(|| "ongoing".to_owned(), vigil_core::time_label);
         let _ = write!(
             rows,
-            "<tr><td>{}</td><td>{to}</td><td>{}</td></tr>",
+            "<tr><td data-label=\"From\">{}</td><td data-label=\"To\">{to}</td><td data-label=\"Reason\">{}</td></tr>",
             vigil_core::time_label(gap.at),
             esc(&gap.why)
         );
@@ -70,17 +70,21 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         }
     }
     let body = format!(
-        "<p><a href=\"/\">&lsaquo; all</a></p><h2>{}</h2>\
-<p>{} &middot; {}</p>{notes}\
-<h3>90 days</h3><div class=bars90>{cells}</div>\
-<h3>Latency</h3><p>p50 {}ms &middot; p95 {}ms</p>{} \
-<h3>Incidents</h3><table><tr><th>From</th><th>To</th><th>Reason</th></tr>{rows}</table>",
+        "<nav class=crumb><a href=\"/\">&lsaquo; all monitors</a></nav>\
+        <section class=detail-hero><h2>{}</h2>\
+        <p class=status-line><span class=status-word data-up=\"{flag}\">{word}</span> \
+        <span class=tnum>{ms}</span></p>{notes}</section>\
+        <h3 class=sect>90 days</h3><div class=bars90>{cells}</div>\
+        <h3 class=sect>Latency</h3><p class=tnum>p50 {p50}ms &middot; p95 {p95}ms &middot; {n} samples</p>{spark} \
+        <h3 class=sect>Incidents</h3><table class=inc><thead><tr><th>From</th><th>To</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
         esc(&monitor.name),
-        if is_up { "UP" } else { "DOWN" },
-        current.map_or_else(|| "—".to_owned(), |r| format!("{}ms", r.ms)),
-        percentile(&vals, 50.0),
-        percentile(&vals, 95.0),
-        sparkline(&vals, 600, 60),
+        word = if is_up { "UP" } else { "DOWN" },
+        flag = if is_up { "1" } else { "0" },
+        ms = current.map_or_else(|| "no probes yet".to_owned(), |r| format!("{}ms last probe", r.ms)),
+        p50 = percentile(&vals, 50.0),
+        p95 = percentile(&vals, 95.0),
+        n = vals.len(),
+        spark = sparkline(&vals, 600, 60),
     );
     let links = links_html(&site.links);
     Response::from_html(shell(&monitor.name, &links, &counts, at, &body))
