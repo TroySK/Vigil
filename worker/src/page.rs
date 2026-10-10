@@ -535,7 +535,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         </style></head><body><div class=wrap>\
         <header class=nav-edge><a class=wordmark href=\"/\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\">{uptotal}</span><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
         <nav class=links aria-label=\"Site\">{links}</nav>\
-        <main>{body}</main>\
+        <main data-at=\"{at}\">{body}</main>\
         <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>checked {}</span></footer>\
         </div><script>(function(){{var el=document.querySelector('[data-count]');\
         if(el){{var raw=el.getAttribute('data-count');var target=parseInt(raw,10);\
@@ -564,7 +564,14 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         function paintBtn(){{if(tb)tb.setAttribute('aria-pressed',(eff()==='dark')?'true':'false');}}\
         if(tb){{paintBtn();tb.addEventListener('click',function(){{var n=(eff()==='dark')?'light':'dark';\
         document.documentElement.setAttribute('data-theme',n);\
-        try{{localStorage.setItem('vigil-theme',n);}}catch(e){{}}paintBtn();}});}}}})();</script><script>var FB=[\"/favicon.ico\",\"/favicon.png\",\"/favicon.svg\",\"/icon.svg\",\"/icon.png\",\"/apple-touch-icon.png\"];function nextFavicon(el){{var i=parseInt(el.getAttribute('data-fb')||'0',10)+1;if(i<FB.length){{el.setAttribute('data-fb',String(i));el.src=el.getAttribute('data-origin')+FB[i];}}else{{el.remove();}}}}</script></body></html>",
+        try{{localStorage.setItem('vigil-theme',n);}}catch(e){{}}paintBtn();}});}}\
+        var mainEl=document.querySelector('main[data-at]');\
+        if(mainEl){{var seen=parseInt(mainEl.getAttribute('data-at'),10)||0;\
+        setInterval(function(){{if(document.hidden)return;\
+        fetch('/api/health',{{headers:{{'accept':'application/json'}}}})\
+        .then(function(r){{return r.ok?r.json():null;}})\
+        .then(function(j){{if(j&&j.at>seen)location.reload();}})\
+        .catch(function(){{}});}},30000);}}}})();</script><script>var FB=[\"/favicon.ico\",\"/favicon.png\",\"/favicon.svg\",\"/icon.svg\",\"/icon.png\",\"/apple-touch-icon.png\"];function nextFavicon(el){{var i=parseInt(el.getAttribute('data-fb')||'0',10)+1;if(i<FB.length){{el.setAttribute('data-fb',String(i));el.src=el.getAttribute('data-origin')+FB[i];}}else{{el.remove();}}}}</script></body></html>",
         esc(page_title),
         esc(brand),
         esc(brand),
