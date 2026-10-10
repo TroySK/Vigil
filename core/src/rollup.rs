@@ -94,8 +94,10 @@ pub fn percentile(values: &[i64], p: f64) -> i64 {
 }
 
 /// Dependency-free SVG sparkline with per-point time tooltips
-/// (oldest → newest). Each sample gets an invisible hover target carrying
-/// `<title>{time}: {ms}ms</title>`; empty input yields an empty string.
+/// (oldest → newest). Each sample gets an invisible hover target carrying a
+/// `data-tip` attribute (`{timestamp}: {ms}ms`); a small page script turns
+/// those into styled bubbles, since native SVG `<title>` tooltips cannot be
+/// sized. Empty input yields an empty string.
 #[must_use]
 #[allow(
     clippy::cast_precision_loss,
@@ -127,14 +129,98 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
         let _ = write!(pts, "{x},{y} ");
         let _ = write!(
             dots,
-            "<circle cx=\"{x}\" cy=\"{y}\" r=\"7\" fill=\"transparent\">\
-            <title>{}: {ms}ms</title></circle>",
+            "<circle cx=\"{x}\" cy=\"{y}\" r=\"7\" data-tip=\"{}: {ms}ms\"/>",
             crate::time_label(at),
         );
     }
     format!(
-        "<svg width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-hidden=\"true\">\
-<polyline points=\"{}\" fill=\"none\" stroke=\"#0969da\" stroke-width=\"1.5\"/>{dots}</svg>",
+        "<svg class=\"spark\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-hidden=\"true\">\
+<polyline points=\"{}\" class=\"line\"/>{dots}</svg>",
+        pts.trim_end()
+    )
+}
+
+/// Latency chart with labeled X (probe time) and Y (milliseconds) axes.
+///
+/// Same data as [`sparkline_points`], plus gridlines, `0` / mid / max Y
+/// labels, and first / middle / last probe times on X. Point tooltips use
+/// the same `data-tip` mechanism. Empty input yields an empty string.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn latency_chart(points: &[(i64, i64)], w: u32, h: u32) -> String {
+    if points.is_empty() {
+        return String::new();
+    }
+    let pad_l = 46_u32;
+    let pad_b = 22_u32;
+    let pad_t = 8_u32;
+    let pad_r = 8_u32;
+    let plot_w = w.saturating_sub(pad_l + pad_r).max(10);
+    let plot_h = h.saturating_sub(pad_t + pad_b).max(10);
+    let max_ms = points.iter().map(|&(_, ms)| ms).max().unwrap_or(0).max(1);
+    let max = max_ms as f64;
+    let step = if points.len() < 2 {
+        0.0
+    } else {
+        f64::from(plot_w) / (points.len() as f64 - 1.0)
+    };
+    let x = |i: usize| pad_l + (i as f64 * step).round() as u32;
+    let y = |ms: i64| {
+        let scaled = (ms.max(0) as f64 / max) * f64::from(plot_h);
+        pad_t + plot_h.saturating_sub(scaled.round() as u32)
+    };
+    let mut pts = String::with_capacity(points.len() * 12);
+    let mut dots = String::with_capacity(points.len() * 80);
+    for (i, &(at, ms)) in points.iter().enumerate() {
+        let _ = write!(pts, "{},{} ", x(i), y(ms));
+        let _ = write!(
+            dots,
+            "<circle cx=\"{}\" cy=\"{}\" r=\"7\" data-tip=\"{}: {ms}ms\"/>",
+            x(i),
+            y(ms),
+            crate::time_label(at),
+        );
+    }
+    let mid = max_ms / 2;
+    let base = pad_t + plot_h;
+    let mid_i = points.len() / 2;
+    format!(
+        "<svg class=\"chart\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-hidden=\"true\">\
+<line class=\"grid\" x1=\"{pad_l}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"/>\
+<line class=\"grid\" x1=\"{pad_l}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"/>\
+<line class=\"axis\" x1=\"{pad_l}\" y1=\"{base}\" x2=\"{}\" y2=\"{base}\"/>\
+<text x=\"{}\" y=\"{}\" text-anchor=\"end\">{max_ms}ms</text>\
+<text x=\"{}\" y=\"{}\" text-anchor=\"end\">{mid}ms</text>\
+<text x=\"{}\" y=\"{}\" text-anchor=\"end\">0</text>\
+<text x=\"{pad_l}\" y=\"{}\" text-anchor=\"start\">{}</text>\
+<text x=\"{}\" y=\"{}\" text-anchor=\"middle\">{}</text>\
+<text x=\"{}\" y=\"{}\" text-anchor=\"end\">{}</text>\
+<polyline points=\"{}\" class=\"line\"/>{dots}</svg>",
+        y(max_ms),
+        pad_l + plot_w,
+        y(max_ms),
+        y(mid),
+        pad_l + plot_w,
+        y(mid),
+        pad_l + plot_w,
+        pad_l - 6,
+        y(max_ms) + 4,
+        pad_l - 6,
+        y(mid) + 4,
+        pad_l - 6,
+        base + 4,
+        h - 6,
+        crate::short_label(points[0].0),
+        pad_l + plot_w / 2,
+        h - 6,
+        crate::short_label(points[mid_i].0),
+        pad_l + plot_w,
+        h - 6,
+        crate::short_label(points[points.len() - 1].0),
         pts.trim_end()
     )
 }

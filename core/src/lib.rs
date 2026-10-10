@@ -13,6 +13,12 @@ pub mod state;
 pub mod upkeep;
 pub mod views;
 
+/// Seconds since the Unix epoch rendered as `MM-DD HH:MM` (chart axes).
+#[must_use]
+pub fn short_label(sec: i64) -> String {
+    clock::short(sec)
+}
+
 /// Seconds since the Unix epoch rendered as `YYYY-MM-DD HH:MM:SS UTC`.
 #[must_use]
 pub fn time_label(sec: i64) -> String {

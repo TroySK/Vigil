@@ -7,7 +7,7 @@ use crate::db::Db;
 use crate::page::{default_counts, last_tick_at, links_html, shell};
 use crate::reads::{first_sample_at, latest, recent_gaps, series};
 use vigil_core::config::Site;
-use vigil_core::rollup::{bar_color, month_bars, percentile, sparkline_points};
+use vigil_core::rollup::{bar_color, latency_chart, month_bars, percentile};
 use vigil_core::state::Gap;
 use worker::{Response, Result};
 
@@ -63,7 +63,7 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
     let lat = series(db, id, DETAIL_LATENCY_SAMPLES).await?;
     let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
     let points: Vec<(i64, i64)> = lat.iter().rev().map(|r| (r.at, r.ms)).collect();
-    let spark = sparkline_points(&points, 600, 60);
+    let spark = latency_chart(&points, 600, 150);
     let spark_html = if spark.is_empty() {
         "<p class=empty>No latency samples yet — the chart fills in after the next probe.</p>"
             .to_owned()
