@@ -39,6 +39,19 @@ pub async fn recent_gaps(db: &Db, id: &str, limit: i64) -> Result<Vec<GapOut>> {
         .results()
 }
 
+/// Earliest recorded sample for a monitor, if any.
+pub async fn first_sample_at(db: &Db, id: &str) -> Result<Option<i64>> {
+    // `MIN` over zero rows yields one `NULL` row, so read an optional
+    // integer and flatten: missing monitor and empty history both map
+    // to `None` instead of erroring on `NULL`.
+    let row: Option<Option<i64>> = db
+        .q("SELECT MIN(at) AS m FROM samples WHERE id = ?1")
+        .bind(&[id.into()])?
+        .first(Some("m"))
+        .await?;
+    Ok(row.flatten())
+}
+
 /// Latest sample for a monitor, if any.
 pub async fn latest(db: &Db, id: &str) -> Result<Option<SampleOut>> {
     let rows: Vec<SampleOut> = db

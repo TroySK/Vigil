@@ -4,12 +4,33 @@ use vigil_core::state::Gap;
 #[test]
 fn bars_all_up_when_no_gaps() {
     let now = 90 * 86_400;
-    let bars = month_bars(&[], now, 30);
+    let bars = month_bars(&[], now, 30, Some(0));
     assert_eq!(bars.len(), 30);
     assert!(bars.iter().all(|b| (b.pct - 100.0).abs() < f64::EPSILON));
+    assert!(bars.iter().all(|b| b.has_data));
     assert_eq!(bar_color(100.0), "#2da44e");
     assert_eq!(bar_color(97.0), "#bf8700");
     assert_eq!(bar_color(50.0), "#cf222e");
+}
+
+#[test]
+fn bars_before_first_sample_have_no_data() {
+    let now = 30 * 86_400;
+    // First sample recorded at noon on the second-to-last day: only the
+    // day containing it and today have data.
+    let bars = month_bars(&[], now, 30, Some(29 * 86_400 + 43_200));
+    assert_eq!(bars.len(), 30);
+    assert!(bars[..28].iter().all(|b| !b.has_data));
+    assert!(bars[28..].iter().all(|b| b.has_data));
+    // No samples at all: every day is missing data, never fake 100%.
+    let bars = month_bars(&[], now, 30, None);
+    assert!(bars.iter().all(|b| !b.has_data));
+}
+
+#[test]
+fn date_label_is_date_only() {
+    assert_eq!(vigil_core::date_label(0), "1970-01-01");
+    assert_eq!(vigil_core::date_label(1_791_000_000), "2026-10-03");
 }
 
 #[test]
@@ -20,7 +41,7 @@ fn bars_reflect_half_day_outage() {
         to: Some(86_400 + 43_200),
         why: "x".into(),
     }];
-    let bars = month_bars(&gaps, now, 2);
+    let bars = month_bars(&gaps, now, 2, Some(0));
     // Oldest first: yesterday had the 12h outage, today is clean.
     assert!((bars[0].pct - 50.0).abs() < 0.11);
     assert!((bars[1].pct - 100.0).abs() < f64::EPSILON);

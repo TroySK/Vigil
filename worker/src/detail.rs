@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use crate::auth::esc;
 use crate::db::Db;
 use crate::page::{default_counts, last_tick_at, links_html, shell};
-use crate::reads::{latest, recent_gaps, series};
+use crate::reads::{first_sample_at, latest, recent_gaps, series};
 use vigil_core::config::Site;
 use vigil_core::rollup::{bar_color, month_bars, percentile, sparkline_points};
 use vigil_core::state::Gap;
@@ -38,18 +38,27 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         })
         .collect();
     let mut cells = String::new();
-    for bar in month_bars(&core, at.max(1), DETAIL_HISTORY_DAYS) {
-        let _ = write!(
-            cells,
-            "<i title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\">{:.1}%</i>",
-            bar_color(bar.pct),
-            bar.pct,
-            tip = format!(
-                "{}: {:.1}%",
-                vigil_core::time_label(bar.day),
-                bar.pct
-            ),
-        );
+    let since = first_sample_at(db, id).await?;
+    for bar in month_bars(&core, at.max(1), DETAIL_HISTORY_DAYS, since) {
+        if bar.has_data {
+            let _ = write!(
+                cells,
+                "<i title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\">{:.1}%</i>",
+                bar_color(bar.pct),
+                bar.pct,
+                tip = format!(
+                    "{}: {:.1}%",
+                    vigil_core::date_label(bar.day),
+                    bar.pct
+                ),
+            );
+        } else {
+            let _ = write!(
+                cells,
+                "<i class=nodata title=\"{tip}\" data-tip=\"{tip}\"></i>",
+                tip = format!("{}: no data", vigil_core::date_label(bar.day)),
+            );
+        }
     }
     let lat = series(db, id, DETAIL_LATENCY_SAMPLES).await?;
     let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();

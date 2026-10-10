@@ -16,22 +16,29 @@ pub struct DayBar {
     /// Midnight UTC starting this cell (unix seconds).
     pub day: i64,
     /// Uptime percent in `[0.0, 100.0]`, rounded to one decimal.
+    /// Meaningless when [`DayBar::has_data`] is false.
     pub pct: f64,
+    /// Whether any probe data covers this day. Days before the first
+    /// recorded sample report `false` so callers render "no data"
+    /// instead of a misleading 100%.
+    pub has_data: bool,
 }
 
 /// Build `days` daily cells ending today from gap records.
 ///
-/// Assumption (documented on the status page): time not covered by a
-/// recorded gap counts as up. Gaps are the only downtime source we store,
-/// which keeps the read path cheap — no per-minute scan.
+/// `since` is the earliest recorded sample time (unix seconds), or `None`
+/// when the monitor has no samples at all. Days ending before `since`
+/// are marked [`DayBar::has_data`] `= false`; time not covered by a
+/// recorded gap still counts as up, but only within days that have data.
 #[must_use]
-pub fn month_bars(gaps: &[Gap], now: i64, days: usize) -> Vec<DayBar> {
+pub fn month_bars(gaps: &[Gap], now: i64, days: usize, since: Option<i64>) -> Vec<DayBar> {
     let today = now - now.rem_euclid(SECS_PER_DAY);
     let mut out = Vec::with_capacity(days);
     for back in (0..days).rev() {
         #[allow(clippy::cast_possible_wrap)]
         let start = today - (back as i64).saturating_mul(SECS_PER_DAY);
         let end = start.saturating_add(SECS_PER_DAY);
+        let has_data = since.is_some_and(|s| end > s);
         let mut down = 0_i64;
         for g in gaps {
             let s = g.at.max(start);
@@ -45,6 +52,7 @@ pub fn month_bars(gaps: &[Gap], now: i64, days: usize) -> Vec<DayBar> {
         out.push(DayBar {
             day: start,
             pct: (up * 10.0).round() / 10.0,
+            has_data,
         });
     }
     out

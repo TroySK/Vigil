@@ -18,3 +18,10 @@ pub mod views;
 pub fn time_label(sec: i64) -> String {
     clock::utc(sec)
 }
+
+/// Seconds since the Unix epoch rendered as `YYYY-MM-DD` (date only,
+/// for day cells where a clock time would be misleading).
+#[must_use]
+pub fn date_label(sec: i64) -> String {
+    clock::date(sec)
+}

@@ -7,6 +7,13 @@ pub const SECS_PER_HOUR: i64 = 3_600;
 /// Seconds in a minute.
 pub const SECS_PER_MINUTE: i64 = 60;
 
+/// Format seconds since the Unix epoch as `YYYY-MM-DD` (date only).
+#[must_use]
+pub fn date(sec: i64) -> String {
+    let (year, month, day) = civil(sec.div_euclid(SECS_PER_DAY));
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 /// Format seconds since the Unix epoch as `YYYY-MM-DD HH:MM:SS UTC`.
 ///
 /// Uses Howard Hinnant's civil-date algorithm;pure integer math so it
