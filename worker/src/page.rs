@@ -225,7 +225,7 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     Ok(format!(
         "<article class=r data-up=\"{flag}\"{tip}>\
         <div class=r-head><span class=d aria-hidden=true></span>\
-        <b>{name}</b><a class=det href=\"/monitor?id={}\">details &rsaquo;</a><i>{word}</i><s>{detail}</s></div>\
+        <b>{name}</b><i>{word}</i><a class=det href=\"/monitor?id={}\">details &rsaquo;</a><s>{detail}</s></div>\
         {extra}</article>",
         monitor.id
     ))
@@ -402,6 +402,9 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         transition:color var(--dur-short) var(--ease-out),border-color var(--dur-short) var(--ease-out)}}\
         .links a:hover{{color:var(--color-ink);border-color:var(--color-accent)}}\
         .links a:active{{color:var(--color-ink)}}\
+        .links-label{{font-family:var(--font-mono);font-size:var(--text-xs);\
+        text-transform:uppercase;letter-spacing:.08em;color:var(--color-neutral);\
+        white-space:nowrap;align-self:center}}\
         .hero-stat{{padding-block:var(--space-md) var(--space-xl);text-align:center}}\
         .figure{{font-family:var(--font-display);font-weight:700;font-style:normal;\
         font-size:clamp(4rem,12vw,7rem);line-height:1;letter-spacing:-.03em;margin:0;\
@@ -437,14 +440,17 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .detail-hero h2 .mlogo{{height:1em;width:auto;vertical-align:-0.12em;margin-right:var(--space-xs);border-radius:5px}}\
         .r i{{font-style:normal;font-family:var(--font-mono);font-size:var(--text-xs);\
         font-weight:600;letter-spacing:.08em}}\
-        .r[data-up=\"1\"] i{{color:var(--color-muted)}}\
+        .r[data-up=\"1\"] i{{color:var(--color-ok)}}\
         .r[data-up=\"0\"] i{{color:var(--color-bad)}}\
         .r s{{color:var(--color-muted);text-decoration:none;font-size:var(--text-sm);\
         font-variant-numeric:tabular-nums}}\
         @media (min-width:40rem){{.r s{{text-align:right}}}}\
-        .det{{font-family:var(--font-display);font-weight:700;font-size:var(--text-sm);\
-        color:var(--color-accent);text-decoration:none;white-space:nowrap}}\
-        .det:hover{{color:var(--color-ink);text-decoration:underline}}\
+        .det{{font-family:var(--font-display);font-weight:700;font-size:var(--text-xs);\
+        color:var(--color-ink);text-decoration:none;white-space:nowrap;\
+        border:1px solid var(--color-rule);border-radius:var(--radius-pill);\
+        padding:var(--space-3xs) var(--space-sm);background:transparent;\
+        transition:color var(--dur-short) var(--ease-out),border-color var(--dur-short) var(--ease-out)}}\
+        .det:hover{{color:var(--color-ink);border-color:var(--color-accent)}}\
         .det:active{{color:var(--color-ink)}}\
         .bars{{display:flex;gap:var(--space-3xs);margin:var(--space-sm) 0 var(--space-xs)}}\
         .bars i,.bars90 i{{position:relative;box-sizing:border-box}}\
@@ -536,7 +542,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .r:hover{{transform:none}}}}\
         </style></head><body><div class=wrap>\
         <header class=nav-edge><a class=wordmark href=\"/\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\">{uptotal}</span><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
-        <nav class=links aria-label=\"Site\">{links}</nav>\
+        <nav class=links aria-label=\"Site\"><span class=links-label>Quicklinks:</span>{links}</nav>\
         <main data-at=\"{at}\">{body}</main>\
         <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>checked {}</span></footer>\
         </div><script>(function(){{var el=document.querySelector('[data-count]');\
