@@ -53,14 +53,18 @@ pub async fn tick(env: Env) -> Result<()> {
     // (`Option<&str>` is `Copy`, so all thirty futures can hold it.)
     let colo_here = colo().await;
     let colo_ref = colo_here.as_deref();
-    let probes = join_all(site_ref.monitors.iter().map(|monitor| async move {
-        if !due(db_ref, &monitor.id, site_ref.cadence_min(monitor), now).await? {
-            return Ok::<_, worker::Error>(None);
-        }
-        let (seen, location) = probe(monitor, colo_ref).await;
-        Ok(Some((seen, location)))
-    }))
-    .await;
+    let mut probes = Vec::with_capacity(site.monitors.len());
+    for (start, end) in wave_bounds(site.monitors.len(), PROBE_WAVE) {
+        let mut wave = join_all(site_ref.monitors[start..end].iter().map(|monitor| async move {
+            if !due(db_ref, &monitor.id, site_ref.cadence_min(monitor), now).await? {
+                return Ok::<_, worker::Error>(None);
+            }
+            let (seen, location) = probe(monitor, colo_ref).await;
+            Ok(Some((seen, location)))
+        }))
+        .await;
+        probes.append(&mut wave);
+    }
     let mut up = 0_u32;
     let mut down = 0_u32;
     for (monitor, probed) in site.monitors.iter().zip(probes) {
@@ -132,6 +136,18 @@ pub fn is_due(last: Option<i64>, every_min: u64, now: i64) -> bool {
     }
 }
 
+/// Max concurrent probe subrequests per wave. A full-transition tick fires
+/// probes plus one webhook each; waves of 10 keep that comfortably under
+/// the 50-subrequest ceiling.
+pub const PROBE_WAVE: usize = 10;
+
+/// `[start, end)` index ranges partitioning `total` items into waves of at
+/// most `wave` — so one burst never exhausts the subrequest budget.
+fn wave_bounds(total: usize, wave: usize) -> Vec<(usize, usize)> {
+    let wave = wave.max(1);
+    (0..total).step_by(wave).map(|s| (s, (s + wave).min(total))).collect()
+}
+
 /// FNV-1a hash for staggering first-probe phases across monitors.
 fn hash_id(id: &str) -> u64 {
     let mut hash: u64 = 14_695_981_039_346_656_037;
@@ -150,7 +166,16 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_due, stagger_offset};
+    use super::{is_due, stagger_offset, wave_bounds};
+
+    #[test]
+    fn waves_partition_the_fleet() {
+        assert_eq!(wave_bounds(30, 10), vec![(0, 10), (10, 20), (20, 30)]);
+        assert_eq!(wave_bounds(25, 10), vec![(0, 10), (10, 20), (20, 25)]);
+        assert_eq!(wave_bounds(0, 10), vec![]);
+        assert_eq!(wave_bounds(3, 10), vec![(0, 3)]);
+    }
+
 
     #[test]
     fn due_without_history() {
