@@ -398,7 +398,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         [data-theme=\"dark\"] .theme-toggle .icon-sun{{display:block}}\
         [data-theme=\"dark\"] .theme-toggle .icon-moon{{display:none}}\
         .head-right{{display:flex;gap:var(--space-sm);align-items:center;flex:none}}\
-        .links{{display:flex;flex-wrap:wrap;gap:var(--space-sm);\
+        .links{{display:flex;flex-wrap:wrap;justify-content:center;gap:var(--space-sm);\
         margin:var(--space-md) 0 var(--space-xl);padding:0;border:0}}\
         .links a{{white-space:nowrap;font-size:var(--text-sm);color:var(--color-muted);\
         text-decoration:none;border:1px solid var(--color-rule);\
