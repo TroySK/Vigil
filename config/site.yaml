@@ -8,8 +8,13 @@
 # Rules that bite:
 # - `id` is a stable D1 history key. Never rename one casually or its
 #   uptime history starts over.
-# - Secrets don't belong here. Webhook URLs are fine, but passwords go in
-#   worker env / `wrangler secret` and are referenced via `pass_env`.
+# - SECRETS DO NOT BELONG HERE. This file is checked into git: anything
+#   you write in it is visible to everyone with repo access, forever.
+#   Passwords go in worker env / `wrangler secret` and are referenced by
+#   name (`pass_env`). Request headers below are sent verbatim — a token
+#   pasted there leaks the same way. There is deliberately no env-var
+#   indirection for headers: if a monitor needs a real secret, say so and
+#   it will be built; do not paste it here meanwhile.
 #
 # Top-level keys (all optional; shown with defaults):
 #   title   dashboard title                    (default: "Status")
@@ -41,9 +46,8 @@
 #       via: http             # "http" or "tcp"
 #       url: https://api.example.com/search?q=ping
 #       method: POST          # default: GET
-#       headers:
-#         Authorization: Bearer $TOKEN   # NB: prefer static tokens only;
-#                                        # secrets can't be referenced here
+#       headers:              # sent verbatim; STATIC values only. A real
+#         Client: vigil/0.1   # secret pasted here ends up in git — don't.
 #       body: '{"q":"ping"}'  # optional request body
 #     # ...or a TCP check instead of `check:` above:
 #     # check:
