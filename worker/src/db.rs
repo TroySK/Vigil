@@ -20,6 +20,9 @@ pub fn num(value: i64) -> wasm_bindgen::JsValue {
 }
 
 /// Thin wrapper around the D1 database with query helpers.
+///
+/// `D1Database` is not `Clone`, so concurrent readers share `&Db` — fine
+/// on the worker's single-threaded runtime.
 #[derive(Debug)]
 pub struct Db {
     inner: D1Database,

@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use crate::auth::esc;
 use crate::db::Db;
-use crate::reads::{first_sample_at, latest, recent_gaps, series};
+use crate::reads::{first_sample_at, latest, recent_gaps, series, GapOut, SampleOut};
 use vigil_core::config::{Monitor, Site};
 use vigil_core::rollup::{bar_color, month_bars, percentile, sparkline_points};
 use vigil_core::state::Gap;
@@ -84,9 +84,23 @@ pub async fn sections(db: &Db, site: &Site, at: i64, only_group: Option<&str>) -
             let _ = write!(out, "<div class=\"note {kind}\">{}</div>", esc(&text));
         }
     }
+    // One monitor row costs four D1 round trips; with 30 monitors the
+    // sequential version is ~120 trips. Fetch every row in one wave and
+    // assemble the groups from the results (order is preserved).
+    let rows: BTreeMap<String, String> =
+        futures_util::future::try_join_all(site.monitors.iter().map(|monitor| async move {
+            Ok::<(String, String), worker::Error>((
+                monitor.id.clone(),
+                one(db, monitor, at).await?,
+            ))
+        }))
+        .await?
+        .into_iter()
+        .collect();
+    let row = |id: &str| rows.get(id).cloned().unwrap_or_default();
     if site.groups.is_empty() {
         for monitor in &site.monitors {
-            out.push_str(&one(db, monitor, at).await?);
+            out.push_str(&row(&monitor.id));
         }
         return Ok(out);
     }
@@ -95,20 +109,20 @@ pub async fn sections(db: &Db, site: &Site, at: i64, only_group: Option<&str>) -
         if only_group.is_some_and(|only| only != group_name) {
             continue;
         }
-        let mut rows = String::new();
+        let mut group_rows = String::new();
         for id in ids {
-            if let Some(monitor) = site.get(id) {
+            if site.get(id).is_some() {
                 covered.insert(id.clone());
-                rows.push_str(&one(db, monitor, at).await?);
+                group_rows.push_str(&row(id));
             }
         }
-        let _ = write!(out, "<h2 class=group>{}</h2>{rows}", esc(group_name));
+        let _ = write!(out, "<h2 class=group>{}</h2>{group_rows}", esc(group_name));
     }
     if only_group.is_none() {
         let mut rest = String::new();
         for monitor in &site.monitors {
             if !covered.contains(&monitor.id) {
-                rest.push_str(&one(db, monitor, at).await?);
+                rest.push_str(&row(&monitor.id));
             }
         }
         if !rest.is_empty() {
@@ -122,7 +136,25 @@ pub async fn sections(db: &Db, site: &Site, at: i64, only_group: Option<&str>) -
 /// Rendered as a tabular spec-sheet row (F3): hairline rule, tabular
 /// numerics, status carried by dot + word (never color alone).
 async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
-    let current = latest(db, &monitor.id).await?;
+    // D1 round trips dominate render time, so fire all four reads at once
+    // instead of awaiting them one by one.
+    let (current, gaps, since, lat): (
+        Option<SampleOut>,
+        Vec<GapOut>,
+        Option<i64>,
+        Vec<SampleOut>,
+    ) = futures_util::try_join!(
+        latest(db, &monitor.id),
+        recent_gaps(db, &monitor.id, crate::api::GAP_SCAN_ROWS),
+        first_sample_at(db, &monitor.id),
+        async {
+            if monitor.quiet_chart {
+                Ok(Vec::new())
+            } else {
+                series(db, &monitor.id, INDEX_LATENCY_SAMPLES).await
+            }
+        },
+    )?;
     let is_up = current.as_ref().map_or(true, |r| r.up == 1);
     let word = if is_up { "UP" } else { "DOWN" };
     let detail = match &current {
@@ -136,7 +168,6 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         Some(_) => "check failing".to_owned(),
         None => "no data yet".to_owned(),
     };
-    let gaps = recent_gaps(db, &monitor.id, crate::api::GAP_SCAN_ROWS).await?;
     let core: Vec<Gap> = gaps
         .iter()
         .map(|g| Gap {
@@ -146,7 +177,6 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         })
         .collect();
     let mut cells = String::new();
-    let since = first_sample_at(db, &monitor.id).await?;
     for bar in month_bars(&core, at.max(1), INDEX_HISTORY_DAYS, since) {
         if bar.has_data {
             let _ = write!(
@@ -169,7 +199,6 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     }
     let mut extra = format!("<div class=bars>{cells}</div>");
     if !monitor.quiet_chart {
-        let lat = series(db, &monitor.id, INDEX_LATENCY_SAMPLES).await?;
         let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
         let points: Vec<(i64, i64)> = lat.iter().rev().map(|r| (r.at, r.ms)).collect();
         let spark = sparkline_points(&points, 180, 28);
