@@ -339,7 +339,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         color:var(--color-ink);background:transparent;cursor:pointer}}\
         .theme-toggle:hover{{color:var(--color-ink);border-color:var(--color-neutral)}}\
         .theme-toggle:active{{color:var(--color-ink)}}\
-        .theme-toggle svg{{width:16px;height:16px;display:block}}\
+        .theme-toggle svg{{width:16px;height:16px;display:block;color:var(--color-ink);stroke:var(--color-ink);fill:none}}.theme-toggle svg *{{stroke:inherit;fill:inherit}}\
         .theme-toggle .icon-sun{{display:none}}\
         [data-theme=\"dark\"] .theme-toggle .icon-sun{{display:block}}\
         [data-theme=\"dark\"] .theme-toggle .icon-moon{{display:none}}\
