@@ -112,12 +112,27 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         logo = crate::page::favicon_img(monitor, 24),
         word = if is_up { "UP" } else { "DOWN" },
         flag = if is_up { "1" } else { "0" },
-        ms = current.map_or_else(|| "no probes yet".to_owned(), |r| format!("{}ms last probe", r.ms)),
+        ms = last_probe_label(current.as_ref()),
         p50 = percentile(&vals, 50.0),
         p95 = percentile(&vals, 95.0),
         n = vals.len(),
         spark = spark_html,
     );
+
     let links = links_html(&site.links);
     Response::from_html(shell(&monitor.name, &site.title, &links, &counts, at, &body))
+}
+
+/// "418ms last probe · BOM" for the detail hero, or the empty state.
+fn last_probe_label(current: Option<&SampleOut>) -> String {
+    current.map_or_else(
+        || "no probes yet".to_owned(),
+        |sample| {
+            format!(
+                "{}ms last probe &middot; {}",
+                sample.ms,
+                esc(&sample.place)
+            )
+        },
+    )
 }

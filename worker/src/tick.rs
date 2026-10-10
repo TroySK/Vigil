@@ -13,7 +13,7 @@ use vigil_core::views;
 use worker::{console_log, Date, Env, Error, Fetch, Headers, Method, Request, RequestInit, Result};
 
 use crate::db::{num, Db};
-use crate::probe::probe;
+use crate::probe::{colo, probe};
 
 /// Seconds in one day.
 pub const SECS_PER_DAY: i64 = 86_400;
@@ -49,11 +49,15 @@ pub async fn tick(env: Env) -> Result<()> {
     // runtime is single-threaded so sharing across futures is safe.)
     let db_ref = &db;
     let site_ref = &site;
+    // One lookup per tick: every probe in the wave shares this isolate.
+    // (`Option<&str>` is `Copy`, so all thirty futures can hold it.)
+    let colo_here = colo().await;
+    let colo_ref = colo_here.as_deref();
     let probes = join_all(site_ref.monitors.iter().map(|monitor| async move {
         if !due(db_ref, &monitor.id, site_ref.cadence_min(monitor), now).await? {
             return Ok::<_, worker::Error>(None);
         }
-        let (seen, location) = probe(monitor, None).await;
+        let (seen, location) = probe(monitor, colo_ref).await;
         Ok(Some((seen, location)))
     }))
     .await;

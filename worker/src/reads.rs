@@ -28,6 +28,8 @@ pub struct SampleOut {
     pub ms: i64,
     /// `1` = up, `0` = down.
     pub up: i64,
+    /// Origin colo (or `"CRON"` when unknown).
+    pub place: String,
 }
 
 /// Most recent gaps for a monitor, newest first.
@@ -55,7 +57,7 @@ pub async fn first_sample_at(db: &Db, id: &str) -> Result<Option<i64>> {
 /// Latest sample for a monitor, if any.
 pub async fn latest(db: &Db, id: &str) -> Result<Option<SampleOut>> {
     let rows: Vec<SampleOut> = db
-        .q("SELECT at, ms, up FROM samples WHERE id = ?1 ORDER BY at DESC LIMIT 1")
+        .q("SELECT at, ms, up, place FROM samples WHERE id = ?1 ORDER BY at DESC LIMIT 1")
         .bind(&[id.into()])?
         .all()
         .await?
@@ -65,7 +67,7 @@ pub async fn latest(db: &Db, id: &str) -> Result<Option<SampleOut>> {
 
 /// Recent samples for a monitor, newest first.
 pub async fn series(db: &Db, id: &str, limit: i64) -> Result<Vec<SampleOut>> {
-    db.q("SELECT at, ms, up FROM samples WHERE id = ?1 ORDER BY at DESC LIMIT ?2")
+    db.q("SELECT at, ms, up, place FROM samples WHERE id = ?1 ORDER BY at DESC LIMIT ?2")
         .bind(&[id.into(), num(limit.max(1))])?
         .all()
         .await?
