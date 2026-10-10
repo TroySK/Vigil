@@ -84,6 +84,20 @@ fn live_site_yaml_parses_and_validates() {
 }
 
 #[test]
+fn links_keep_file_order() {
+    let site: Site = serde_yaml::from_str(
+        r"
+links:
+  Home: https://www.troysk.com
+  Blog: https://blog.troysk.com
+",
+    )
+    .expect("links parse");
+    let keys: Vec<&str> = site.links.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["Home", "Blog"]);
+}
+
+#[test]
 fn omitted_fields_take_documented_defaults() {
     let site: Site = serde_yaml::from_str(
         r"

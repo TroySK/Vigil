@@ -13,7 +13,7 @@
 #
 # Top-level keys (all optional; shown with defaults):
 #   title   dashboard title                    (default: "Status")
-#   links   footer label -> url map            (default: {})
+#   links   footer label -> url map, rendered in file order (default: {})
 #   groups  group name -> [monitor ids]        (default: {}; unlisted ids
 #           render under "Other")
 #   check_every_min  default probe cadence in minutes for monitors
@@ -78,6 +78,8 @@ check_every_min: 5
 links:
   Home: https://www.troysk.com
   Blog: https://blog.troysk.com
+  Pulse: https://pulse.troysk.com
+  Sentinel: https://sentinel.troysk.com
 
 monitors:
   - id: troysk_monitor

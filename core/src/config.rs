@@ -20,9 +20,9 @@ pub struct Site {
     /// Dashboard title.
     #[serde(default = "default_title")]
     pub title: String,
-    /// Footer links (`label -> url`).
+    /// Footer links (`label -> url`), rendered in file order.
     #[serde(default)]
-    pub links: BTreeMap<String, String>,
+    pub links: indexmap::IndexMap<String, String>,
     /// Group name -> monitor ids (unlisted monitors render under "Other").
     #[serde(default)]
     pub groups: BTreeMap<String, Vec<String>>,

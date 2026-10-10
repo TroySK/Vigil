@@ -273,7 +273,7 @@ fn monitor_name(monitor: &Monitor) -> String {
 /// Footer links (`label -> url`) joined with middots. External links open
 /// in a new tab without opener access.
 #[must_use]
-pub fn links_html(links: &BTreeMap<String, String>) -> String {
+pub fn links_html(links: &indexmap::IndexMap<String, String>) -> String {
     links
         .iter()
         .map(|(label, url)| {
@@ -589,15 +589,26 @@ mod tests {
     #[test]
     fn links_open_new_tab_without_opener() {
         let html = links_html(
-            &BTreeMap::from([("Home".to_owned(), "https://example.com".to_owned())]),
+            &indexmap::IndexMap::from([("Home".to_owned(), "https://example.com".to_owned())]),
         );
         assert!(html.contains("target=_blank"));
         assert!(html.contains("noopener noreferrer"));
-        let evil = links_html(&BTreeMap::from([(
+        let evil = links_html(&indexmap::IndexMap::from([(
             "<x>".to_owned(),
             "https://example.com/?a=\"b\"".to_owned(),
         )]));
         assert!(!evil.contains("<x>"));
+    }
+
+    #[test]
+    fn links_keep_file_order() {
+        let html = links_html(
+            &indexmap::IndexMap::from([
+                ("Home".to_owned(), "https://www.troysk.com".to_owned()),
+                ("Blog".to_owned(), "https://blog.troysk.com".to_owned()),
+            ]),
+        );
+        assert!(html.find("Home").unwrap() < html.find("Blog").unwrap());
     }
 
     fn http_monitor(url: &str) -> Monitor {
