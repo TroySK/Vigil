@@ -22,11 +22,11 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl Site {
-    /// Validate ids, timeouts, and probe targets.
+    /// Validate ids, timeouts, cadences, and probe targets.
     ///
     /// # Errors
     /// Returns every problem found (empty id, duplicate id, bad
-    /// timeout, bad URL/host, or zero monitors).
+    /// timeout, zero `every_min`, bad URL/host, or zero monitors).
     pub fn check(&self) -> Result<(), Vec<ConfigError>> {
         let mut problems = Vec::new();
         let mut seen = BTreeSet::new();
@@ -59,6 +59,9 @@ fn check_monitor(m: &Monitor, seen: &mut BTreeSet<String>, problems: &mut Vec<Co
     }
     if m.timeout_ms == 0 || m.timeout_ms > MAX_TIMEOUT_MS {
         problems.push(ConfigError(format!("bad timeout {}", m.id)));
+    }
+    if m.every_min.is_some_and(|every| every == 0) {
+        problems.push(ConfigError(format!("bad every_min {}", m.id)));
     }
     match &m.check {
         Probe::Http { url, .. } => {
