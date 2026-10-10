@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use crate::auth::esc;
 use crate::db::Db;
-use crate::reads::{latest, recent_gaps, series};
+use crate::reads::{first_sample_at, latest, recent_gaps, series};
 use vigil_core::config::{Monitor, Site};
 use vigil_core::rollup::{bar_color, month_bars, percentile, sparkline_points};
 use vigil_core::state::Gap;
@@ -146,17 +146,26 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         })
         .collect();
     let mut cells = String::new();
-    for bar in month_bars(&core, at.max(1), INDEX_HISTORY_DAYS) {
-        let _ = write!(
-            cells,
-            "<i title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\"></i>",
-            bar_color(bar.pct),
-            tip = format!(
-                "{}: {:.1}%",
-                vigil_core::time_label(bar.day),
-                bar.pct
-            ),
-        );
+    let since = first_sample_at(db, &monitor.id).await?;
+    for bar in month_bars(&core, at.max(1), INDEX_HISTORY_DAYS, since) {
+        if bar.has_data {
+            let _ = write!(
+                cells,
+                "<i title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\"></i>",
+                bar_color(bar.pct),
+                tip = format!(
+                    "{}: {:.1}%",
+                    vigil_core::date_label(bar.day),
+                    bar.pct
+                ),
+            );
+        } else {
+            let _ = write!(
+                cells,
+                "<i class=nodata title=\"{tip}\" data-tip=\"{tip}\"></i>",
+                tip = format!("{}: no data", vigil_core::date_label(bar.day)),
+            );
+        }
     }
     let mut extra = format!("<div class=bars>{cells}</div>");
     if !monitor.quiet_chart {
@@ -321,13 +330,15 @@ pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> Str
         .more{{font-size:var(--text-sm);margin-top:var(--space-2xs)}}\
         .more a{{white-space:nowrap}}\
         .bars{{display:flex;gap:var(--space-3xs);margin:var(--space-sm) 0 var(--space-xs)}}\
-        .bars i,.bars90 i{{position:relative}}\
+        .bars i,.bars90 i{{position:relative;box-sizing:border-box}}\
+        .bars i.nodata,.bars90 i.nodata{{background:var(--color-paper-2);\
+        border:1px dashed var(--color-rule)}}\
         .bars i::after,.bars90 i::after{{content:attr(data-tip);position:absolute;\
-        bottom:calc(100% + var(--space-2xs));left:50%;transform:translateX(-50%);\
-        font-family:var(--font-body);font-size:var(--text-xs);line-height:1.4;\
+        bottom:calc(100% + var(--space-xs));left:50%;transform:translateX(-50%);\
+        font-family:var(--font-body);font-size:var(--text-base);font-weight:600;line-height:1.4;\
         color:var(--color-ink);background:var(--color-paper-2);\
-        border:1px solid var(--color-rule);border-radius:var(--radius-s);\
-        padding:var(--space-3xs) var(--space-xs);white-space:nowrap;\
+        border:1px solid var(--color-rule);border-radius:var(--radius-m);\
+        padding:var(--space-xs) var(--space-sm);white-space:nowrap;\
         opacity:0;pointer-events:none;z-index:var(--z-sticky);\
         transition:opacity var(--dur-micro) var(--ease-out)}}\
         .bars i:first-child::after,.bars90 i:first-child::after{{left:0;transform:none}}\
