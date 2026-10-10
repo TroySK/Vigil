@@ -268,11 +268,10 @@ pub fn default_counts() -> String {
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, body: &str) -> String {
-    let down: u32 = counts
-        .split_once('/')
-        .and_then(|(_, d)| d.parse().ok())
-        .unwrap_or(0);
-    let pill = if down == 0 { "1" } else { "0" };
+    let (cup, cdown) = parse_counts(counts);
+    let pill = if cdown == 0 { "1" } else { "0" };
+    let uptotal = format!("{cup}/{}", cup.saturating_add(cdown));
+    let uptip = format!("{cup} up, {cdown} down");
     format!(
         "<!doctype html><html lang=en><head><meta charset=utf-8>\
         <meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\
@@ -281,8 +280,8 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         <link rel=preconnect href=\"https://fonts.gstatic.com\" crossorigin>\
         <link rel=stylesheet href=\"https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap\">\
         <script>(function(){{var t=null;try{{t=localStorage.getItem('vigil-theme');}}catch(e){{}}\
-        if(!t&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)t='dark';\
-        if(t)document.documentElement.setAttribute('data-theme',t);}})();</script>\
+        if(!t)t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';\
+        document.documentElement.setAttribute('data-theme',t);}})();</script>\
         <title>{}</title><style>\
         /* Hallmark · macrostructure: Stat-Led · tone: technical · anchor hue: cobalt-blue */\
         :root{{--color-paper:oklch(98% .004 250);--color-paper-2:oklch(94.5% .007 250);\
@@ -333,6 +332,10 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         color:var(--color-muted);background:transparent;cursor:pointer}}\
         .theme-toggle:hover{{color:var(--color-ink);border-color:var(--color-neutral)}}\
         .theme-toggle:active{{color:var(--color-ink)}}\
+        .theme-toggle svg{{width:16px;height:16px;display:block}}\
+        .theme-toggle .icon-sun{{display:none}}\
+        [data-theme=\"dark\"] .theme-toggle .icon-sun{{display:block}}\
+        [data-theme=\"dark\"] .theme-toggle .icon-moon{{display:none}}\
         .head-right{{display:flex;gap:var(--space-sm);align-items:center;flex:none}}\
         .links{{display:flex;flex-wrap:wrap;gap:var(--space-2xs) var(--space-md);\
         font-size:var(--text-sm);padding-block:var(--space-sm);border-block:1px solid var(--color-rule)}}\
@@ -458,7 +461,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         *,*::before,*::after{{animation-duration:150ms !important;transition-duration:150ms !important}}\
         .r:hover{{transform:none}}}}\
         </style></head><body><div class=wrap>\
-        <header class=nav-edge><a class=wordmark href=\"/\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\">{counts}</span><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\">Theme</button></span></header>\
+        <header class=nav-edge><a class=wordmark href=\"/\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\">{uptotal}</span><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" fill=none stroke=currentColor stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=4/><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
         <nav class=links aria-label=\"Site\">{links}</nav>\
         <main>{body}</main>\
         <footer class=foot-line><span>{}</span><span class=meta>checked {}</span></footer>\
@@ -486,7 +489,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         function eff(){{var a=document.documentElement.getAttribute('data-theme');\
         if(a)return a;\
         return (window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}}\
-        function paintBtn(){{if(tb)tb.textContent=(eff()==='dark')?'Light':'Dark';}}\
+        function paintBtn(){{if(tb)tb.setAttribute('aria-pressed',(eff()==='dark')?'true':'false');}}\
         if(tb){{paintBtn();tb.addEventListener('click',function(){{var n=(eff()==='dark')?'light':'dark';\
         document.documentElement.setAttribute('data-theme',n);\
         try{{localStorage.setItem('vigil-theme',n);}}catch(e){{}}paintBtn();}});}}}})();</script></body></html>",
