@@ -1,20 +1,20 @@
 /* Hallmark · pre-emit critique: P5 H4 E5 S4 R5 V5 */
-/* Vigil status pages · genre modern-minimal · macrostructure Stat-Led · theme Cobalt */
+/* Vigil status pages · genre atmospheric · macrostructure Catalogue + Long Document · theme Aurora · designed-as-app */
 
 :root {
-  --color-paper: oklch(98% 0.004 250);
-  --color-paper-2: oklch(94.5% 0.007 250);
-  --color-rule: oklch(87% 0.009 250);
-  --color-neutral: oklch(55% 0.012 250);
-  --color-muted: oklch(42% 0.011 250);
-  --color-ink: oklch(21% 0.011 250);
-  --color-accent: oklch(55% 0.22 260);
-  --color-focus: oklch(55% 0.22 260);
+  --color-paper: oklch(97% 0.008 270);
+  --color-paper-2: oklch(94% 0.010 270);
+  --color-rule: oklch(87% 0.010 270);
+  --color-neutral: oklch(55% 0.012 270);
+  --color-muted: oklch(44% 0.011 270);
+  --color-ink: oklch(21% 0.012 270);
+  --color-accent: oklch(55% 0.20 260);
+  --color-focus: oklch(55% 0.20 260);
   --color-ok: oklch(60% 0.16 150);
   --color-bad: oklch(55% 0.2 25);
 
-  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --font-body: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Geist Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Geist Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
   --space-3xs: 0.125rem;
@@ -33,7 +33,7 @@
   --text-md: 1.25rem;
   --text-lg: 1.5625rem;
   --text-xl: 1.9531rem;
-  --text-display: clamp(2.75rem, 5vw + 1rem, 5.25rem);
+  --text-display: clamp(3rem, 6vw + 1rem, 6rem);
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
@@ -44,8 +44,22 @@
   --dur-long: 420ms;
 
   --radius-s: 6px;
-  --radius-m: 10px;
+  --radius-m: 12px;
+  --radius-pill: 999px;
 
   --z-base: 1;
   --z-sticky: 200;
+}
+
+[data-theme="dark"] {
+  --color-paper: oklch(14% 0.012 270);
+  --color-paper-2: oklch(18% 0.014 270);
+  --color-rule: oklch(30% 0.012 270);
+  --color-neutral: oklch(62% 0.010 270);
+  --color-muted: oklch(74% 0.008 270);
+  --color-ink: oklch(93% 0.008 270);
+  --color-accent: oklch(70% 0.16 250);
+  --color-focus: oklch(70% 0.16 250);
+  --color-ok: oklch(72% 0.14 150);
+  --color-bad: oklch(70% 0.17 25);
 }
