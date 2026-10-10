@@ -41,9 +41,13 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
     for bar in month_bars(&core, at.max(1), DETAIL_HISTORY_DAYS) {
         let _ = write!(
             cells,
-            "<i title=\"{}\">{:.1}%</i>",
-            vigil_core::time_label(bar.day),
-            bar.pct
+            "<i title=\"{tip}\" data-tip=\"{tip}\">{:.1}%</i>",
+            bar.pct,
+            tip = format!(
+                "{}: {:.1}%",
+                vigil_core::time_label(bar.day),
+                bar.pct
+            ),
         );
     }
     let lat = series(db, id, DETAIL_LATENCY_SAMPLES).await?;

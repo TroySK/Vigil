@@ -149,10 +149,13 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     for bar in month_bars(&core, at.max(1), INDEX_HISTORY_DAYS) {
         let _ = write!(
             cells,
-            "<i title=\"{}: {}%\" style=\"background:{}\"></i>",
-            vigil_core::time_label(bar.day),
-            bar.pct,
-            bar_color(bar.pct)
+            "<i title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\"></i>",
+            bar_color(bar.pct),
+            tip = format!(
+                "{}: {:.1}%",
+                vigil_core::time_label(bar.day),
+                bar.pct
+            ),
         );
     }
     let mut extra = format!("<div class=bars>{cells}</div>");
@@ -312,6 +315,19 @@ pub fn shell(title: &str, links: &str, counts: &str, at: i64, body: &str) -> Str
         .more{{font-size:var(--text-sm);margin-top:var(--space-2xs)}}\
         .more a{{white-space:nowrap}}\
         .bars{{display:flex;gap:var(--space-3xs);margin:var(--space-sm) 0 var(--space-xs)}}\
+        .bars i,.bars90 i{{position:relative}}\
+        .bars i::after,.bars90 i::after{{content:attr(data-tip);position:absolute;\
+        bottom:calc(100% + var(--space-2xs));left:50%;transform:translateX(-50%);\
+        font-family:var(--font-body);font-size:var(--text-xs);line-height:1.4;\
+        color:var(--color-ink);background:var(--color-paper-2);\
+        border:1px solid var(--color-rule);border-radius:var(--radius-s);\
+        padding:var(--space-3xs) var(--space-xs);white-space:nowrap;\
+        opacity:0;pointer-events:none;z-index:var(--z-sticky);\
+        transition:opacity var(--dur-micro) var(--ease-out)}}\
+        .bars i:first-child::after,.bars90 i:first-child::after{{left:0;transform:none}}\
+        .bars i:last-child::after,.bars90 i:last-child::after{{left:auto;right:0;transform:none}}\
+        .bars i:hover::after,.bars i:active::after,\
+        .bars90 i:hover::after,.bars90 i:active::after{{opacity:1}}\
         .bars i{{flex:1 1 0;min-width:3px;height:28px;border-radius:2px;display:block}}\
         .bars90{{display:flex;flex-wrap:wrap;gap:var(--space-3xs);margin:var(--space-sm) 0}}\
         .bars90 i{{flex:1 1 0;min-width:4px;height:34px;border-radius:2px;display:block;\
