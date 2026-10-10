@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use crate::auth::esc;
 use crate::db::Db;
 use crate::page::{default_counts, last_tick_at, links_html, shell};
-use crate::reads::{first_sample_at, latest, recent_gaps, series};
+use crate::reads::{first_sample_at, latest, recent_gaps, series, GapOut, SampleOut};
 use vigil_core::config::Site;
 use vigil_core::rollup::{bar_color, latency_chart, month_bars, percentile};
 use vigil_core::state::Gap;
@@ -26,9 +26,20 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
     };
     let at = last_tick_at(db).await?;
     let counts = db.get("counts").await?.unwrap_or_else(default_counts);
-    let current = latest(db, id).await?;
+    // One D1 round trip dominates these reads, so fire all four at once
+    // instead of awaiting them one by one.
+    let (current, gaps, since, lat): (
+        Option<SampleOut>,
+        Vec<GapOut>,
+        Option<i64>,
+        Vec<SampleOut>,
+    ) = futures_util::try_join!(
+        latest(db, id),
+        recent_gaps(db, id, crate::api::GAP_SCAN_ROWS),
+        first_sample_at(db, id),
+        series(db, id, DETAIL_LATENCY_SAMPLES),
+    )?;
     let is_up = current.as_ref().map_or(true, |r| r.up == 1);
-    let gaps = recent_gaps(db, id, crate::api::GAP_SCAN_ROWS).await?;
     let core: Vec<Gap> = gaps
         .iter()
         .map(|g| Gap {
@@ -38,7 +49,6 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         })
         .collect();
     let mut cells = String::new();
-    let since = first_sample_at(db, id).await?;
     for bar in month_bars(&core, at.max(1), DETAIL_HISTORY_DAYS, since) {
         if bar.has_data {
             let _ = write!(
@@ -60,7 +70,6 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
             );
         }
     }
-    let lat = series(db, id, DETAIL_LATENCY_SAMPLES).await?;
     let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
     let points: Vec<(i64, i64)> = lat.iter().rev().map(|r| (r.at, r.ms)).collect();
     let spark = latency_chart(&points, 600, 150);

@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::db::Db;
-use crate::reads::{latest, recent_gaps, series};
+use crate::reads::{latest, recent_gaps, series, GapOut, SampleOut};
+use futures_util::future::try_join_all;
 use vigil_core::config::Site;
 use vigil_core::rollup::percentile;
 use vigil_core::state::{Gap, Track};
@@ -26,13 +27,18 @@ pub const GAP_SCAN_ROWS: i64 = 500;
 pub async fn health(db: &Db, site: &Site) -> Result<Response> {
     let at = last_tick_at(db).await?;
     let (up, down) = parse_counts(&db.get("counts").await?.unwrap_or_else(default_counts));
+    // Same N+1 as the status page: two D1 round trips per monitor, fired
+    // in one wave instead of sequentially.
+    let fetched: Vec<(String, Option<SampleOut>, Vec<GapOut>)> =
+        try_join_all(site.monitors.iter().map(|monitor| async move {
+            let current = latest(db, &monitor.id).await?;
+            let gaps = recent_gaps(db, &monitor.id, GAP_SCAN_ROWS).await?;
+            Ok::<_, worker::Error>((monitor.id.clone(), current, gaps))
+        }))
+        .await?;
     let mut items = serde_json::Map::new();
-    for monitor in &site.monitors {
-        let current = latest(db, &monitor.id).await?;
+    for (id, current, gaps) in fetched {
         let is_up = current.as_ref().map_or(true, |r| r.up == 1);
-        let gaps = recent_gaps(db, &monitor.id, GAP_SCAN_ROWS)
-            .await
-            .unwrap_or_default();
         let track = Track {
             gaps: gaps
                 .iter()
@@ -45,7 +51,7 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
         };
         let base = at.max(1);
         items.insert(
-            monitor.id.clone(),
+            id,
             serde_json::json!({
                 "up": is_up,
                 "ms": current.as_ref().map_or(0, |r| r.ms),
