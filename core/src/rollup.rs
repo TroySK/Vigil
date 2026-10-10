@@ -178,16 +178,17 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
 
 /// Latency chart with labeled X (probe time) and Y (milliseconds) axes.
 ///
-/// Same data as [`sparkline_points`], plus gridlines, `0` / mid / max Y
-/// labels, and first / middle / last probe times on X. Point tooltips use
-/// the same `data-tip` mechanism. Empty input yields an empty string.
+/// Points are `(sample time, milliseconds, origin colo)`; each sample gets
+/// an invisible hover target whose tooltip names all three, since probes in
+/// one chart can come from different colos. Empty input yields an empty
+/// string.
 #[must_use]
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
 )]
-pub fn latency_chart(points: &[(i64, i64)], w: u32, h: u32) -> String {
+pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
     if points.is_empty() {
         return String::new();
     }
@@ -197,7 +198,7 @@ pub fn latency_chart(points: &[(i64, i64)], w: u32, h: u32) -> String {
     let pad_r = 8_u32;
     let plot_w = w.saturating_sub(pad_l + pad_r).max(10);
     let plot_h = h.saturating_sub(pad_t + pad_b).max(10);
-    let max_ms = points.iter().map(|&(_, ms)| ms).max().unwrap_or(0).max(1);
+    let max_ms = points.iter().map(|&(_, ms, _)| ms).max().unwrap_or(0).max(1);
     let max = max_ms as f64;
     let step = if points.len() < 2 {
         0.0
@@ -210,15 +211,16 @@ pub fn latency_chart(points: &[(i64, i64)], w: u32, h: u32) -> String {
         pad_t + plot_h.saturating_sub(scaled.round() as u32)
     };
     let mut pts = String::with_capacity(points.len() * 12);
-    let mut dots = String::with_capacity(points.len() * 80);
-    for (i, &(at, ms)) in points.iter().enumerate() {
+    let mut dots = String::with_capacity(points.len() * 96);
+    for (i, &(at, ms, place)) in points.iter().enumerate() {
         let _ = write!(pts, "{},{} ", x(i), y(ms));
         let _ = write!(
             dots,
-            "<circle cx=\"{}\" cy=\"{}\" r=\"7\" data-tip=\"{}: {ms}ms\"/>",
+            "<circle cx=\"{}\" cy=\"{}\" r=\"7\" data-tip=\"{} &middot; {} &middot; {ms}ms\"/>",
             x(i),
             y(ms),
             crate::time_label(at),
+            crate::views::escape_html(place),
         );
     }
     let mid = max_ms / 2;

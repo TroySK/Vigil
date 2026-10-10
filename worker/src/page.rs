@@ -201,7 +201,8 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     let mut extra = format!("<div class=bars>{cells}</div>");
     if !monitor.quiet_chart {
         let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
-        let points: Vec<(i64, i64)> = lat.iter().rev().map(|r| (r.at, r.ms)).collect();
+        let points: Vec<(i64, i64, &str)> =
+            lat.iter().rev().map(|r| (r.at, r.ms, r.place.as_str())).collect();
         let spark = latency_chart(&points, 560, 120);
         let chart = if spark.is_empty() {
             "<s>no samples yet</s>".to_owned()
