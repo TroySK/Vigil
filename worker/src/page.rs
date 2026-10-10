@@ -221,15 +221,7 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         .as_deref()
         .map_or_else(String::new, |t| format!(" title=\"{}\"", esc(t)));
     let flag = if is_up { "1" } else { "0" };
-    let label = match &monitor.href {
-        Some(href) => format!(
-            "<a href=\"{}\" target=_blank rel=\"noopener noreferrer\">{}</a>",
-            esc(href),
-            esc(&monitor.name)
-        ),
-        None => esc(&monitor.name),
-    };
-    let name = format!("{}{label}", favicon_img(monitor, 16));
+    let name = monitor_name(monitor);
     Ok(format!(
         "<article class=r data-up=\"{flag}\"{tip}>\
         <div class=r-head><span class=d aria-hidden=true></span>\
@@ -262,6 +254,20 @@ pub(crate) fn favicon_img(monitor: &Monitor, size: u32) -> String {
             "<img class=mlogo src=\"{origin}/favicon.ico\" data-origin=\"{origin}\" data-fb=0 alt=\"\" width={size} height={size} loading=lazy onerror='nextFavicon(this)'>",
         )
     })
+}
+
+/// Monitor display name with favicon, linked when `href` is set (new tab,
+/// no opener). Logo-first per favicon-before-title convention.
+fn monitor_name(monitor: &Monitor) -> String {
+    let label = match &monitor.href {
+        Some(href) => format!(
+            "<a href=\"{}\" target=_blank rel=\"noopener noreferrer\">{}</a>",
+            esc(href),
+            esc(&monitor.name)
+        ),
+        None => esc(&monitor.name),
+    };
+    format!("{}{label}", favicon_img(monitor, 16))
 }
 
 /// Footer links (`label -> url`) joined with middots. External links open
