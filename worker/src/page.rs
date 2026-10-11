@@ -61,9 +61,15 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
             ),
         )
     };
-    let state = if total == 0 || down > 0 { "0" } else { "1" };
+    let state = if total == 0 {
+        "2"
+    } else if down > 0 {
+        "0"
+    } else {
+        "1"
+    };
     format!(
-        "<section class=\"hero-stat\" data-up=\"{state}\">\
+        "<section class=\"hero-stat\" data-up=\"{state}\" aria-live=polite>\
         <p class=\"figure tnum\" data-count=\"{figure}\">{figure}</p>\
         <p class=\"qualifier\">{qualifier}</p>\
         <div class=\"stat-strip tnum\">\
@@ -135,6 +141,7 @@ pub async fn sections(db: &Db, site: &Site, at: i64, only_group: Option<&str>) -
 /// One monitor row: status dot, name, history bars, latency sparkline.
 /// Rendered as a tabular spec-sheet row (F3): hairline rule, tabular
 /// numerics, status carried by dot + word (never color alone).
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     // D1 round trips dominate render time, so fire all four reads at once
     // instead of awaiting them one by one.
@@ -178,11 +185,15 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         })
         .collect();
     let mut cells = String::new();
+    let mut covered = 0_usize;
+    let mut sum = 0.0_f64;
     for bar in hour_bars(&core, at.max(1), INDEX_HISTORY_HOURS, since) {
         if bar.has_data {
+            covered += 1;
+            sum += bar.pct;
             let _ = write!(
                 cells,
-                "<i title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\"></i>",
+                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\"></i>",
                 bar_color(bar.pct),
                 tip = format!(
                     "{}: {:.1}%",
@@ -193,27 +204,47 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         } else {
             let _ = write!(
                 cells,
-                "<i class=nodata title=\"{tip}\" data-tip=\"{tip}\"></i>",
+                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\"></i>",
                 tip = format!("{}: no data", vigil_core::short_label(bar.day)),
             );
         }
     }
-    let mut extra = format!("<div class=bars>{cells}</div>");
+    let bars_label = if covered == 0 {
+        format!("Last {INDEX_HISTORY_HOURS} hours: no data yet")
+    } else {
+        format!(
+            "Last {} hours: {:.1}% average uptime over {} hours with data. {} is {}.",
+            INDEX_HISTORY_HOURS,
+            sum / covered as f64,
+            covered,
+            monitor.name,
+            word
+        )
+    };
+    let mut extra = format!(
+        "<div class=bars role=img aria-label=\"{}\" tabindex=0>{cells}</div>",
+        esc(&bars_label)
+    );
     if !monitor.quiet_chart {
         let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
         let points: Vec<(i64, i64, &str)> =
             lat.iter().rev().map(|r| (r.at, r.ms, r.place.as_str())).collect();
+        let p50 = percentile(&vals, 50.0);
+        let p95 = percentile(&vals, 95.0);
         let spark = latency_chart(&points, 560, 120);
         let chart = if spark.is_empty() {
             "<s>no samples yet</s>".to_owned()
         } else {
-            spark
+            format!(
+                "<span role=img aria-label=\"Latency over last {} samples: p50 {}ms, p95 {}ms.\">{spark}</span>",
+                vals.len(),
+                p50,
+                p95
+            )
         };
         let _ = write!(
             extra,
-            "<div class=lat>{chart} <s>p50 {}ms &middot; p95 {}ms</s></div>",
-            percentile(&vals, 50.0),
-            percentile(&vals, 95.0)
+            "<div class=lat>{chart} <s>p50 {p50}ms &middot; p95 {p95}ms</s></div>",
         );
     }
     let tip = monitor
@@ -319,16 +350,25 @@ pub fn default_counts() -> String {
 #[allow(clippy::too_many_lines)]
 pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, refresh_ms: u64, body: &str) -> String {
     let (cup, cdown) = parse_counts(counts);
-    let pill = if cdown == 0 { "1" } else { "0" };
-    let uptotal = format!("{cup}/{}", cup.saturating_add(cdown));
+    let total = cup.saturating_add(cdown);
+    let pill = if total == 0 {
+        "2"
+    } else if cdown == 0 {
+        "1"
+    } else {
+        "0"
+    };
+    let uptotal = format!("{cup}/{total}");
     let uptip = format!("{cup} up, {cdown} down");
     format!(
         "<!doctype html><html lang=en><head><meta charset=utf-8>\
         <meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\
+        <meta name=color-scheme content=\"light dark\">\
+        <meta name=description content=\"Vigil status page: live uptime, latency, and incident history.\">\
         <link rel=icon href=\"/favicon.ico\" sizes=\"16x16 32x32 48x48\">\
         <link rel=preconnect href=\"https://fonts.googleapis.com\">\
         <link rel=preconnect href=\"https://fonts.gstatic.com\" crossorigin>\
-        <link rel=stylesheet href=\"https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap\">\
+        <link rel=stylesheet href=\"https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap\">\
         <script>(function(){{var t=null;try{{t=localStorage.getItem('vigil-theme');}}catch(e){{}}\
         if(!t)t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';\
         document.documentElement.setAttribute('data-theme',t);}})();</script>\
@@ -358,10 +398,16 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         --color-accent:oklch(70% .16 250);--color-focus:oklch(70% .16 250);\
         --color-ok:oklch(72% .14 150);--color-bad:oklch(70% .17 25);\
         --shadow:0 10px 40px oklch(0% 0 0 / .45);}}\
-        html{{overflow-x:clip}}\
+        html{{overflow-x:clip;scroll-padding-top:5rem}}\
         body{{overflow-x:clip;background:var(--color-paper);color:var(--color-ink);\
         font-family:var(--font-body);font-size:var(--text-base);line-height:1.6;\
         margin:0}}\
+        .skip{{position:absolute;left:1rem;top:-4rem;z-index:calc(var(--z-sticky) + 10);\
+        background:var(--color-ink);color:var(--color-paper);padding:var(--space-xs) var(--space-md);\
+        border-radius:var(--radius-m);text-decoration:none;transition:top var(--dur-micro) var(--ease-out)}}\
+        .skip:focus-visible{{top:1rem;color:var(--color-paper)}}\
+        .sr-only{{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;\
+        clip:rect(0 0 0 0);white-space:nowrap;border:0}}\
         body::before{{content:\"\";position:fixed;inset:0;z-index:0;pointer-events:none;\
         background:radial-gradient(38rem 30rem at 12% -6%,oklch(70% .12 190 / .14),transparent 70%),\
         radial-gradient(42rem 32rem at 88% 2%,oklch(66% .13 300 / .12),transparent 70%);}}\
@@ -384,11 +430,16 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         letter-spacing:-.03em;color:var(--color-ink);text-decoration:none;white-space:nowrap;\
         overflow-wrap:anywhere;min-width:0}}\
         .pill{{font-family:var(--font-body);font-size:var(--text-xs);white-space:nowrap;\
+        display:inline-flex;align-items:center;min-height:2rem;\
         border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
         color:var(--color-muted);background:var(--color-paper-2)}}\
         .pill[data-up=\"1\"]{{color:var(--color-ink);border-color:var(--color-ok)}}\
         .pill[data-up=\"0\"]{{color:var(--color-ink);border-color:var(--color-bad)}}\
+        .pill[data-up=\"2\"]{{color:var(--color-muted);border-style:dashed}}\
+        @media (pointer:coarse){{\
+        .pill,.theme-toggle,.links a,.det{{min-height:44px}}}}\
         .theme-toggle{{font-family:var(--font-body);font-size:var(--text-sm);white-space:nowrap;\
+        display:inline-flex;align-items:center;justify-content:center;min-width:2.75rem;min-height:2rem;\
         border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
         color:var(--color-ink);background:transparent;cursor:pointer}}\
         .theme-toggle:hover{{color:var(--color-ink);border-color:var(--color-neutral)}}\
@@ -416,6 +467,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         font-variant-numeric:tabular-nums;overflow-wrap:anywhere;min-width:0}}\
         .hero-stat[data-up=\"1\"] .figure{{color:var(--color-ink)}}\
         .hero-stat[data-up=\"0\"] .figure{{color:var(--color-bad)}}\
+        .hero-stat[data-up=\"2\"] .figure{{color:var(--color-muted)}}\
         .qualifier{{font-size:var(--text-md);color:var(--color-muted);max-width:65ch;margin:var(--space-sm) auto 0}}\
         .stat-strip{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-md);\
         margin-top:var(--space-lg);padding-block:var(--space-md);border-block:1px solid var(--color-rule)}}\
@@ -453,6 +505,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         @media (min-width:40rem){{.r s{{text-align:right}}}}\
         .det{{font-family:var(--font-display);font-weight:700;font-size:var(--text-xs);\
         color:var(--color-ink);text-decoration:none;white-space:nowrap;\
+        display:inline-flex;align-items:center;min-height:2rem;\
         border:1px solid var(--color-rule);border-radius:var(--radius-pill);\
         padding:var(--space-3xs) var(--space-sm);background:transparent;\
         transition:color var(--dur-short) var(--ease-out),border-color var(--dur-short) var(--ease-out)}}\
@@ -472,8 +525,9 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         transition:opacity var(--dur-micro) var(--ease-out)}}\
         .bars i:first-child::after,.bars90 i:first-child::after{{left:0;transform:none}}\
         .bars i:last-child::after,.bars90 i:last-child::after{{left:auto;right:0;transform:none}}\
-        .bars i:hover::after,.bars i:active::after,\
-        .bars90 i:hover::after,.bars90 i:active::after{{opacity:1}}\
+        .bars i:hover::after,.bars i:active::after,.bars i:focus-visible::after,\
+        .bars90 i:hover::after,.bars90 i:active::after,.bars90 i:focus-visible::after{{opacity:1}}\
+        .bars:focus-visible,.bars90:focus-visible{{outline:2px solid var(--color-focus);outline-offset:4px}}\
         .bars i{{flex:1 1 0;min-width:3px;height:28px;border-radius:2px;display:block}}\
         .bars90{{display:flex;flex-wrap:wrap;gap:var(--space-3xs);margin:var(--space-sm) 0}}\
         .bars90 i{{flex:1 1 0;min-width:4px;height:34px;border-radius:2px;display:block;\
@@ -497,7 +551,8 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .r,.lat{{transition:transform var(--dur-short) var(--ease-out),box-shadow var(--dur-short) var(--ease-out)}}\
         @media (hover:hover) and (pointer:fine){{\
         .r:hover{{transform:translateY(-1px);box-shadow:var(--shadow)}}}}\
-        main{{animation:rise var(--dur-long) var(--ease-out)}}\
+        .r,.chart{{scroll-margin-top:6rem}}\
+        main{{animation:rise var(--dur-short) var(--ease-out)}}\
         @keyframes rise{{from{{opacity:0}}to{{opacity:1}}}}\
         .note{{padding:var(--space-sm) var(--space-md);border-radius:var(--radius-m);\
         margin:var(--space-md) 0;border:1px solid var(--color-rule);\
@@ -531,7 +586,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         table.inc td{{border-bottom:1px solid var(--color-rule);padding:var(--space-xs) var(--space-xs) var(--space-xs) 0;\
         vertical-align:top;overflow-wrap:anywhere}}\
         @media (max-width:40rem){{\
-        table.inc thead{{position:absolute;left:-9999px}}\
+        table.inc thead{{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}}\
         table.inc tr{{display:block;border-top:1px solid var(--color-rule);padding-block:var(--space-xs)}}\
         table.inc td{{display:block;border:0;padding:var(--space-3xs) 0}}\
         table.inc td::before{{content:attr(data-label);display:block;font-family:var(--font-body);\
@@ -546,10 +601,10 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         @media (prefers-reduced-motion:reduce){{\
         *,*::before,*::after{{animation-duration:150ms !important;transition-duration:150ms !important}}\
         .r:hover{{transform:none}}}}\
-        </style></head><body><div class=wrap>\
-        <header class=nav-edge><a class=wordmark href=\"/\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\">{uptotal}</span><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
+        </style></head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
+        <header class=nav-edge><a class=wordmark href=\"/\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
         <nav class=links aria-label=\"Site\"><span class=links-label>Quicklinks:</span>{links}</nav>\
-        <main data-at=\"{at}\">{body}</main>\
+        <main id=main data-at=\"{at}\" tabindex=-1>{body}</main>\
         <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>checked {}</span></footer>\
         </div><script>(function(){{var el=document.querySelector('[data-count]');\
         if(el){{var raw=el.getAttribute('data-count');var target=parseInt(raw,10);\

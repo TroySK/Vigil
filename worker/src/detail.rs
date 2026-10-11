@@ -20,6 +20,7 @@ pub const DETAIL_INCIDENTS: usize = 50;
 
 /// Per-monitor detail: status, 90-day bars, latency p50/p95 + sparkline,
 /// incident table, upkeep scoped to this monitor.
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
     let Some(monitor) = site.get(id) else {
         return Response::error("unknown monitor", 404);
@@ -49,11 +50,15 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         })
         .collect();
     let mut cells = String::new();
+    let mut covered = 0_usize;
+    let mut sum = 0.0_f64;
     for bar in month_bars(&core, at.max(1), DETAIL_HISTORY_DAYS, since) {
         if bar.has_data {
+            covered += 1;
+            sum += bar.pct;
             let _ = write!(
                 cells,
-                "<i title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\">{:.1}%</i>",
+                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\">{:.1}%</i>",
                 bar_color(bar.pct),
                 bar.pct,
                 tip = format!(
@@ -65,20 +70,36 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         } else {
             let _ = write!(
                 cells,
-                "<i class=nodata title=\"{tip}\" data-tip=\"{tip}\"></i>",
+                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\"></i>",
                 tip = format!("{}: no data", vigil_core::date_label(bar.day)),
             );
         }
     }
+    let bars_label = if covered == 0 {
+        format!("{DETAIL_HISTORY_DAYS}-day history: no data yet")
+    } else {
+        format!(
+            "{DETAIL_HISTORY_DAYS}-day history: {:.1}% average uptime over {} days with data.",
+            sum / covered as f64,
+            covered
+        )
+    };
     let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
     let points: Vec<(i64, i64, &str)> =
         lat.iter().rev().map(|r| (r.at, r.ms, r.place.as_str())).collect();
+    let p50 = percentile(&vals, 50.0);
+    let p95 = percentile(&vals, 95.0);
     let spark = latency_chart(&points, 600, 150);
     let spark_html = if spark.is_empty() {
         "<p class=empty>No latency samples yet — the chart fills in after the next probe.</p>"
             .to_owned()
     } else {
-        spark
+        format!(
+            "<span role=img aria-label=\"Latency over {} samples: p50 {}ms, p95 {}ms.\">{spark}</span>",
+            vals.len(),
+            p50,
+            p95
+        )
     };
     let mut rows = String::new();
     for gap in gaps.iter().take(DETAIL_INCIDENTS) {
@@ -102,22 +123,23 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         }
     }
     let body = format!(
-        "<nav class=crumb><a href=\"/\">&lsaquo; all monitors</a></nav>\
-        <section class=detail-hero><h2>{logo}{}</h2>\
-        <p class=status-line><span class=status-word data-up=\"{flag}\">{word}</span> \
+        "<nav class=crumb aria-label=Breadcrumb><a href=\"/\">&lsaquo; all monitors</a></nav>\
+        <section class=detail-hero aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>\
+        <p class=status-line role=status><span class=status-word data-up=\"{flag}\">{word}</span> \
         <span class=tnum>{ms}</span></p>{notes}</section>\
-        <h3 class=sect>90 days</h3><div class=bars90>{cells}</div>\
+        <h3 class=sect>90 days</h3><div class=bars90 role=img aria-label=\"{bars_label}\" tabindex=0>{cells}</div>\
         <h3 class=sect>Latency</h3><p class=tnum>p50 {p50}ms &middot; p95 {p95}ms &middot; {n} samples</p>{spark} \
-        <h3 class=sect>Incidents</h3><table class=inc><thead><tr><th>From</th><th>To</th><th>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
+        <h3 class=sect>Incidents</h3><table class=inc><caption class=sr-only>Downtime windows for {name}</caption><thead><tr><th scope=col>From</th><th scope=col>To</th><th scope=col>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
         esc(&monitor.name),
         logo = crate::page::favicon_img(monitor, 24),
         word = if is_up { "UP" } else { "DOWN" },
         flag = if is_up { "1" } else { "0" },
         ms = last_probe_label(current.as_ref()),
-        p50 = percentile(&vals, 50.0),
-        p95 = percentile(&vals, 95.0),
+        p50 = p50,
+        p95 = p95,
         n = vals.len(),
         spark = spark_html,
+        name = esc(&monitor.name),
     );
 
     let links = links_html(&site.links);
