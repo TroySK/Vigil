@@ -165,12 +165,13 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
         let _ = write!(pts, "{x},{y} ");
         let _ = write!(
             dots,
-            "<circle cx=\"{x}\" cy=\"{y}\" r=\"7\" data-tip=\"{}: {ms}ms\"/>",
+            "<circle cx=\"{x}\" cy=\"{y}\" r=\"7\" aria-hidden=true data-tip=\"{}: {ms}ms\"/>",
             crate::time_label(at),
         );
     }
     format!(
-        "<svg class=\"spark\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-hidden=\"true\">\
+        "<svg class=\"spark\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-label=\"Latency sparkline\">\
+<title>Latency sparkline</title>\
 <polyline points=\"{}\" class=\"line\"/>{dots}</svg>",
         pts.trim_end()
     )
@@ -216,7 +217,7 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
         let _ = write!(pts, "{},{} ", x(i), y(ms));
         let _ = write!(
             dots,
-            "<circle cx=\"{}\" cy=\"{}\" r=\"7\" data-tip=\"{} &middot; {} &middot; {ms}ms\"/>",
+            "<circle cx=\"{}\" cy=\"{}\" r=\"7\" aria-hidden=true data-tip=\"{} &middot; {} &middot; {ms}ms\"/>",
             x(i),
             y(ms),
             crate::time_label(at),
@@ -227,7 +228,8 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
     let base = pad_t + plot_h;
     let mid_i = points.len() / 2;
     format!(
-        "<svg class=\"chart\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-hidden=\"true\">\
+        "<svg class=\"chart\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-label=\"Latency chart\">\
+<title>Latency over time</title>\
 <line class=\"grid\" x1=\"{pad_l}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"/>\
 <line class=\"grid\" x1=\"{pad_l}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"/>\
 <line class=\"axis\" x1=\"{pad_l}\" y1=\"{base}\" x2=\"{}\" y2=\"{base}\"/>\
