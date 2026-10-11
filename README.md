@@ -119,8 +119,7 @@ npx wrangler secret put STATUS_PASSWORD
 ## Deploy with GitHub Actions
 
 `.github/workflows/deploy.yml` automates test → migrate → deploy on every
-push to `main`, on manual dispatch, and every 6 hours (to re-pin the
-`worker-build` toolchain). What it does:
+push to `main` and on manual dispatch. What it does:
 
 1. Runs `cargo test -p vigil-core -p vigil` and
    `cargo check -p vigil-worker --target wasm32-unknown-unknown`.
