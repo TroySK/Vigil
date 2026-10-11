@@ -585,6 +585,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         border-bottom:1px solid var(--color-rule);padding:var(--space-xs) var(--space-xs) var(--space-xs) 0}}\
         table.inc td{{border-bottom:1px solid var(--color-rule);padding:var(--space-xs) var(--space-xs) var(--space-xs) 0;\
         vertical-align:top;overflow-wrap:anywhere}}\
+        table.inc td .spark{{max-width:100%;height:auto;display:block}}\
         @media (max-width:40rem){{\
         table.inc thead{{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}}\
         table.inc tr{{display:block;border-top:1px solid var(--color-rule);padding-block:var(--space-xs)}}\
