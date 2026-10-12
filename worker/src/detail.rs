@@ -185,6 +185,20 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     Response::from_html(shell(&monitor.name, &site.title, &links, &counts, at, site.refresh_ms(), &body))
 }
 
+/// Sentence-case relative age for standalone display ("just now" →
+/// "Just now"; digit-led strings pass through). Mid-sentence uses stay
+/// lowercase via the `rel` kind; standalone cells use the `Rel` variant,
+/// capitalized server- and client-side alike.
+fn standalone_rel(now: i64, at: i64) -> String {
+    let age = vigil_core::rel_label(now, at);
+    let mut chars = age.chars();
+    match chars.next() {
+        // rel_label output is ASCII, so the first byte is one char.
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => age,
+    }
+}
+
 /// Per-region latency table: one row per probe origin (`place`) with its
 /// latest sample and a sparkline of its samples inside the selected window
 /// (`lat` is newest-first and already spans the window).
@@ -234,7 +248,7 @@ pub fn geo_latency_table(
             <td data-label=\"Latency\">{ms}ms</td>\
             <td data-label=\"Last {window_label}\">{chart}</td></tr>",
             esc(place),
-            time_html(recent.at, "rel", &vigil_core::time_label(recent.at)),
+            time_html(recent.at, "Rel", &standalone_rel(at, recent.at)),
             ms = recent.ms,
         );
     }
@@ -261,7 +275,7 @@ fn last_probe_label(current: Option<&SampleOut>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{gap_in_range, geo_latency_table, last_probe_label};
+    use super::{gap_in_range, geo_latency_table, last_probe_label, standalone_rel};
     use crate::reads::SampleOut;
 
     fn sample(up: i64) -> SampleOut {
@@ -323,6 +337,8 @@ mod tests {
         // Timestamps ride along for the client-side UTC/local toggle.
         assert!(html.contains("data-ts=\"2000\""));
         assert!(html.contains("<time data-ts="));
+        // Standalone ages render sentence-cased via the Rel variant.
+        assert!(html.contains("data-tk=\"Rel\""));
     }
 
     #[test]
@@ -350,5 +366,11 @@ mod tests {
         let html = geo_latency_table(&lat, 2_000, 90, "90 days");
         assert!(html.contains("Last 90 days"));
         assert!(!html.contains("7 days"));
+    }
+
+    #[test]
+    fn standalone_rel_capitalizes_sentence_start() {
+        assert_eq!(standalone_rel(1_000, 970), "Just now");
+        assert_eq!(standalone_rel(1_000, 800), "3 minutes ago");
     }
 }
