@@ -165,7 +165,7 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
         let _ = write!(pts, "{x},{y} ");
         let _ = write!(
             dots,
-            "<circle cx=\"{x}\" cy=\"{y}\" r=\"7\" aria-hidden=true data-tip=\"{}: {ms}ms\"/>",
+            "<circle cx=\"{x}\" cy=\"{y}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"full\" data-ms=\"{ms}\" data-tip=\"{}: {ms}ms\"/>",
             crate::time_label(at),
         );
     }
@@ -215,13 +215,13 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
     let mut dots = String::with_capacity(points.len() * 96);
     for (i, &(at, ms, place)) in points.iter().enumerate() {
         let _ = write!(pts, "{},{} ", x(i), y(ms));
+        let origin = crate::views::escape_html(place);
         let _ = write!(
             dots,
-            "<circle cx=\"{}\" cy=\"{}\" r=\"7\" aria-hidden=true data-tip=\"{} &middot; {} &middot; {ms}ms\"/>",
+            "<circle cx=\"{}\" cy=\"{}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"full\" data-place=\"{origin}\" data-ms=\"{ms}\" data-tip=\"{} &middot; {origin} &middot; {ms}ms\"/>",
             x(i),
             y(ms),
             crate::time_label(at),
-            crate::views::escape_html(place),
         );
     }
     let mid = max_ms / 2;
@@ -236,9 +236,9 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
 <text x=\"{}\" y=\"{}\" text-anchor=\"end\">{max_ms}ms</text>\
 <text x=\"{}\" y=\"{}\" text-anchor=\"end\">{mid}ms</text>\
 <text x=\"{}\" y=\"{}\" text-anchor=\"end\">0</text>\
-<text x=\"{pad_l}\" y=\"{}\" text-anchor=\"start\">{}</text>\
-<text x=\"{}\" y=\"{}\" text-anchor=\"middle\">{}</text>\
-<text x=\"{}\" y=\"{}\" text-anchor=\"end\">{}</text>\
+<text x=\"{pad_l}\" y=\"{}\" text-anchor=\"start\" data-ts=\"{}\" data-tk=\"short\">{}</text>\
+<text x=\"{}\" y=\"{}\" text-anchor=\"middle\" data-ts=\"{}\" data-tk=\"short\">{}</text>\
+<text x=\"{}\" y=\"{}\" text-anchor=\"end\" data-ts=\"{}\" data-tk=\"short\">{}</text>\
 <polyline points=\"{}\" class=\"line\"/>{dots}</svg>",
         y(max_ms),
         pad_l + plot_w,
@@ -254,12 +254,15 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
         pad_l - 6,
         base + 4,
         h - 6,
+        points[0].0,
         crate::short_label(points[0].0),
         pad_l + plot_w / 2,
         h - 6,
+        points[mid_i].0,
         crate::short_label(points[mid_i].0),
         pad_l + plot_w,
         h - 6,
+        points[points.len() - 1].0,
         crate::short_label(points[points.len() - 1].0),
         pts.trim_end()
     )

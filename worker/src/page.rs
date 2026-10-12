@@ -49,7 +49,7 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
             up.to_string(),
             format!(
                 "Monitors up out of {total} checked. Last probe {stamp}.",
-                stamp = vigil_core::time_label(at.max(1))
+                stamp = time_html(at.max(1), "full", &vigil_core::time_label(at.max(1)))
             ),
         )
     } else {
@@ -57,7 +57,7 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
             down.to_string(),
             format!(
                 "Monitors down out of {total} checked. Last probe {stamp}.",
-                stamp = vigil_core::time_label(at.max(1))
+                stamp = time_html(at.max(1), "full", &vigil_core::time_label(at.max(1)))
             ),
         )
     };
@@ -169,7 +169,7 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
             format!(
                 "{}ms &middot; {} &middot; {}",
                 sample.ms,
-                vigil_core::time_label(sample.at),
+                time_html(sample.at, "full", &vigil_core::time_label(sample.at)),
                 esc(&sample.place)
             )
         }
@@ -191,10 +191,12 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         if bar.has_data {
             covered += 1;
             sum += bar.pct;
+            let v = format!("{:.1}%", bar.pct);
             let _ = write!(
                 cells,
-                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\"></i>",
+                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"short\" data-v=\"{v}\" style=\"background:{}\"></i>",
                 bar_color(bar.pct),
+                day = bar.day,
                 tip = format!(
                     "{}: {:.1}%",
                     vigil_core::short_label(bar.day),
@@ -204,7 +206,8 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         } else {
             let _ = write!(
                 cells,
-                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\"></i>",
+                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"short\"></i>",
+                day = bar.day,
                 tip = format!("{}: no data", vigil_core::short_label(bar.day)),
             );
         }
@@ -338,6 +341,14 @@ pub fn default_counts() -> String {
     "0/0".to_owned()
 }
 
+/// Inline `<time>` carrying its unix timestamp so the client-side UTC/local
+/// toggle can re-render it without refetching. `kind` is `full`, `short` or
+/// `date`, matching the server-side UTC format of `text`.
+#[must_use]
+pub fn time_html(at: i64, kind: &str, text: &str) -> String {
+    format!("<time data-ts=\"{at}\" data-tk=\"{kind}\">{text}</time>")
+}
+
 /// Full HTML shell: head, Cobalt tokens, N9 header, body, Ft2 footer.
 ///
 /// `page_title` names the browser tab; `brand` (always the site title) names
@@ -438,13 +449,20 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .pill[data-up=\"0\"]{{color:var(--color-ink);border-color:var(--color-bad)}}\
         .pill[data-up=\"2\"]{{color:var(--color-muted);border-style:dashed}}\
         @media (pointer:coarse){{\
-        .pill,.theme-toggle,.links a,.det{{min-height:44px}}}}\
+        .pill,.theme-toggle,.tz-toggle,.links a,.det{{min-height:44px}}}}\
         .theme-toggle{{font-family:var(--font-body);font-size:var(--text-sm);white-space:nowrap;\
         display:inline-flex;align-items:center;justify-content:center;min-width:2.75rem;min-height:2rem;\
         border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
         color:var(--color-ink);background:transparent;cursor:pointer}}\
         .theme-toggle:hover{{color:var(--color-ink);border-color:var(--color-neutral)}}\
         .theme-toggle:active{{color:var(--color-ink)}}\
+        .tz-toggle{{font-family:var(--font-mono);font-weight:600;font-size:var(--text-xs);\
+        letter-spacing:.08em;white-space:nowrap;font-variant-numeric:tabular-nums;\
+        display:inline-flex;align-items:center;justify-content:center;min-width:3.5rem;min-height:2rem;\
+        border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
+        color:var(--color-muted);background:transparent;cursor:pointer}}\
+        .tz-toggle:hover{{color:var(--color-ink);border-color:var(--color-neutral)}}\
+        .tz-toggle[aria-pressed=\"true\"]{{color:var(--color-ink);border-color:var(--color-accent)}}\
         .theme-toggle svg{{width:16px;height:16px;display:block;color:var(--color-ink);stroke:var(--color-ink);fill:none}}.theme-toggle svg *{{stroke:inherit;fill:inherit}}\
         .theme-toggle .icon-sun{{display:none}}\
         [data-theme=\"dark\"] .theme-toggle .icon-sun{{display:block}}\
@@ -605,10 +623,10 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         *,*::before,*::after{{animation-duration:150ms !important;transition-duration:150ms !important}}\
         .r:hover{{transform:none}}}}\
         </style></head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
-        <header class=nav-edge><a class=wordmark href=\"/\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
+        <header class=nav-edge><a class=wordmark href=\"/\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=tz-toggle id=tz-toggle type=button aria-label=\"Toggle time zone\" aria-pressed=\"false\" title=\"Times shown in UTC\">UTC</button><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
         <nav class=links aria-label=\"Site\"><span class=links-label>Quick links:</span>{links}</nav>\
         <main id=main data-at=\"{at}\" tabindex=-1>{body}</main>\
-        <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>Checked {}</span></footer>\
+        <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>Checked {time}</span></footer>\
         </div><script>(function(){{var el=document.querySelector('[data-count]');\
         if(el){{var raw=el.getAttribute('data-count');var target=parseInt(raw,10);\
         if(isFinite(target)&&!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)){{\
@@ -637,6 +655,37 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         if(tb){{paintBtn();tb.addEventListener('click',function(){{var n=(eff()==='dark')?'light':'dark';\
         document.documentElement.setAttribute('data-theme',n);\
         try{{localStorage.setItem('vigil-theme',n);}}catch(e){{}}paintBtn();}});}}\
+        var tzMode='utc';try{{tzMode=localStorage.getItem('vigil-tz')||'utc';}}catch(e){{}}if(tzMode!=='local')tzMode='utc';\
+        function tzName(){{try{{var o=Intl.DateTimeFormat().resolvedOptions();if(o&&o.timeZone)return o.timeZone;}}catch(e){{}}return 'local time';}}\
+        function tzAbbr(){{try{{var ps=new Intl.DateTimeFormat('en-US',{{timeZoneName:'short'}}).formatToParts(new Date());for(var i=0;i<ps.length;i++){{if(ps[i].type==='timeZoneName')return ps[i].value;}}}}catch(e){{}}return '';}}\
+        function p2(n){{return (n<10?'0':'')+n;}}\
+        function fmtTz(ts,kind,local){{var d=new Date(ts*1000);var Y,M,D,h,mi,s;\
+        if(local){{Y=d.getFullYear();M=d.getMonth()+1;D=d.getDate();h=d.getHours();mi=d.getMinutes();s=d.getSeconds();}}\
+        else{{Y=d.getUTCFullYear();M=d.getUTCMonth()+1;D=d.getUTCDate();h=d.getUTCHours();mi=d.getUTCMinutes();s=d.getUTCSeconds();}}\
+        var date=Y+'-'+p2(M)+'-'+p2(D);\
+        if(kind==='short')return p2(M)+'-'+p2(D)+' '+p2(h)+':'+p2(mi);\
+        if(kind==='date')return date;\
+        var ab=local?tzAbbr():'';return date+' '+p2(h)+':'+p2(mi)+':'+p2(s)+' '+(ab||(local?'local':'UTC'));}}\
+        function tipTz(el,local){{var ts=parseInt(el.getAttribute('data-ts'),10)||0;\
+        var t=fmtTz(ts,el.getAttribute('data-tk')||'full',local);\
+        if(el.hasAttribute('data-v')){{var v=el.getAttribute('data-v');return t+': '+(v||'no data');}}\
+        if(el.hasAttribute('data-ms')){{var ms=el.getAttribute('data-ms');var pl=el.getAttribute('data-place');\
+        return pl?t+' · '+pl+' · '+ms+'ms':t+': '+ms+'ms';}}return t;}}\
+        function applyTz(){{var local=tzMode==='local';\
+        var texts=document.querySelectorAll('time[data-ts],text[data-ts]');\
+        for(var i=0;i<texts.length;i++){{var n=texts[i];\
+        n.textContent=fmtTz(parseInt(n.getAttribute('data-ts'),10)||0,n.getAttribute('data-tk')||'full',local);}}\
+        var tips=document.querySelectorAll('[data-tip][data-ts]');\
+        for(var j=0;j<tips.length;j++){{var c=tips[j];var v=tipTz(c,local);\
+        c.setAttribute('data-tip',v);if(c.hasAttribute('title'))c.setAttribute('title',v);}}\
+        var zb=document.getElementById('tz-toggle');\
+        if(zb){{zb.textContent=local?(tzAbbr()||'Local'):'UTC';\
+        zb.setAttribute('aria-pressed',local?'true':'false');\
+        zb.title=local?'Times in local time ('+tzName()+'). Switch to UTC.':'Times in UTC. Switch to local time.';}}}}\
+        var zb=document.getElementById('tz-toggle');\
+        if(zb){{zb.addEventListener('click',function(){{tzMode=(tzMode==='local')?'utc':'local';\
+        try{{localStorage.setItem('vigil-tz',tzMode);}}catch(e){{}}applyTz();}});}}\
+        applyTz();\
         var mainEl=document.querySelector('main[data-at]');\
         if(mainEl&&{refresh_ms}>0){{var seen=parseInt(mainEl.getAttribute('data-at'),10)||0;\
         setInterval(function(){{if(document.hidden)return;\
@@ -647,13 +696,13 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         esc(page_title),
         esc(brand),
         esc(brand),
-        vigil_core::time_label(at.max(0))
+        time = time_html(at.max(0), "full", &vigil_core::time_label(at.max(0)))
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{favicon_origin, links_html, parse_counts};
+    use super::{favicon_origin, links_html, parse_counts, time_html};
     use std::collections::BTreeMap;
     use vigil_core::config::{Monitor, Probe};
 
@@ -663,6 +712,14 @@ mod tests {
         assert_eq!(parse_counts("0/0"), (0, 0));
         assert_eq!(parse_counts("nope"), (0, 0));
         assert_eq!(parse_counts(""), (0, 0));
+    }
+
+    #[test]
+    fn time_html_carries_timestamp_for_toggle() {
+        assert_eq!(
+            time_html(1_000, "full", "1970-01-01 00:16:40 UTC"),
+            "<time data-ts=\"1000\" data-tk=\"full\">1970-01-01 00:16:40 UTC</time>"
+        );
     }
 
     #[test]
@@ -679,9 +736,8 @@ mod tests {
         assert!(!evil.contains("<x>"));
     }
 
-    #[test]
-    fn links_keep_file_order() {
-        let html = links_html(
+#[test]
+    fn links_keep_file_order() {        let html = links_html(
             &indexmap::IndexMap::from([
                 ("Home".to_owned(), "https://www.troysk.com".to_owned()),
                 ("Blog".to_owned(), "https://blog.troysk.com".to_owned()),

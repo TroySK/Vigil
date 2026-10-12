@@ -85,6 +85,8 @@ fn spark_points_carry_time_tooltips() {
     assert!(svg.contains("data-tip"));
     assert!(svg.contains("10ms"));
     assert!(svg.contains("20ms"));
+    assert!(svg.contains("data-ts=\"1000\""));
+    assert!(svg.contains("data-tk=\"full\""));
     assert!(sparkline_points(&[], 90, 28).is_empty());
 }
 
@@ -101,5 +103,8 @@ fn latency_chart_has_labeled_axes() {
     assert!(svg.contains(">0<"));
     assert!(svg.contains("data-tip"));
     assert!(svg.contains("SIN"));
+    assert!(svg.contains("data-ts=\"1000\""));
+    assert!(svg.contains("data-tk=\"short\""));
+    assert!(svg.contains("data-place=\"SIN\""));
     assert!(latency_chart(&[], 600, 150).is_empty());
 }
