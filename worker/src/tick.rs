@@ -15,7 +15,7 @@ use vigil_core::views;
 use worker::d1::D1PreparedStatement;
 use worker::{console_log, Date, Env, Error, Fetch, Headers, Method, Request, RequestInit, Result};
 
-use crate::db::{num, Db};
+use crate::db::{num, schema_due, Db};
 use crate::probe::{colo, probe, with_timeout};
 
 /// Seconds in one day.
@@ -49,8 +49,11 @@ pub async fn tick(env: Env) -> Result<()> {
         )
     })?;
     let db = Db::of(&env)?;
-    db.init().await?;
     let now = sec_now();
+    // Schema setup runs hourly (see schema_due): CI migrations own it.
+    if schema_due(now) {
+        db.init().await?;
+    }
     // One D1 round trip for every `kv` key the tick needs: cadence stamps
     // plus alert counters for all monitors (was: one query per monitor for
     // cadence, then two more per due monitor for alerts). First sightings
@@ -338,7 +341,9 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{alert_for, is_due, plan_alert, plan_due, stagger_offset, state_keys, wave_bounds, Due};
+    use super::{
+        alert_for, is_due, plan_alert, plan_due, stagger_offset, state_keys, wave_bounds, Due,
+    };
     use std::collections::BTreeMap;
 
     #[test]
