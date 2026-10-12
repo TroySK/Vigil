@@ -48,7 +48,7 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
         (
             up.to_string(),
             format!(
-                "monitors up out of {total} checked. Last probe {stamp}.",
+                "Monitors up out of {total} checked. Last probe {stamp}.",
                 stamp = vigil_core::time_label(at.max(1))
             ),
         )
@@ -56,7 +56,7 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
         (
             down.to_string(),
             format!(
-                "monitors down out of {total} checked. Last probe {stamp}.",
+                "Monitors down out of {total} checked. Last probe {stamp}.",
                 stamp = vigil_core::time_label(at.max(1))
             ),
         )
@@ -173,8 +173,8 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
                 esc(&sample.place)
             )
         }
-        Some(_) => "check failing".to_owned(),
-        None => "no data yet".to_owned(),
+        Some(_) => "Check failing".to_owned(),
+        None => "No data yet".to_owned(),
     };
     let core: Vec<Gap> = gaps
         .iter()
@@ -233,7 +233,7 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         let p95 = percentile(&vals, 95.0);
         let spark = latency_chart(&points, 560, 120);
         let chart = if spark.is_empty() {
-            "<s>no samples yet</s>".to_owned()
+            "<s>No samples yet</s>".to_owned()
         } else {
             format!(
                 "<span role=img aria-label=\"Latency over last {} samples: p50 {}ms, p95 {}ms.\">{spark}</span>",
@@ -418,6 +418,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         a{{color:var(--color-accent);text-underline-offset:2px}}\
         a:hover{{color:var(--color-ink)}}\
         :focus-visible{{outline:2px solid var(--color-focus);outline-offset:2px}}\
+        .tnum{{font-variant-numeric:tabular-nums}}\
         .nav-edge{{position:sticky;top:var(--space-md);z-index:var(--z-sticky);\
         display:flex;justify-content:space-between;align-items:center;gap:var(--space-md);\
         max-width:44rem;margin-inline:auto;padding:var(--space-sm) var(--space-md);\
@@ -504,6 +505,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         text-overflow:ellipsis;min-width:0}}\
         @media (min-width:40rem){{.r s{{text-align:right}}}}\
         .det{{font-family:var(--font-display);font-weight:700;font-size:var(--text-xs);\
+        text-transform:uppercase;letter-spacing:.08em;\
         color:var(--color-ink);text-decoration:none;white-space:nowrap;\
         display:inline-flex;align-items:center;min-height:2rem;\
         border:1px solid var(--color-rule);border-radius:var(--radius-pill);\
@@ -580,7 +582,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         overflow-wrap:anywhere;min-width:0}}\
         table.inc{{border-collapse:collapse;width:100%;font-size:var(--text-sm);\
         font-variant-numeric:tabular-nums}}\
-        table.inc th{{font-family:var(--font-body);font-size:var(--text-xs);text-transform:uppercase;\
+        table.inc th{{font-family:var(--font-mono);font-weight:600;font-size:var(--text-xs);text-transform:uppercase;\
         letter-spacing:.08em;color:var(--color-muted);text-align:left;\
         border-bottom:1px solid var(--color-rule);padding:var(--space-xs) var(--space-xs) var(--space-xs) 0}}\
         table.inc td{{border-bottom:1px solid var(--color-rule);padding:var(--space-xs) var(--space-xs) var(--space-xs) 0;\
@@ -590,7 +592,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         table.inc thead{{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}}\
         table.inc tr{{display:block;border-top:1px solid var(--color-rule);padding-block:var(--space-xs)}}\
         table.inc td{{display:block;border:0;padding:var(--space-3xs) 0}}\
-        table.inc td::before{{content:attr(data-label);display:block;font-family:var(--font-body);\
+        table.inc td::before{{content:attr(data-label);display:block;font-family:var(--font-mono);font-weight:600;\
         font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.08em;color:var(--color-muted)}}}}\
         .foot-mast{{border-top:1px solid var(--color-rule);margin-top:var(--space-2xl);\
         padding-top:var(--space-lg);display:flex;flex-wrap:wrap;align-items:baseline;\
@@ -604,9 +606,9 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .r:hover{{transform:none}}}}\
         </style></head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
         <header class=nav-edge><a class=wordmark href=\"/\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
-        <nav class=links aria-label=\"Site\"><span class=links-label>Quicklinks:</span>{links}</nav>\
+        <nav class=links aria-label=\"Site\"><span class=links-label>Quick links:</span>{links}</nav>\
         <main id=main data-at=\"{at}\" tabindex=-1>{body}</main>\
-        <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>checked {}</span></footer>\
+        <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>Checked {}</span></footer>\
         </div><script>(function(){{var el=document.querySelector('[data-count]');\
         if(el){{var raw=el.getAttribute('data-count');var target=parseInt(raw,10);\
         if(isFinite(target)&&!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)){{\
