@@ -442,7 +442,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         letter-spacing:-.03em;color:var(--color-ink);text-decoration:none;white-space:nowrap;\
         overflow-wrap:anywhere;min-width:0}}\
         .pill{{font-family:var(--font-body);font-size:var(--text-xs);white-space:nowrap;\
-        display:inline-flex;align-items:center;min-height:2rem;\
+        display:inline-flex;align-items:center;min-height:2rem;height:2rem;box-sizing:border-box;\
         border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
         color:var(--color-muted);background:var(--color-paper-2)}}\
         .pill[data-up=\"1\"]{{color:var(--color-ink);border-color:var(--color-ok)}}\
@@ -451,14 +451,14 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         @media (pointer:coarse){{\
         .pill,.theme-toggle,.tz-toggle,.links a,.det{{min-height:44px}}}}\
         .theme-toggle{{font-family:var(--font-body);font-size:var(--text-sm);white-space:nowrap;\
-        display:inline-flex;align-items:center;justify-content:center;min-width:2.75rem;min-height:2rem;\
+        display:inline-flex;align-items:center;justify-content:center;min-width:2.75rem;min-height:2rem;height:2rem;box-sizing:border-box;\
         border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
         color:var(--color-ink);background:transparent;cursor:pointer}}\
         .theme-toggle:hover{{color:var(--color-ink);border-color:var(--color-neutral)}}\
         .theme-toggle:active{{color:var(--color-ink)}}\
         .tz-toggle{{font-family:var(--font-mono);font-weight:600;font-size:var(--text-xs);\
         letter-spacing:.08em;white-space:nowrap;font-variant-numeric:tabular-nums;\
-        display:inline-flex;align-items:center;justify-content:center;min-width:3.5rem;min-height:2rem;\
+        display:inline-flex;align-items:center;justify-content:center;min-width:3.5rem;min-height:2rem;height:2rem;box-sizing:border-box;\
         border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
         color:var(--color-muted);background:transparent;cursor:pointer}}\
         .tz-toggle:hover{{color:var(--color-ink);border-color:var(--color-neutral)}}\
