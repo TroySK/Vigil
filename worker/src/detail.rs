@@ -12,88 +12,12 @@ use std::fmt::Write as _;
 use crate::auth::esc;
 use crate::db::Db;
 use crate::page::{default_counts, last_tick_at, links_html, shell, time_html};
+use crate::range::{bars_for, monitor_pills, Range};
 use crate::reads::{first_sample_at, recent_gaps, region_latest, series_ranged, GapOut, SampleOut};
 use vigil_core::config::Site;
-use vigil_core::rollup::{
-    bar_color, hour_bars, latency_chart, month_bars, percentile, sparkline_points, DayBar,
-};
+use vigil_core::rollup::{bar_color, latency_chart, percentile, sparkline_points};
 use vigil_core::state::Gap;
 use worker::{Response, Result};
-
-/// Detail time range: everything on the page covers exactly this window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Range {
-    /// Calendar days covered (1 selects the 24-hour view).
-    pub days: i64,
-    /// Human span used in headings ("24 hours", "7 days", …).
-    pub label: &'static str,
-    /// `?range=` value selecting this range.
-    pub param: &'static str,
-    /// Short pill text.
-    pub short: &'static str,
-}
-
-impl Range {
-    /// Seconds covered.
-    fn secs(self) -> i64 {
-        self.days.saturating_mul(86_400)
-    }
-
-    /// The 24-hour view renders hourly cells; day ranges render daily cells.
-    fn hourly(self) -> bool {
-        self.days <= 1
-    }
-}
-
-/// Range pills in display order.
-pub const RANGES: [Range; 4] = [RANGE_24H, RANGE_7D, RANGE_30D, RANGE_90D];
-pub const RANGE_24H: Range = Range {
-    days: 1,
-    label: "24 hours",
-    param: "24h",
-    short: "24H",
-};
-pub const RANGE_7D: Range = Range {
-    days: 7,
-    label: "7 days",
-    param: "7d",
-    short: "7D",
-};
-pub const RANGE_30D: Range = Range {
-    days: 30,
-    label: "30 days",
-    param: "30d",
-    short: "30D",
-};
-pub const RANGE_90D: Range = Range {
-    days: 90,
-    label: "90 days",
-    param: "90d",
-    short: "90D",
-};
-/// Default range: unknown or missing `?range=` values fall back here.
-pub const DEFAULT_RANGE: Range = RANGE_90D;
-
-/// Parse `?range=` (`24h`, `7d`, `30d`, `90d`, case-insensitive); anything
-/// else — including a missing value — selects the 90-day default.
-#[must_use]
-pub fn parse_range(raw: Option<&str>) -> Range {
-    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-        Some("24h") => RANGE_24H,
-        Some("7d") => RANGE_7D,
-        Some("30d") => RANGE_30D,
-        _ => DEFAULT_RANGE,
-    }
-}
-
-/// One history strip: cells plus how to paint, label, and describe them.
-struct Bars {
-    cells: Vec<DayBar>,
-    class: &'static str,
-    kind: &'static str,
-    label: fn(i64) -> String,
-    period: &'static str,
-}
 
 /// Whether a downtime window touches `[cutoff, now]`: ongoing gaps always
 /// do; closed ones overlap when they end at or after the cutoff and start
@@ -140,24 +64,9 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
         })
         .collect();
     // The 24-hour view renders 24 hourly cells; day ranges render one
-    // cell per day. Both share the DayBar shape, so one loop paints them.
-    let strip = if range.hourly() {
-        Bars {
-            cells: hour_bars(&core, now, 24, since),
-            class: "bars",
-            kind: "short",
-            label: vigil_core::short_label,
-            period: "hours",
-        }
-    } else {
-        Bars {
-            cells: month_bars(&core, now, usize::try_from(range.days).unwrap_or(90), since),
-            class: "bars90",
-            kind: "date",
-            label: vigil_core::date_label,
-            period: "days",
-        }
-    };
+    // cell per day (see range::bars_for). Both share the DayBar shape,
+    // so one loop paints them.
+    let strip = bars_for(&core, now, range, since);
     let mut cells = String::new();
     let mut covered = 0_usize;
     let mut sum = 0.0_f64;
@@ -258,7 +167,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
         <h3 class=sect>Incidents &middot; last {range_label}</h3><table class=inc><caption class=sr-only>Downtime windows for {name} over the last {range_label}</caption><thead><tr><th scope=col>From</th><th scope=col>To</th><th scope=col>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
         esc(&monitor.name),
         logo = crate::page::favicon_img(monitor, 24),
-        pills = range_pills(&monitor.id, range),
+        pills = monitor_pills(&monitor.id, range),
         word = if is_up { "UP" } else { "DOWN" },
         flag = if is_up { "1" } else { "0" },
         ms = last_probe_label(current),
@@ -274,33 +183,6 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
 
     let links = links_html(&site.links);
     Response::from_html(shell(&monitor.name, &site.title, &links, &counts, at, site.refresh_ms(), &body))
-}
-
-/// Range pills rendered directly after the monitor name: plain links (a
-/// page reload switches ranges) with the active range marked current
-/// instead of linked.
-fn range_pills(id: &str, active: Range) -> String {
-    let mut out = String::from("<nav class=range-pills aria-label=\"Time range\">");
-    for option in RANGES {
-        if option == active {
-            let _ = write!(
-                out,
-                "<span aria-current=page title=\"Last {}\">{}</span>",
-                option.label, option.short,
-            );
-        } else {
-            let _ = write!(
-                out,
-                "<a href=\"/monitor?id={}&range={}\" aria-label=\"Show last {}\">{}</a>",
-                esc(id),
-                option.param,
-                option.label,
-                option.short,
-            );
-        }
-    }
-    out.push_str("</nav>");
-    out
 }
 
 /// Per-region latency table: one row per probe origin (`place`) with its
@@ -379,7 +261,7 @@ fn last_probe_label(current: Option<&SampleOut>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{gap_in_range, geo_latency_table, last_probe_label, parse_range, RANGES};
+    use super::{gap_in_range, geo_latency_table, last_probe_label};
     use crate::reads::SampleOut;
 
     fn sample(up: i64) -> SampleOut {
@@ -407,19 +289,6 @@ mod tests {
             "418ms last probe &middot; BOM"
         );
         assert_eq!(last_probe_label(None), "No probes yet");
-    }
-
-    #[test]
-    fn range_parses_known_params_and_defaults_to_90_days() {
-        assert_eq!(parse_range(Some("24h")).days, 1);
-        assert_eq!(parse_range(Some("7d")).days, 7);
-        assert_eq!(parse_range(Some("30d")).days, 30);
-        assert_eq!(parse_range(Some("90d")).days, 90);
-        assert_eq!(parse_range(Some("7D")).days, 7);
-        assert_eq!(parse_range(None).days, 90);
-        assert_eq!(parse_range(Some("")).days, 90);
-        assert_eq!(parse_range(Some("bogus")).days, 90);
-        assert_eq!(RANGES.len(), 4);
     }
 
     #[test]
