@@ -41,7 +41,12 @@ day canvas with faint blooms. Light and dark both first-class via toggle.
 ## Motion
 - Easings: `--ease-out` cubic-bezier(0.16, 1, 0.3, 1) et al.
 - One fade-in entrance + hero counter. Tooltips instant.
-- Reduced-motion fallback: opacity-only, ≤ 150ms.
+- Cross-document view transitions (`@view-transition: navigation auto`):
+  drill into a monitor slides the new page in from the right (`forward`),
+  returning slides it in from the left (`back`), same-page range refreshes
+  fade (`fade`); direction is set in the `pageswap` handler from the
+  destination URL, reloads keep the UA default.
+- Reduced-motion fallback: opacity-only, ≤ 150ms; view transitions off.
 
 ## Microinteractions stance
 - Silent success; no toasts (no async user actions on these pages).
