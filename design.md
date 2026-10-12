@@ -89,7 +89,7 @@ See skill `export-formats.md` for the canonical mapping.
   --space-sm:  0.75rem;  --space-md:  1rem;    --space-lg:  1.5rem;
   --space-xl:  2.5rem;   --space-2xl: 4rem;    --space-3xl: 6rem;
 
-  --text-xs: 0.8rem;  --text-sm: 0.875rem; --text-base: 1rem;
+  --text-2xs: 0.7rem; --text-xs: 0.8rem;  --text-sm: 0.875rem; --text-base: 1rem;
   --text-md: 1.25rem; --text-lg: 1.5625rem; --text-xl: 1.9531rem;
   --text-display: clamp(3rem, 6vw + 1rem, 6rem);
 

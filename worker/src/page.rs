@@ -417,7 +417,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         --font-mono:\"JetBrains Mono\",ui-monospace,monospace;\
         --space-3xs:.125rem;--space-2xs:.25rem;--space-xs:.5rem;--space-sm:.75rem;\
         --space-md:1rem;--space-lg:1.5rem;--space-xl:2.5rem;--space-2xl:4rem;--space-3xl:6rem;\
-        --text-xs:.8rem;--text-sm:.875rem;--text-base:1rem;--text-md:1.25rem;\
+        --text-2xs:.7rem;--text-xs:.8rem;--text-sm:.875rem;--text-base:1rem;--text-md:1.25rem;\
         --text-lg:1.5625rem;--text-xl:1.9531rem;\
         --text-display:clamp(3rem,6vw + 1rem,6rem);\
         --ease-out:cubic-bezier(.16,1,.3,1);--ease-in:cubic-bezier(.7,0,.84,0);\
@@ -565,7 +565,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         border:1px dashed var(--color-rule)}}\
         .bars i::after,.bars90 i::after{{content:attr(data-tip);position:absolute;\
         bottom:calc(100% + var(--space-xs));left:50%;transform:translateX(-50%);\
-        font-family:var(--font-body);font-size:var(--text-base);font-weight:600;line-height:1.4;\
+        font-family:var(--font-body);font-size:var(--text-sm);font-weight:600;line-height:1.4;\
         color:var(--color-ink);background:var(--color-paper-2);\
         border:1px solid var(--color-rule);border-radius:var(--radius-m);\
         padding:var(--space-xs) var(--space-sm);white-space:nowrap;\
@@ -586,11 +586,11 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .spark .line,.chart .line{{fill:none;stroke:var(--color-accent);stroke-width:1.5}}\
         .spark circle,.chart circle{{fill:transparent;pointer-events:all;cursor:crosshair}}\
         .chart{{width:100%;height:auto;display:block;margin-top:var(--space-sm)}}\
-        .chart text{{font-family:var(--font-body);font-size:var(--text-xs);fill:var(--color-muted)}}\
+        .chart text{{font-family:var(--font-body);font-size:var(--text-2xs);fill:var(--color-muted)}}\
         .chart .grid{{stroke:var(--color-rule);stroke-width:1}}\
         .chart .axis{{stroke:var(--color-neutral);stroke-width:1}}\
         .svg-tip{{position:fixed;left:0;top:0;z-index:var(--z-sticky);display:none;\
-        font-family:var(--font-body);font-size:var(--text-base);font-weight:600;line-height:1.4;\
+        font-family:var(--font-body);font-size:var(--text-sm);font-weight:600;line-height:1.4;\
         color:var(--color-ink);background:var(--color-paper-2);\
         border:1px solid var(--color-rule);border-radius:var(--radius-m);\
         padding:var(--space-xs) var(--space-sm);white-space:nowrap;pointer-events:none}}\
