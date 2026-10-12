@@ -1,6 +1,6 @@
 //! UTC calendar formatting vectors, including pre-epoch instants.
 
-use vigil_core::clock::{date, rel, short, utc};
+use vigil_core::clock::{date, day_month, hour_min, rel, short, tip_stamp, utc};
 
 #[test]
 fn utc_full_stamp() {
@@ -21,6 +21,17 @@ fn short_axis_labels() {
     assert_eq!(short(0), "01-01 00:00");
     assert_eq!(short(1_791_000_000), "10-03 04:00");
     assert_eq!(short(-1), "12-31 23:59");
+}
+
+#[test]
+fn chart_labels_use_day_month_and_hour_minute() {
+    // 2026-06-12 14:30:45 UTC.
+    let sec = 1_781_274_645;
+    assert_eq!(day_month(sec), "12-June");
+    assert_eq!(hour_min(sec), "14:30");
+    assert_eq!(tip_stamp(sec), "12-June @ 14:30");
+    assert_eq!(day_month(0), "01-January");
+    assert_eq!(hour_min(0), "00:00");
 }
 
 #[test]

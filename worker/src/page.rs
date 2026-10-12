@@ -219,7 +219,7 @@ fn one_row(
                 bar_color(bar.pct),
                 day = bar.day,
                 kind = strip.kind,
-                tip = format!("{}: {:.1}%", label(bar.day), bar.pct),
+                tip = format!("{} UTC: {:.1}%", label(bar.day), bar.pct),
             );
         } else {
             let _ = write!(
@@ -227,7 +227,7 @@ fn one_row(
                 "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"{kind}\"></i>",
                 day = bar.day,
                 kind = strip.kind,
-                tip = format!("{}: no data", label(bar.day)),
+                tip = format!("{} UTC: no data", label(bar.day)),
             );
         }
     }
@@ -255,7 +255,7 @@ fn one_row(
             lat.iter().rev().map(|r| (r.at, r.ms, r.place.as_str())).collect();
         let p50 = percentile(&vals, 50.0);
         let p95 = percentile(&vals, 95.0);
-        let spark = latency_chart(&points, 560, 120);
+        let spark = latency_chart(&points, 560, 120, range.hourly());
         let chart = if spark.is_empty() {
             "<s>No samples yet</s>".to_owned()
         } else {
@@ -696,6 +696,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         function tzName(){{try{{var o=Intl.DateTimeFormat().resolvedOptions();if(o&&o.timeZone)return o.timeZone;}}catch(e){{}}return 'local time';}}\
         function tzAbbr(){{try{{var ps=new Intl.DateTimeFormat('en-US',{{timeZoneName:'short'}}).formatToParts(new Date());for(var i=0;i<ps.length;i++){{if(ps[i].type==='timeZoneName')return ps[i].value;}}}}catch(e){{}}return '';}}\
         function p2(n){{return (n<10?'0':'')+n;}}\
+        var MON=['January','February','March','April','May','June','July','August','September','October','November','December'];\
         function relTz(ts){{var s=Math.floor(Date.now()/1000)-ts;if(s<60)return 'just now';\
         var m=Math.floor(s/60);if(m<60)return m+(m===1?' minute ago':' minutes ago');\
         var h=Math.floor(m/60);if(h<24)return h+(h===1?' hour ago':' hours ago');\
@@ -705,6 +706,9 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         if(local){{Y=d.getFullYear();M=d.getMonth()+1;D=d.getDate();h=d.getHours();mi=d.getMinutes();s=d.getSeconds();}}\
         else{{Y=d.getUTCFullYear();M=d.getUTCMonth()+1;D=d.getUTCDate();h=d.getUTCHours();mi=d.getUTCMinutes();s=d.getUTCSeconds();}}\
         var date=Y+'-'+p2(M)+'-'+p2(D);\
+        if(kind==='hour')return p2(h)+':'+p2(mi);\
+        if(kind==='day')return p2(D)+'-'+MON[M-1];\
+        if(kind==='tip'){{var ab=local?tzAbbr():'';return p2(D)+'-'+MON[M-1]+' @ '+p2(h)+':'+p2(mi)+' '+(ab||(local?'local':'UTC'));}}\
         if(kind==='short')return p2(M)+'-'+p2(D)+' '+p2(h)+':'+p2(mi);\
         if(kind==='date')return date;\
         var ab=local?tzAbbr():'';return date+' '+p2(h)+':'+p2(mi)+':'+p2(s)+' '+(ab||(local?'local':'UTC'));}}\

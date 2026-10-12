@@ -89,7 +89,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
                 bar_color(bar.pct),
                 day = bar.day,
                 kind = strip.kind,
-                tip = format!("{}: {:.1}%", label(bar.day), bar.pct),
+                tip = format!("{} UTC: {:.1}%", label(bar.day), bar.pct),
             );
         } else {
             let _ = write!(
@@ -97,7 +97,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
                 "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"{kind}\"></i>",
                 day = bar.day,
                 kind = strip.kind,
-                tip = format!("{}: no data", label(bar.day)),
+                tip = format!("{} UTC: no data", label(bar.day)),
             );
         }
     }
@@ -117,7 +117,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
         lat.iter().rev().map(|r| (r.at, r.ms, r.place.as_str())).collect();
     let p50 = percentile(&vals, 50.0);
     let p95 = percentile(&vals, 95.0);
-    let spark = latency_chart(&points, 600, 150);
+    let spark = latency_chart(&points, 600, 150, range.hourly());
     let spark_html = if spark.is_empty() {
         "<p class=empty>No latency samples yet — the chart fills in after the next probe.</p>"
             .to_owned()
