@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::pin;
+use std::sync::OnceLock;
 use std::time::Duration;
 use vigil_core::checks::{place, Seen, What};
 use vigil_core::config::{Monitor, Probe};
@@ -21,11 +22,36 @@ fn now_ms() -> u64 {
 
 /// This isolate's Cloudflare colo (`SIN`, `BOM`, …), if determinable.
 ///
-/// Scheduled handlers receive no `Request`, so there is no `cf.colo` to
-/// read — instead one fast edge subrequest per tick hits `cdn-cgi/trace`
-/// and parses its `colo=` line. Any failure yields `None` and samples
-/// keep the `"CRON"` origin via [`place`](vigil_core::checks::place).
+/// Colo is a property of the isolate's datacenter and never changes while
+/// the isolate lives, so one trace lookup serves every tick the isolate
+/// handles; later ticks reuse the memoized value with no subrequest.
+static COLO_CACHE: OnceLock<String> = OnceLock::new();
+
+/// Resolve the tick's colo, using the memoized isolate colo when present.
 pub async fn colo() -> Option<String> {
+    if let Some(hit) = COLO_CACHE.get() {
+        return Some(hit.clone());
+    }
+    memo_colo(&COLO_CACHE, fetch_colo().await)
+}
+
+/// Memoize one successful colo lookup in `cache`: the cached value wins on
+/// later calls, and failures are never stored so the next tick retries.
+fn memo_colo(cache: &OnceLock<String>, fresh: Option<String>) -> Option<String> {
+    if let Some(hit) = cache.get() {
+        return Some(hit.clone());
+    }
+    let found = fresh?;
+    Some(cache.get_or_init(|| found).clone())
+}
+
+/// One fast edge subrequest per uncached tick.
+///
+/// Scheduled handlers receive no `Request`, so there is no `cf.colo` to
+/// read — instead the tick hits `cdn-cgi/trace` and parses its `colo=`
+/// line. Any failure yields `None` and samples keep the `"CRON"` origin
+/// via [`place`](vigil_core::checks::place).
+async fn fetch_colo() -> Option<String> {
     let url = url::Url::parse("https://www.cloudflare.com/cdn-cgi/trace").ok()?;
     let mut resp = Fetch::Url(url).send().await.ok()?;
     let body = resp.text().await.ok()?;
@@ -43,7 +69,8 @@ fn parse_colo(body: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_colo;
+    use super::{memo_colo, parse_colo};
+    use std::sync::OnceLock;
 
     #[test]
     fn parses_colo_line() {
@@ -51,6 +78,32 @@ mod tests {
         assert_eq!(parse_colo(body).as_deref(), Some("BOM"));
         assert_eq!(parse_colo("no colo here\n"), None);
         assert_eq!(parse_colo("colo=\n"), None);
+    }
+
+    #[test]
+    fn colo_memo_keeps_first_success() {
+        let cache = OnceLock::new();
+        assert_eq!(
+            memo_colo(&cache, Some("BOM".to_owned())),
+            Some("BOM".to_owned())
+        );
+        // The cached isolate colo wins over later lookups.
+        assert_eq!(
+            memo_colo(&cache, Some("SIN".to_owned())),
+            Some("BOM".to_owned())
+        );
+        assert_eq!(memo_colo(&cache, None), Some("BOM".to_owned()));
+    }
+
+    #[test]
+    fn colo_memo_retries_after_failure() {
+        let cache = OnceLock::new();
+        assert_eq!(memo_colo(&cache, None), None);
+        assert!(cache.get().is_none());
+        assert_eq!(
+            memo_colo(&cache, Some("BOM".to_owned())),
+            Some("BOM".to_owned())
+        );
     }
 }
 
