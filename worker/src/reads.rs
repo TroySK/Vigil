@@ -73,3 +73,67 @@ pub async fn series(db: &Db, id: &str, limit: i64) -> Result<Vec<SampleOut>> {
         .await?
         .results()
 }
+
+/// Row stride spreading a window of `count` samples over at most
+/// `max_points` chart points: full fidelity while the window fits, every
+/// Nth row by recency rank beyond that.
+#[must_use]
+pub fn stride_for(count: i64, max_points: i64) -> i64 {
+    let max_points = max_points.max(1);
+    ((count.max(0) + max_points - 1) / max_points).max(1)
+}
+
+/// Samples inside `[cutoff, +inf)` spread over at most `max_points` chart
+/// points, newest first. Short ranges keep every sample; long ranges (where
+/// cadence × span reaches tens of thousands of rows) take every Nth row by
+/// recency rank, so the chart always spans the full window honestly.
+pub async fn series_ranged(
+    db: &Db,
+    id: &str,
+    cutoff: i64,
+    max_points: i64,
+) -> Result<Vec<SampleOut>> {
+    let max_points = max_points.max(1);
+    let count: Option<i64> = db
+        .q("SELECT COUNT(*) AS n FROM samples WHERE id = ?1 AND at >= ?2")
+        .bind(&[id.into(), num(cutoff)])?
+        .first(Some("n"))
+        .await?;
+    let stride = stride_for(count.unwrap_or(0), max_points).max(1);
+    db.q("SELECT at, ms, up, place FROM (SELECT at, ms, up, place, ROW_NUMBER() OVER (ORDER BY at DESC) AS rn FROM samples WHERE id = ?1 AND at >= ?2) WHERE rn % ?3 = 1 ORDER BY at DESC LIMIT ?4")
+        .bind(&[id.into(), num(cutoff), num(stride), num(max_points)])?
+        .all()
+        .await?
+        .results()
+}
+
+/// Newest sample per probe origin, newest first. SQLite resolves the bare
+/// `ms`/`up` columns to the `MAX(at)` row within each group (documented
+/// bare-column behavior with a single min/max aggregate), so each row is
+/// that region's true latest sample.
+pub async fn region_latest(db: &Db, id: &str) -> Result<Vec<SampleOut>> {
+    db.q("SELECT MAX(at) AS at, ms, up, place FROM samples WHERE id = ?1 GROUP BY place ORDER BY at DESC")
+        .bind(&[id.into()])?
+        .all()
+        .await?
+        .results()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stride_for;
+
+    #[test]
+    fn stride_keeps_short_ranges_at_full_fidelity() {
+        assert_eq!(stride_for(0, 300), 1);
+        assert_eq!(stride_for(288, 300), 1);
+        assert_eq!(stride_for(300, 300), 1);
+    }
+
+    #[test]
+    fn stride_spreads_long_ranges_evenly() {
+        assert_eq!(stride_for(301, 300), 2);
+        assert_eq!(stride_for(2_016, 300), 7);
+        assert_eq!(stride_for(25_920, 300), 87);
+    }
+}
