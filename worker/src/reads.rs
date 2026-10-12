@@ -1,9 +1,12 @@
 //! Typed D1 read models: gap rows and latency samples.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use worker::Result;
 
 use crate::db::{num, Db};
+use vigil_core::state::Gap;
 
 /// One downtime window row for API responses and rollups.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -72,6 +75,173 @@ pub async fn series(db: &Db, id: &str, limit: i64) -> Result<Vec<SampleOut>> {
         .all()
         .await?
         .results()
+}
+
+/// `?1, ?2, …` placeholders for an `IN` list. Callers with no ids skip
+/// their query instead (empty `IN ()` is invalid SQL).
+fn placeholders(n: usize) -> String {
+    (0..n)
+        .map(|i| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Bind `ids` in order for an `IN` list query.
+fn bind_ids(ids: &[&str]) -> Vec<wasm_bindgen::JsValue> {
+    ids.iter().map(|id| (*id).into()).collect()
+}
+
+/// Newest sample per monitor, keyed by monitor id, from one round trip.
+/// SQLite resolves the bare `ms`/`up`/`place` columns to the `MAX(at)` row
+/// within each group (documented bare-column behavior with a single
+/// min/max aggregate).
+pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, SampleOut>> {
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        id: String,
+        at: i64,
+        ms: i64,
+        up: i64,
+        place: String,
+    }
+    let mut out = BTreeMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let rows: Vec<Row> = db
+        .q(&format!(
+            "SELECT id, MAX(at) AS at, ms, up, place FROM samples WHERE id IN ({}) GROUP BY id",
+            placeholders(ids.len())
+        ))
+        .bind(&bind_ids(ids))?
+        .all()
+        .await?
+        .results()?;
+    for row in rows {
+        out.insert(
+            row.id.clone(),
+            SampleOut {
+                at: row.at,
+                ms: row.ms,
+                up: row.up,
+                place: row.place.clone(),
+            },
+        );
+    }
+    Ok(out)
+}
+
+/// Gaps overlapping the last-24-hours window per monitor, keyed by id.
+/// Older closed gaps cannot affect hourly cells, so they never leave D1.
+pub async fn gaps_24h_by_monitor(
+    db: &Db,
+    ids: &[&str],
+    cutoff: i64,
+) -> Result<BTreeMap<String, Vec<Gap>>> {
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        id: String,
+        at: i64,
+        #[serde(alias = "upto")]
+        to: Option<i64>,
+        why: String,
+    }
+    let mut out: BTreeMap<String, Vec<Gap>> = BTreeMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let mut binds = bind_ids(ids);
+    binds.push(num(cutoff));
+    let rows: Vec<Row> = db
+        .q(&format!(
+            "SELECT id, at, upto, why FROM gaps WHERE id IN ({}) AND (upto IS NULL OR upto >= ?{})",
+            placeholders(ids.len()),
+            ids.len() + 1
+        ))
+        .bind(&binds)?
+        .all()
+        .await?
+        .results()?;
+    for row in rows {
+        out.entry(row.id.clone()).or_default().push(Gap {
+            at: row.at,
+            to: row.to,
+            why: row.why.clone(),
+        });
+    }
+    Ok(out)
+}
+
+/// Earliest sample per monitor, keyed by id: days before it render as
+/// "no data", never as 100% uptime.
+pub async fn first_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, i64>> {
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        id: String,
+        m: i64,
+    }
+    let mut out = BTreeMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let rows: Vec<Row> = db
+        .q(&format!(
+            "SELECT id, MIN(at) AS m FROM samples WHERE id IN ({}) GROUP BY id",
+            placeholders(ids.len())
+        ))
+        .bind(&bind_ids(ids))?
+        .all()
+        .await?
+        .results()?;
+    for row in rows {
+        out.insert(row.id, row.m);
+    }
+    Ok(out)
+}
+
+/// Up to `limit` newest samples per monitor, keyed by id, newest first.
+/// One window-function query replaces a round trip per monitor.
+pub async fn series_by_monitor(
+    db: &Db,
+    ids: &[&str],
+    limit: i64,
+) -> Result<BTreeMap<String, Vec<SampleOut>>> {
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        id: String,
+        at: i64,
+        ms: i64,
+        up: i64,
+        place: String,
+    }
+    let mut out: BTreeMap<String, Vec<SampleOut>> = BTreeMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let rows: Vec<Row> = db
+        .q(&format!(
+            "SELECT id, at, ms, up, place FROM (SELECT id, at, ms, up, place, ROW_NUMBER() OVER (PARTITION BY id ORDER BY at DESC) AS rn FROM samples WHERE id IN ({})) WHERE rn <= ?{} ORDER BY id ASC, at DESC",
+            placeholders(ids.len()),
+            ids.len() + 1
+        ))
+        .bind(
+            &bind_ids(ids)
+                .into_iter()
+                .chain(std::iter::once(num(limit.max(1))))
+                .collect::<Vec<_>>(),
+        )?
+        .all()
+        .await?
+        .results()?;
+    for row in rows {
+        out.entry(row.id.clone()).or_default().push(SampleOut {
+            at: row.at,
+            ms: row.ms,
+            up: row.up,
+            place: row.place.clone(),
+        });
+    }
+    Ok(out)
 }
 
 /// Row stride spreading a window of `count` samples over at most
