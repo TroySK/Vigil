@@ -5,7 +5,9 @@ use std::fmt::Write as _;
 
 use crate::auth::esc;
 use crate::db::Db;
-use crate::reads::{first_sample_at, latest, recent_gaps, series, GapOut, SampleOut};
+use crate::reads::{
+    first_by_monitor, gaps_24h_by_monitor, latest_by_monitor, series_by_monitor, SampleOut,
+};
 use vigil_core::config::{Monitor, Probe, Site};
 use vigil_core::rollup::{bar_color, hour_bars, latency_chart, percentile};
 use vigil_core::state::Gap;
@@ -90,18 +92,39 @@ pub async fn sections(db: &Db, site: &Site, at: i64, only_group: Option<&str>) -
             let _ = write!(out, "<div class=\"note {kind}\">{}</div>", esc(&text));
         }
     }
-    // One monitor row costs four D1 round trips; with 30 monitors the
-    // sequential version is ~120 trips. Fetch every row in one wave and
-    // assemble the groups from the results (order is preserved).
-    let rows: BTreeMap<String, String> =
-        futures_util::future::try_join_all(site.monitors.iter().map(|monitor| async move {
-            Ok::<(String, String), worker::Error>((
+    // Four batched D1 round trips cover every monitor (was: four per
+    // monitor, ~120 trips at 30 monitors). The homepage is the
+    // highest-traffic page; per-monitor fan-out risked the same CPU
+    // exhaustion that killed the tick.
+    let ids: Vec<&str> = site
+        .monitors
+        .iter()
+        .map(|monitor| monitor.id.as_str())
+        .collect();
+    let cutoff = at.max(1).saturating_sub(86_400);
+    let (latest, gap_lists, since_map, series) = futures_util::try_join!(
+        latest_by_monitor(db, &ids),
+        gaps_24h_by_monitor(db, &ids, cutoff),
+        first_by_monitor(db, &ids),
+        series_by_monitor(db, &ids, INDEX_LATENCY_SAMPLES),
+    )?;
+    // Rows assemble synchronously in file order; groups slice them below.
+    let rows: BTreeMap<String, String> = site
+        .monitors
+        .iter()
+        .map(|monitor| {
+            (
                 monitor.id.clone(),
-                one(db, monitor, at).await?,
-            ))
-        }))
-        .await?
-        .into_iter()
+                one_row(
+                    monitor,
+                    at,
+                    latest.get(&monitor.id),
+                    gap_lists.get(&monitor.id).map_or(&[], Vec::as_slice),
+                    since_map.get(&monitor.id).copied(),
+                    series.get(&monitor.id).map_or(&[], Vec::as_slice),
+                ),
+            )
+        })
         .collect();
     let row = |id: &str| rows.get(id).cloned().unwrap_or_default();
     if site.groups.is_empty() {
@@ -141,30 +164,22 @@ pub async fn sections(db: &Db, site: &Site, at: i64, only_group: Option<&str>) -
 /// One monitor row: status dot, name, history bars, latency sparkline.
 /// Rendered as a tabular spec-sheet row (F3): hairline rule, tabular
 /// numerics, status carried by dot + word (never color alone).
+///
+/// Pure: all reads arrive batched from [`sections`], so row rendering costs
+/// no I/O and is unit-testable. `gaps` covers the last 24 hours, `lat` the
+/// newest sparkline samples, `since` the monitor's first sample (if any).
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
-async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
-    // D1 round trips dominate render time, so fire all four reads at once
-    // instead of awaiting them one by one.
-    let (current, gaps, since, lat): (
-        Option<SampleOut>,
-        Vec<GapOut>,
-        Option<i64>,
-        Vec<SampleOut>,
-    ) = futures_util::try_join!(
-        latest(db, &monitor.id),
-        recent_gaps(db, &monitor.id, crate::api::GAP_SCAN_ROWS),
-        first_sample_at(db, &monitor.id),
-        async {
-            if monitor.quiet_chart {
-                Ok(Vec::new())
-            } else {
-                series(db, &monitor.id, INDEX_LATENCY_SAMPLES).await
-            }
-        },
-    )?;
-    let is_up = current.as_ref().map_or(true, |r| r.up == 1);
+fn one_row(
+    monitor: &Monitor,
+    at: i64,
+    current: Option<&SampleOut>,
+    gaps: &[Gap],
+    since: Option<i64>,
+    lat: &[SampleOut],
+) -> String {
+    let is_up = current.map_or(true, |r| r.up == 1);
     let word = if is_up { "UP" } else { "DOWN" };
-    let detail = match &current {
+    let detail = match current {
         Some(sample) if is_up => {
             format!(
                 "{}ms &middot; {} &middot; {}",
@@ -176,18 +191,10 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         Some(_) => "Check failing".to_owned(),
         None => "No data yet".to_owned(),
     };
-    let core: Vec<Gap> = gaps
-        .iter()
-        .map(|g| Gap {
-            at: g.at,
-            to: g.to,
-            why: g.why.clone(),
-        })
-        .collect();
     let mut cells = String::new();
     let mut covered = 0_usize;
     let mut sum = 0.0_f64;
-    for bar in hour_bars(&core, at.max(1), INDEX_HISTORY_HOURS, since) {
+    for bar in hour_bars(gaps, at.max(1), INDEX_HISTORY_HOURS, since) {
         if bar.has_data {
             covered += 1;
             sum += bar.pct;
@@ -256,13 +263,13 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
         .map_or_else(String::new, |t| format!(" title=\"{}\"", esc(t)));
     let flag = if is_up { "1" } else { "0" };
     let name = monitor_name(monitor);
-    Ok(format!(
+    format!(
         "<article class=r data-up=\"{flag}\"{tip}>\
         <div class=r-head><span class=d aria-hidden=true></span>\
         <b>{name}</b><div class=r-meta><s>{detail}</s><i>{word}</i><a class=det href=\"/monitor?id={}\">details &rsaquo;</a></div></div>\
         {extra}</article>",
         monitor.id
-    ))
+    )
 }
 
 /// Web origin for a monitor's site icons, if it has an origin.
@@ -725,7 +732,8 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
 
 #[cfg(test)]
 mod tests {
-    use super::{favicon_origin, links_html, parse_counts, time_html};
+    use super::{favicon_origin, links_html, one_row, parse_counts, time_html};
+    use crate::reads::SampleOut;
     use std::collections::BTreeMap;
     use vigil_core::config::{Monitor, Probe};
 
@@ -767,6 +775,60 @@ mod tests {
             ]),
         );
         assert!(html.find("Home").unwrap() < html.find("Blog").unwrap());
+    }
+
+    fn tried(at: i64, ms: i64, up: i64) -> SampleOut {
+        SampleOut {
+            at,
+            ms,
+            up,
+            place: "BOM".into(),
+        }
+    }
+
+    #[test]
+    fn row_states_carry_dot_word_and_detail() {
+        let m = http_monitor("https://example.com");
+        let up = one_row(&m, 10_000, Some(&tried(9_900, 54, 1)), &[], None, &[]);
+        assert!(up.contains("data-up=\"1\""));
+        assert!(up.contains("<i>UP</i>"));
+        assert!(up.contains("54ms"));
+        assert!(up.contains("BOM"));
+        assert!(up.contains("No samples yet"));
+        let down = one_row(&m, 10_000, Some(&tried(9_900, 0, 0)), &[], None, &[]);
+        assert!(down.contains("data-up=\"0\""));
+        assert!(down.contains("DOWN"));
+        assert!(down.contains("Check failing"));
+        let fresh = one_row(&m, 10_000, None, &[], None, &[]);
+        assert!(fresh.contains("No data yet"));
+    }
+
+    #[test]
+    fn row_paints_24_hour_cells() {
+        let m = http_monitor("https://example.com");
+        let html = one_row(&m, 200_000, None, &[], Some(1), &[]);
+        assert_eq!(html.matches("<i ").count(), 24);
+    }
+
+    #[test]
+    fn row_charts_latency_unless_quiet() {
+        let mut m = http_monitor("https://example.com");
+        let lat = vec![tried(9_900, 54, 1), tried(9_800, 60, 1)];
+        let html = one_row(&m, 10_000, Some(&tried(9_900, 54, 1)), &[], None, &lat);
+        assert!(html.contains("<svg"));
+        assert!(html.contains("class=lat"));
+        m.quiet_chart = true;
+        let quiet = one_row(&m, 10_000, Some(&tried(9_900, 54, 1)), &[], None, &lat);
+        assert!(!quiet.contains("class=lat"));
+        assert!(!quiet.contains("<svg"));
+    }
+
+    #[test]
+    fn row_escapes_monitor_name() {
+        let mut m = http_monitor("https://example.com");
+        m.name = "<img src=x>".into();
+        let html = one_row(&m, 10_000, None, &[], None, &[]);
+        assert!(!html.contains("<img src=x>"));
     }
 
     fn http_monitor(url: &str) -> Monitor {
