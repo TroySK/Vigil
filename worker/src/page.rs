@@ -525,7 +525,7 @@ pub fn shell(
         .range-menu summary{{list-style:none;cursor:pointer;font-family:var(--font-mono);\
         font-weight:600;font-size:var(--text-xs);letter-spacing:.08em;white-space:nowrap;\
         font-variant-numeric:tabular-nums;display:inline-flex;align-items:center;gap:var(--space-2xs);\
-        min-width:3.5rem;min-height:2rem;border:1px solid var(--color-rule);\
+        min-width:3.5rem;min-height:2rem;height:2rem;box-sizing:border-box;border:1px solid var(--color-rule);\
         border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
         color:var(--color-muted);background:transparent}}\
         .range-menu summary::-webkit-details-marker{{display:none}}\
