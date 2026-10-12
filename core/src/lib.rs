@@ -25,6 +25,24 @@ pub fn time_label(sec: i64) -> String {
     clock::utc(sec)
 }
 
+/// Chart axis label as `DD-Month` (`12-June`); day ranges only.
+#[must_use]
+pub fn axis_day(sec: i64) -> String {
+    clock::day_month(sec)
+}
+
+/// Chart axis label as `HH:MM`; the 24-hour view only.
+#[must_use]
+pub fn axis_hour(sec: i64) -> String {
+    clock::hour_min(sec)
+}
+
+/// Chart and bar tooltip stamp as `DD-Month @ HH:MM` (`12-June @ 14:30`).
+#[must_use]
+pub fn tip_stamp(sec: i64) -> String {
+    clock::tip_stamp(sec)
+}
+
 /// Relative age of `then` as seen at `now`: `just now`, `1 minute ago`,
 /// `N minutes ago`, `1 hour ago`, … (floored to whole minutes).
 #[must_use]

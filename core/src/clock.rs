@@ -53,6 +53,49 @@ fn ago(n: i64, unit: &str) -> String {
     }
 }
 
+/// Full month names for compact chart labels (`12-June`).
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// Format seconds since the Unix epoch as `DD-Month` (`05-June`) for
+/// chart axes on day-range views.
+#[must_use]
+pub fn day_month(sec: i64) -> String {
+    let (_, month, day) = civil(sec.div_euclid(SECS_PER_DAY));
+    format!("{day:02}-{}", MONTHS[(month - 1) as usize])
+}
+
+/// Format seconds since the Unix epoch as `HH:MM` for chart axes on the
+/// 24-hour view.
+#[must_use]
+pub fn hour_min(sec: i64) -> String {
+    let clock = sec.rem_euclid(SECS_PER_DAY);
+    format!(
+        "{:02}:{:02}",
+        clock / SECS_PER_HOUR,
+        clock % SECS_PER_HOUR / SECS_PER_MINUTE
+    )
+}
+
+/// Format seconds since the Unix epoch as `DD-Month @ HH:MM`
+/// (`05-June @ 14:30`) for chart and bar tooltips.
+#[must_use]
+pub fn tip_stamp(sec: i64) -> String {
+    format!("{} @ {}", day_month(sec), hour_min(sec))
+}
+
 /// Format seconds since the Unix epoch as `YYYY-MM-DD HH:MM:SS UTC`.
 ///
 /// Uses Howard Hinnant's civil-date algorithm;pure integer math so it

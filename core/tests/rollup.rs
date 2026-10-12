@@ -88,7 +88,8 @@ fn spark_points_carry_time_tooltips() {
     assert!(svg.contains("10ms"));
     assert!(svg.contains("20ms"));
     assert!(svg.contains("data-ts=\"1000\""));
-    assert!(svg.contains("data-tk=\"full\""));
+    assert!(svg.contains("data-tk=\"tip\""));
+    assert!(svg.contains("@ 00:16 UTC"));
     assert!(sparkline_points(&[], 90, 28).is_empty());
 }
 
@@ -109,18 +110,20 @@ fn smooth_path_curves_through_every_point() {
 #[test]
 fn latency_chart_has_labeled_axes() {
     use vigil_core::rollup::latency_chart;
-    let svg = latency_chart(
-        &[(1_000, 10, "BOM"), (2_000, 20, "SIN"), (3_000, 15, "BOM")],
-        600,
-        150,
-    );
+    let points = &[(1_000, 10, "BOM"), (2_000, 20, "SIN"), (3_000, 15, "BOM")];
+    let svg = latency_chart(points, 600, 150, false);
     assert!(svg.contains("20ms"));
     assert!(svg.contains("10ms"));
     assert!(svg.contains(">0<"));
     assert!(svg.contains("data-tip"));
     assert!(svg.contains("SIN"));
     assert!(svg.contains("data-ts=\"1000\""));
-    assert!(svg.contains("data-tk=\"short\""));
-    assert!(svg.contains("data-place=\"SIN\""));
-    assert!(latency_chart(&[], 600, 150).is_empty());
+    assert!(svg.contains("data-tk=\"day\""));
+    // Day ranges label axes `DD-Month`; the 24-hour view uses `HH:MM`.
+    assert!(svg.contains("01-January"));
+    assert!(svg.contains("data-tip=\"01-January @ 00:16 UTC"));
+    let hourly = latency_chart(points, 600, 150, true);
+    assert!(hourly.contains("data-tk=\"hour\""));
+    assert!(hourly.contains(">00:16<"));
+    assert!(latency_chart(&[], 600, 150, false).is_empty());
 }

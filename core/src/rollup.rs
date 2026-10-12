@@ -205,8 +205,8 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
         pixels.push((x, y));
         let _ = write!(
             dots,
-            "<circle cx=\"{x}\" cy=\"{y}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"full\" data-ms=\"{ms}\" data-tip=\"{}: {ms}ms\"/>",
-            crate::time_label(at),
+            "<circle cx=\"{x}\" cy=\"{y}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"tip\" data-ms=\"{ms}\" data-tip=\"{} UTC: {ms}ms\"/>",
+            crate::tip_stamp(at),
         );
     }
     format!(
@@ -219,17 +219,18 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
 
 /// Latency chart with labeled X (probe time) and Y (milliseconds) axes.
 ///
-/// Points are `(sample time, milliseconds, origin colo)`; each sample gets
-/// an invisible hover target whose tooltip names all three, since probes in
-/// one chart can come from different colos. Empty input yields an empty
-/// string.
+/// X labels read `HH:MM` on the 24-hour view (`hourly`) and `DD-Month`
+/// otherwise. Points are `(sample time, milliseconds, origin colo)`; each
+/// sample gets an invisible hover target whose tooltip names all three,
+/// since probes in one chart can come from different colos. Empty input
+/// yields an empty string.
 #[must_use]
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
 )]
-pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
+pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32, hourly: bool) -> String {
     if points.is_empty() {
         return String::new();
     }
@@ -258,15 +259,20 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
         let origin = crate::views::escape_html(place);
         let _ = write!(
             dots,
-            "<circle cx=\"{}\" cy=\"{}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"full\" data-place=\"{origin}\" data-ms=\"{ms}\" data-tip=\"{} &middot; {origin} &middot; {ms}ms\"/>",
+            "<circle cx=\"{}\" cy=\"{}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"tip\" data-place=\"{origin}\" data-ms=\"{ms}\" data-tip=\"{} UTC &middot; {origin} &middot; {ms}ms\"/>",
             x(i),
             y(ms),
-            crate::time_label(at),
+            crate::tip_stamp(at),
         );
     }
     let mid = max_ms / 2;
     let base = pad_t + plot_h;
     let mid_i = points.len() / 2;
+    let (axis_kind, axis_label): (&str, fn(i64) -> String) = if hourly {
+        ("hour", crate::axis_hour)
+    } else {
+        ("day", crate::axis_day)
+    };
     format!(
         "<svg class=\"chart\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-label=\"Latency chart\">\
 <title>Latency over time</title>\
@@ -276,9 +282,9 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
 <text x=\"{}\" y=\"{}\" text-anchor=\"end\">{max_ms}ms</text>\
 <text x=\"{}\" y=\"{}\" text-anchor=\"end\">{mid}ms</text>\
 <text x=\"{}\" y=\"{}\" text-anchor=\"end\">0</text>\
-<text x=\"{pad_l}\" y=\"{}\" text-anchor=\"start\" data-ts=\"{}\" data-tk=\"short\">{}</text>\
-<text x=\"{}\" y=\"{}\" text-anchor=\"middle\" data-ts=\"{}\" data-tk=\"short\">{}</text>\
-<text x=\"{}\" y=\"{}\" text-anchor=\"end\" data-ts=\"{}\" data-tk=\"short\">{}</text>\
+<text x=\"{pad_l}\" y=\"{}\" text-anchor=\"start\" data-ts=\"{}\" data-tk=\"{}\">{}</text>\
+<text x=\"{}\" y=\"{}\" text-anchor=\"middle\" data-ts=\"{}\" data-tk=\"{}\">{}</text>\
+<text x=\"{}\" y=\"{}\" text-anchor=\"end\" data-ts=\"{}\" data-tk=\"{}\">{}</text>\
 <path d=\"{}\" class=\"line\"/>{dots}</svg>",
         y(max_ms),
         pad_l + plot_w,
@@ -295,15 +301,18 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
         base + 4,
         h - 6,
         points[0].0,
-        crate::short_label(points[0].0),
+        axis_kind,
+        axis_label(points[0].0),
         pad_l + plot_w / 2,
         h - 6,
         points[mid_i].0,
-        crate::short_label(points[mid_i].0),
+        axis_kind,
+        axis_label(points[mid_i].0),
         pad_l + plot_w,
         h - 6,
         points[points.len() - 1].0,
-        crate::short_label(points[points.len() - 1].0),
+        axis_kind,
+        axis_label(points[points.len() - 1].0),
         smooth_path(&pixels)
     )
 }

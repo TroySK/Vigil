@@ -91,16 +91,16 @@ pub(crate) fn bars_for(core: &[Gap], now: i64, range: Range, since: Option<i64>)
         Bars {
             cells: hour_bars(core, now, 24, since),
             class: "bars",
-            kind: "short",
-            label: vigil_core::short_label,
+            kind: "tip",
+            label: vigil_core::tip_stamp,
             period: "hours",
         }
     } else {
         Bars {
             cells: month_bars(core, now, usize::try_from(range.days).unwrap_or(90), since),
             class: "bars90",
-            kind: "date",
-            label: vigil_core::date_label,
+            kind: "tip",
+            label: vigil_core::tip_stamp,
             period: "days",
         }
     }
