@@ -22,5 +22,11 @@ futures-util = "0.3"
 wasm-bindgen = "0.2"
 url = "2"
 
+[dev-dependencies]
+# Bundled-SQLite harness executing the shipped query text: D1 is SQLite
+# but unit tests have no D1, and an untested modulo predicate once emptied
+# every detail chart in production.
+rusqlite = { version = "0.31", features = ["bundled"] }
+
 
 
