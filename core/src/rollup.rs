@@ -129,45 +129,36 @@ pub fn percentile(values: &[i64], p: f64) -> i64 {
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
-/// Smooth SVG path through pixel points: Catmull-Rom splines converted to
-/// cubic Béziers, so latency lines read as trends instead of zigzags.
-/// Empty input yields an empty string; a single point yields a bare
-/// moveto (nothing visible, same as the old polyline).
+/// Smooth SVG path through pixel points: quadratic segments joined at
+/// edge midpoints, so latency lines read as trends instead of zigzags.
+/// Midpoints bound every coordinate to the inputs' range — unlike
+/// Catmull-Rom splines this can never overshoot into sharp `^` peaks on
+/// spiky samples. Empty input yields an empty string; a single point
+/// yields a bare moveto (nothing visible).
 #[must_use]
 pub fn smooth_path(points: &[(u32, u32)]) -> String {
     if points.is_empty() {
         return String::new();
     }
-    let at = |i: usize| points[i.min(points.len() - 1)];
-    let mut d = format!("M{},{}", points[0].0, points[0].1);
-    for i in 0..points.len().saturating_sub(1) {
-        let (x0, y0) = at(i.saturating_sub(1));
-        let (x1, y1) = at(i);
-        let (x2, y2) = at(i + 1);
-        let (x3, y3) = at(i + 2);
-        let _ = write!(
-            d,
-            "C{},{},{},{},{},{}",
-            curve(x1, x0, x2),
-            curve(y1, y0, y2),
-            curve(x2, x1, x3),
-            curve(y2, y1, y3),
-            x2,
-            y2,
-        );
+    let first = points[0];
+    if points.len() == 1 {
+        return format!("M{},{}", first.0, first.1);
     }
+    if points.len() == 2 {
+        let last = points[1];
+        return format!("M{},{} L{},{}", first.0, first.1, last.0, last.1);
+    }
+    let mid = |a: (u32, u32), b: (u32, u32)| ((a.0 + b.0) / 2, (a.1 + b.1) / 2);
+    let mut d = format!("M{},{}", first.0, first.1);
+    let m01 = mid(points[0], points[1]);
+    let _ = write!(d, " L{},{}", m01.0, m01.1);
+    for i in 1..points.len() - 1 {
+        let m = mid(points[i], points[i + 1]);
+        let _ = write!(d, " Q{},{} {},{}", points[i].0, points[i].1, m.0, m.1);
+    }
+    let last = points[points.len() - 1];
+    let _ = write!(d, " L{},{}", last.0, last.1);
     d
-}
-
-/// One Catmull-Rom control coordinate, rounded to whole pixels: `p1` pulled
-/// a sixth of the way toward the neighbor span. Integer math keeps the
-/// path output compact.
-#[allow(clippy::cast_possible_truncation)]
-fn curve(p1: u32, p0: u32, p2: u32) -> i64 {
-    // Pixel values stay far below 2^53, so the float round-trip is exact;
-    // float-to-int `as` saturates rather than wrapping on extremes.
-    let c = f64::from(p1) + (f64::from(p2) - f64::from(p0)) / 6.0;
-    c.round() as i64
 }
 
 /// Dependency-free SVG sparkline with per-point time tooltips
