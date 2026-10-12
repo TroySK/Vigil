@@ -129,6 +129,47 @@ pub fn percentile(values: &[i64], p: f64) -> i64 {
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
+/// Smooth SVG path through pixel points: Catmull-Rom splines converted to
+/// cubic Béziers, so latency lines read as trends instead of zigzags.
+/// Empty input yields an empty string; a single point yields a bare
+/// moveto (nothing visible, same as the old polyline).
+#[must_use]
+pub fn smooth_path(points: &[(u32, u32)]) -> String {
+    if points.is_empty() {
+        return String::new();
+    }
+    let at = |i: usize| points[i.min(points.len() - 1)];
+    let mut d = format!("M{},{}", points[0].0, points[0].1);
+    for i in 0..points.len().saturating_sub(1) {
+        let (x0, y0) = at(i.saturating_sub(1));
+        let (x1, y1) = at(i);
+        let (x2, y2) = at(i + 1);
+        let (x3, y3) = at(i + 2);
+        let _ = write!(
+            d,
+            "C{},{},{},{},{},{}",
+            curve(x1, x0, x2),
+            curve(y1, y0, y2),
+            curve(x2, x1, x3),
+            curve(y2, y1, y3),
+            x2,
+            y2,
+        );
+    }
+    d
+}
+
+/// One Catmull-Rom control coordinate, rounded to whole pixels: `p1` pulled
+/// a sixth of the way toward the neighbor span. Integer math keeps the
+/// path output compact.
+#[allow(clippy::cast_possible_truncation)]
+fn curve(p1: u32, p0: u32, p2: u32) -> i64 {
+    // Pixel values stay far below 2^53, so the float round-trip is exact;
+    // float-to-int `as` saturates rather than wrapping on extremes.
+    let c = f64::from(p1) + (f64::from(p2) - f64::from(p0)) / 6.0;
+    c.round() as i64
+}
+
 /// Dependency-free SVG sparkline with per-point time tooltips
 /// (oldest → newest). Each sample gets an invisible hover target carrying a
 /// `data-tip` attribute (`{timestamp}: {ms}ms`); a small page script turns
@@ -155,14 +196,13 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
     } else {
         f64::from(w) / (points.len() as f64 - 1.0)
     };
-    let mut pts = String::with_capacity(points.len() * 12);
+    let mut pixels = Vec::with_capacity(points.len());
     let mut dots = String::with_capacity(points.len() * 64);
     for (i, &(at, ms)) in points.iter().enumerate() {
         let x = (i as f64 * step).round() as u32;
         let scaled = (ms.max(0) as f64 / max) * f64::from(h.saturating_sub(4));
         let y = h.saturating_sub(scaled.round() as u32 + 2);
-        // `write!` on a `String` is infallible; ignore the result.
-        let _ = write!(pts, "{x},{y} ");
+        pixels.push((x, y));
         let _ = write!(
             dots,
             "<circle cx=\"{x}\" cy=\"{y}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"full\" data-ms=\"{ms}\" data-tip=\"{}: {ms}ms\"/>",
@@ -172,8 +212,8 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
     format!(
         "<svg class=\"spark\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-label=\"Latency sparkline\">\
 <title>Latency sparkline</title>\
-<polyline points=\"{}\" class=\"line\"/>{dots}</svg>",
-        pts.trim_end()
+<path d=\"{}\" class=\"line\"/>{dots}</svg>",
+        smooth_path(&pixels)
     )
 }
 
@@ -211,10 +251,10 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
         let scaled = (ms.max(0) as f64 / max) * f64::from(plot_h);
         pad_t + plot_h.saturating_sub(scaled.round() as u32)
     };
-    let mut pts = String::with_capacity(points.len() * 12);
+    let mut pixels = Vec::with_capacity(points.len());
     let mut dots = String::with_capacity(points.len() * 96);
     for (i, &(at, ms, place)) in points.iter().enumerate() {
-        let _ = write!(pts, "{},{} ", x(i), y(ms));
+        pixels.push((x(i), y(ms)));
         let origin = crate::views::escape_html(place);
         let _ = write!(
             dots,
@@ -239,7 +279,7 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
 <text x=\"{pad_l}\" y=\"{}\" text-anchor=\"start\" data-ts=\"{}\" data-tk=\"short\">{}</text>\
 <text x=\"{}\" y=\"{}\" text-anchor=\"middle\" data-ts=\"{}\" data-tk=\"short\">{}</text>\
 <text x=\"{}\" y=\"{}\" text-anchor=\"end\" data-ts=\"{}\" data-tk=\"short\">{}</text>\
-<polyline points=\"{}\" class=\"line\"/>{dots}</svg>",
+<path d=\"{}\" class=\"line\"/>{dots}</svg>",
         y(max_ms),
         pad_l + plot_w,
         y(max_ms),
@@ -264,7 +304,7 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32) -> String {
         h - 6,
         points[points.len() - 1].0,
         crate::short_label(points[points.len() - 1].0),
-        pts.trim_end()
+        smooth_path(&pixels)
     )
 }
 
@@ -285,17 +325,16 @@ pub fn sparkline(vals: &[i64], w: u32, h: u32) -> String {
     } else {
         f64::from(w) / (vals.len() as f64 - 1.0)
     };
-    let mut pts = String::with_capacity(vals.len() * 12);
+    let mut pixels = Vec::with_capacity(vals.len());
     for (i, &v) in vals.iter().enumerate() {
         let x = (i as f64 * step).round() as u32;
         let scaled = (v.max(0) as f64 / max) * f64::from(h.saturating_sub(4));
         let y = h.saturating_sub(scaled.round() as u32 + 2);
-        // `write!` on a `String` is infallible; ignore the result.
-        let _ = write!(pts, "{x},{y} ");
+        pixels.push((x, y));
     }
     format!(
         "<svg width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-hidden=\"true\">\
-<polyline points=\"{}\" fill=\"none\" stroke=\"#0969da\" stroke-width=\"1.5\"/></svg>",
-        pts.trim_end()
+<path d=\"{}\" fill=\"none\" stroke=\"#0969da\" stroke-width=\"1.5\"/></svg>",
+        smooth_path(&pixels)
     )
 }

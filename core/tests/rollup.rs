@@ -1,4 +1,6 @@
-use vigil_core::rollup::{bar_color, month_bars, percentile, sparkline, sparkline_points};
+use vigil_core::rollup::{
+    bar_color, month_bars, percentile, smooth_path, sparkline, sparkline_points,
+};
 use vigil_core::state::Gap;
 
 #[test]
@@ -74,20 +76,34 @@ fn percentiles_and_spark() {
     assert_eq!(percentile(&[10, 20, 30, 40], 50.0), 20);
     assert_eq!(percentile(&[10, 20, 30, 40], 95.0), 40);
     let svg = sparkline(&[10, 20, 15], 90, 28);
-    assert!(svg.contains("<polyline"));
+    assert!(svg.contains("<path"));
     assert!(sparkline(&[], 90, 28).is_empty());
 }
 
 #[test]
 fn spark_points_carry_time_tooltips() {
     let svg = sparkline_points(&[(1_000, 10), (2_000, 20)], 90, 28);
-    assert!(svg.contains("<polyline"));
+    assert!(svg.contains("<path"));
     assert!(svg.contains("data-tip"));
     assert!(svg.contains("10ms"));
     assert!(svg.contains("20ms"));
     assert!(svg.contains("data-ts=\"1000\""));
     assert!(svg.contains("data-tk=\"full\""));
     assert!(sparkline_points(&[], 90, 28).is_empty());
+}
+
+#[test]
+fn smooth_path_curves_through_every_point() {
+    assert_eq!(smooth_path(&[]), "");
+    assert_eq!(smooth_path(&[(3, 7)]), "M3,7");
+    // Two points render a straight segment; three or more curve.
+    let line = smooth_path(&[(0, 10), (90, 10)]);
+    assert!(line.starts_with("M0,10"));
+    assert!(line.ends_with("90,10"));
+    let curve = smooth_path(&[(0, 20), (45, 5), (90, 20)]);
+    assert!(curve.starts_with("M0,20"));
+    assert!(curve.contains('C'));
+    assert!(curve.ends_with("90,20"));
 }
 
 #[test]
