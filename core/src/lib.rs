@@ -25,6 +25,13 @@ pub fn time_label(sec: i64) -> String {
     clock::utc(sec)
 }
 
+/// Relative age of `then` as seen at `now`: `just now`, `1 minute ago`,
+/// `N minutes ago`, `1 hour ago`, … (floored to whole minutes).
+#[must_use]
+pub fn rel_label(now: i64, then: i64) -> String {
+    clock::rel(now, then)
+}
+
 /// Seconds since the Unix epoch rendered as `YYYY-MM-DD` (date only,
 /// for day cells where a clock time would be misleading).
 #[must_use]
