@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use crate::auth::esc;
 use crate::db::Db;
-use crate::page::{default_counts, last_tick_at, links_html, shell};
+use crate::page::{default_counts, last_tick_at, links_html, shell, time_html};
 use crate::reads::{first_sample_at, latest, recent_gaps, series, GapOut, SampleOut};
 use vigil_core::config::Site;
 use vigil_core::rollup::{bar_color, latency_chart, month_bars, percentile, sparkline_points};
@@ -59,11 +59,13 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         if bar.has_data {
             covered += 1;
             sum += bar.pct;
+            let v = format!("{:.1}%", bar.pct);
             let _ = write!(
                 cells,
-                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" style=\"background:{}\">{:.1}%</i>",
+                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"date\" data-v=\"{v}\" style=\"background:{}\">{:.1}%</i>",
                 bar_color(bar.pct),
                 bar.pct,
+                day = bar.day,
                 tip = format!(
                     "{}: {:.1}%",
                     vigil_core::date_label(bar.day),
@@ -73,7 +75,8 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         } else {
             let _ = write!(
                 cells,
-                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\"></i>",
+                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"date\"></i>",
+                day = bar.day,
                 tip = format!("{}: no data", vigil_core::date_label(bar.day)),
             );
         }
@@ -106,13 +109,14 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
     };
     let mut rows = String::new();
     for gap in gaps.iter().take(DETAIL_INCIDENTS) {
-        let to = gap
-            .to
-            .map_or_else(|| "ongoing".to_owned(), vigil_core::time_label);
+        let to = gap.to.map_or_else(
+            || "ongoing".to_owned(),
+            |t| time_html(t, "full", &vigil_core::time_label(t)),
+        );
         let _ = write!(
             rows,
             "<tr><td data-label=\"From\">{}</td><td data-label=\"To\">{to}</td><td data-label=\"Reason\">{}</td></tr>",
-            vigil_core::time_label(gap.at),
+            time_html(gap.at, "full", &vigil_core::time_label(gap.at)),
             esc(&gap.why)
         );
     }
@@ -197,7 +201,7 @@ pub fn geo_latency_table(lat: &[SampleOut], at: i64) -> String {
             <td data-label=\"Latency\">{ms}ms</td>\
             <td data-label=\"Last 7 days\">{chart}</td></tr>",
             esc(place),
-            vigil_core::time_label(recent.at),
+            time_html(recent.at, "full", &vigil_core::time_label(recent.at)),
             ms = recent.ms,
         );
     }
@@ -270,6 +274,9 @@ mod tests {
         // Most recently seen region sorts first.
         assert!(html.find("BOM").unwrap() < html.find("SIN").unwrap());
         assert!(html.contains("Last 7 days"));
+        // Timestamps ride along for the client-side UTC/local toggle.
+        assert!(html.contains("data-ts=\"2000\""));
+        assert!(html.contains("<time data-ts="));
     }
 
     #[test]
