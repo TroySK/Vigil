@@ -703,6 +703,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         var h=Math.floor(m/60);if(h<24)return h+(h===1?' hour ago':' hours ago');\
         var d=Math.floor(h/24);return d+(d===1?' day ago':' days ago');}}\
         function fmtTz(ts,kind,local){{if(kind==='rel')return relTz(ts);\
+        if(kind==='Rel'){{var r=relTz(ts);return r?r.charAt(0).toUpperCase()+r.slice(1):r;}}\
         var d=new Date(ts*1000);var Y,M,D,h,mi,s;\
         if(local){{Y=d.getFullYear();M=d.getMonth()+1;D=d.getDate();h=d.getHours();mi=d.getMinutes();s=d.getSeconds();}}\
         else{{Y=d.getUTCFullYear();M=d.getUTCMonth()+1;D=d.getUTCDate();h=d.getUTCHours();mi=d.getUTCMinutes();s=d.getUTCSeconds();}}\
