@@ -28,6 +28,7 @@ pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
     body.push_str(&sections(db, site, at, None, range).await?);
     let links = links_html(&site.links);
     let menu = crate::range::menu(range, |option| format!("/?range={}", option.param));
+    let home = format!("/?range={}", range.param);
     Response::from_html(shell(
         &site.title,
         &site.title,
@@ -36,6 +37,7 @@ pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
         at,
         site.refresh_ms(),
         &menu,
+        &home,
         &body,
     ))
 }
@@ -287,9 +289,10 @@ fn one_row(
     format!(
         "<article class=r data-up=\"{flag}\"{tip}>\
         <div class=r-head><span class=d aria-hidden=true></span>\
-        <b>{name}</b><div class=r-meta><s>{detail}</s><i>{word}</i><a class=det href=\"/monitor?id={}\">details &rsaquo;</a></div></div>\
+        <b>{name}</b><div class=r-meta><s>{detail}</s><i>{word}</i><a class=det href=\"/monitor?id={}&range={}\">details &rsaquo;</a></div></div>\
         {extra}</article>",
-        monitor.id
+        monitor.id,
+        range.param
     )
 }
 
@@ -396,6 +399,7 @@ pub fn shell(
     at: i64,
     refresh_ms: u64,
     range_menu: &str,
+    home_url: &str,
     body: &str,
 ) -> String {
     let (cup, cdown) = parse_counts(counts);
@@ -691,7 +695,7 @@ pub fn shell(
         *,*::before,*::after{{animation-duration:150ms !important;transition-duration:150ms !important}}\
         .r:hover{{transform:none}}}}\
         </style></head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
-        <header class=nav-edge><a class=wordmark href=\"/\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=tz-toggle id=tz-toggle type=button aria-label=\"Toggle time zone\" aria-pressed=\"false\" title=\"Times shown in UTC\">UTC</button>{menu}<button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
+        <header class=nav-edge><a class=wordmark href=\"{home}\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=tz-toggle id=tz-toggle type=button aria-label=\"Toggle time zone\" aria-pressed=\"false\" title=\"Times shown in UTC\">UTC</button>{menu}<button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
         <nav class=links aria-label=\"Site\"><span class=links-label>Quick links:</span>{links}</nav>\
         <main id=main data-at=\"{at}\" tabindex=-1>{body}</main>\
         <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>Checked {time}</span></footer>\
@@ -776,6 +780,7 @@ pub fn shell(
         esc(page_title),
         esc(brand),
         esc(brand),
+        home = home_url,
         time = time_html(at.max(0), "rel", &vigil_core::time_label(at.max(0))),
         menu = range_menu
     )
@@ -855,6 +860,8 @@ mod tests {
         assert!(up.contains("54ms"));
         assert!(up.contains("BOM"));
         assert!(up.contains("No samples yet"));
+        // Range syncs across pages: the details link carries it.
+        assert!(up.contains("/monitor?id=m&range=24h"));
         let down = one_row(
             &m,
             RANGE_24H,
