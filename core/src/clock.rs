@@ -27,6 +27,32 @@ pub fn short(sec: i64) -> String {
     )
 }
 
+/// Relative age of `then` as seen at `now`, floored to whole minutes:
+/// `just now`, `1 minute ago`, `N minutes ago`, `1 hour ago`, ….
+/// Future timestamps (clock skew) read as `just now`, never negative.
+#[must_use]
+pub fn rel(now: i64, then: i64) -> String {
+    let mins = now.saturating_sub(then).max(0) / SECS_PER_MINUTE;
+    if mins < 1 {
+        "just now".to_owned()
+    } else if mins < 60 {
+        ago(mins, "minute")
+    } else if mins < 60 * 24 {
+        ago(mins / 60, "hour")
+    } else {
+        ago(mins / (60 * 24), "day")
+    }
+}
+
+/// `1 minute ago` / `3 minutes ago` (singular only for exactly one).
+fn ago(n: i64, unit: &str) -> String {
+    if n == 1 {
+        format!("1 {unit} ago")
+    } else {
+        format!("{n} {unit}s ago")
+    }
+}
+
 /// Format seconds since the Unix epoch as `YYYY-MM-DD HH:MM:SS UTC`.
 ///
 /// Uses Howard Hinnant's civil-date algorithm;pure integer math so it

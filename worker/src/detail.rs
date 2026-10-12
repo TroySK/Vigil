@@ -201,7 +201,7 @@ pub fn geo_latency_table(lat: &[SampleOut], at: i64) -> String {
             <td data-label=\"Latency\">{ms}ms</td>\
             <td data-label=\"Last 7 days\">{chart}</td></tr>",
             esc(place),
-            time_html(recent.at, "full", &vigil_core::time_label(recent.at)),
+            time_html(recent.at, "rel", &vigil_core::time_label(recent.at)),
             ms = recent.ms,
         );
     }

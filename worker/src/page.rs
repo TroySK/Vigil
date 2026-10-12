@@ -49,7 +49,7 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
             up.to_string(),
             format!(
                 "Monitors up out of {total} checked. Last probe {stamp}.",
-                stamp = time_html(at.max(1), "full", &vigil_core::time_label(at.max(1)))
+                stamp = time_html(at.max(1), "rel", &vigil_core::time_label(at.max(1)))
             ),
         )
     } else {
@@ -57,7 +57,7 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
             down.to_string(),
             format!(
                 "Monitors down out of {total} checked. Last probe {stamp}.",
-                stamp = time_html(at.max(1), "full", &vigil_core::time_label(at.max(1)))
+                stamp = time_html(at.max(1), "rel", &vigil_core::time_label(at.max(1)))
             ),
         )
     };
@@ -169,7 +169,7 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
             format!(
                 "{}ms &middot; {} &middot; {}",
                 sample.ms,
-                time_html(sample.at, "full", &vigil_core::time_label(sample.at)),
+                time_html(sample.at, "rel", &vigil_core::time_label(sample.at)),
                 esc(&sample.place)
             )
         }
@@ -341,9 +341,10 @@ pub fn default_counts() -> String {
     "0/0".to_owned()
 }
 
-/// Inline `<time>` carrying its unix timestamp so the client-side UTC/local
-/// toggle can re-render it without refetching. `kind` is `full`, `short` or
-/// `date`, matching the server-side UTC format of `text`.
+/// Inline `<time>` carrying its unix timestamp so the client can re-render
+/// it without refetching. `kind` is `full`, `short` or `date` (absolute UTC
+/// formats matching `text`), or `rel`: the server bakes the UTC `text` as a
+/// no-JS fallback and the toggle script replaces it with a live relative age.
 #[must_use]
 pub fn time_html(at: i64, kind: &str, text: &str) -> String {
     format!("<time data-ts=\"{at}\" data-tk=\"{kind}\">{text}</time>")
@@ -659,7 +660,12 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         function tzName(){{try{{var o=Intl.DateTimeFormat().resolvedOptions();if(o&&o.timeZone)return o.timeZone;}}catch(e){{}}return 'local time';}}\
         function tzAbbr(){{try{{var ps=new Intl.DateTimeFormat('en-US',{{timeZoneName:'short'}}).formatToParts(new Date());for(var i=0;i<ps.length;i++){{if(ps[i].type==='timeZoneName')return ps[i].value;}}}}catch(e){{}}return '';}}\
         function p2(n){{return (n<10?'0':'')+n;}}\
-        function fmtTz(ts,kind,local){{var d=new Date(ts*1000);var Y,M,D,h,mi,s;\
+        function relTz(ts){{var s=Math.floor(Date.now()/1000)-ts;if(s<60)return 'just now';\
+        var m=Math.floor(s/60);if(m<60)return m+(m===1?' minute ago':' minutes ago');\
+        var h=Math.floor(m/60);if(h<24)return h+(h===1?' hour ago':' hours ago');\
+        var d=Math.floor(h/24);return d+(d===1?' day ago':' days ago');}}\
+        function fmtTz(ts,kind,local){{if(kind==='rel')return relTz(ts);\
+        var d=new Date(ts*1000);var Y,M,D,h,mi,s;\
         if(local){{Y=d.getFullYear();M=d.getMonth()+1;D=d.getDate();h=d.getHours();mi=d.getMinutes();s=d.getSeconds();}}\
         else{{Y=d.getUTCFullYear();M=d.getUTCMonth()+1;D=d.getUTCDate();h=d.getUTCHours();mi=d.getUTCMinutes();s=d.getUTCSeconds();}}\
         var date=Y+'-'+p2(M)+'-'+p2(D);\
@@ -686,6 +692,8 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         if(zb){{zb.addEventListener('click',function(){{tzMode=(tzMode==='local')?'utc':'local';\
         try{{localStorage.setItem('vigil-tz',tzMode);}}catch(e){{}}applyTz();}});}}\
         applyTz();\
+        if(document.querySelector('time[data-tk=\"rel\"]')){{\
+        setInterval(function(){{if(document.hidden)return;applyTz();}},30000);}}\
         var mainEl=document.querySelector('main[data-at]');\
         if(mainEl&&{refresh_ms}>0){{var seen=parseInt(mainEl.getAttribute('data-at'),10)||0;\
         setInterval(function(){{if(document.hidden)return;\
@@ -696,7 +704,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         esc(page_title),
         esc(brand),
         esc(brand),
-        time = time_html(at.max(0), "full", &vigil_core::time_label(at.max(0)))
+        time = time_html(at.max(0), "rel", &vigil_core::time_label(at.max(0)))
     )
 }
 
