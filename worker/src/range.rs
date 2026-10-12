@@ -4,7 +4,6 @@
 
 use std::fmt::Write as _;
 
-use crate::auth::esc;
 use vigil_core::rollup::{hour_bars, month_bars, DayBar};
 use vigil_core::state::Gap;
 
@@ -106,42 +105,39 @@ pub(crate) fn bars_for(core: &[Gap], now: i64, range: Range, since: Option<i64>)
     }
 }
 
-/// Range pills: plain links (a page reload switches ranges) with the
-/// active range marked current instead of linked. `href` builds each
-/// option's URL — detail pages scope by monitor, the index by nothing.
-pub(crate) fn pills(active: Range, href: impl Fn(Range) -> String) -> String {
-    let mut out = String::from("<nav class=range-pills aria-label=\"Time range\">");
+/// Header range dropdown: `<details>` needs no JS (selecting an option
+/// navigates, which reloads the page and closes the menu). `href` builds
+/// each option's URL — detail pages scope by monitor, the index by
+/// nothing. Replaces the old in-page pills with one header control.
+pub(crate) fn menu(active: Range, href: impl Fn(Range) -> String) -> String {
+    let mut out = String::from("<details class=range-menu><summary aria-label=\"Time range\">");
+    out.push_str(active.short);
+    out.push_str("</summary><div class=range-pop role=menu>");
     for option in RANGES {
         if option == active {
             let _ = write!(
                 out,
-                "<span aria-current=page title=\"Last {}\">{}</span>",
-                option.label, option.short,
+                "<a href=\"{}\" aria-current=\"page\" role=menuitem>{}</a>",
+                href(option),
+                option.short,
             );
         } else {
             let _ = write!(
                 out,
-                "<a href=\"{}\" aria-label=\"Show last {}\">{}</a>",
+                "<a href=\"{}\" role=menuitem aria-label=\"Show last {}\">{}</a>",
                 href(option),
                 option.label,
                 option.short,
             );
         }
     }
-    out.push_str("</nav>");
+    out.push_str("</div></details>");
     out
-}
-
-/// Range pills for one monitor's detail page (`/monitor?id=…&range=…`).
-pub(crate) fn monitor_pills(id: &str, active: Range) -> String {
-    pills(active, |option| {
-        format!("/monitor?id={}&range={}", esc(id), option.param)
-    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_range, pills, RANGES, RANGE_7D};
+    use super::{menu, parse_range, RANGES, RANGE_90D};
 
     #[test]
     fn range_parses_known_params_and_defaults_to_90_days() {
@@ -157,12 +153,12 @@ mod tests {
     }
 
     #[test]
-    fn pills_link_everything_but_the_active_range() {
-        let html = pills(RANGE_7D, |option| format!("/?range={}", option.param));
-        assert!(html.contains("aria-label=\"Time range\""));
-        assert!(html.contains(">7D<"));
-        assert!(html.contains("aria-current=page"));
+    fn menu_summarizes_the_active_range() {
+        let html = menu(RANGE_90D, |option| format!("/?range={}", option.param));
+        assert!(html.contains("<details class=range-menu>"));
+        assert!(html.contains(">90D</summary>"));
         assert!(html.contains("href=\"/?range=24h\""));
-        assert!(!html.contains("range=7d"));
+        assert!(html.contains("href=\"/?range=90d\""));
+        assert!(html.contains("aria-current=\"page\""));
     }
 }

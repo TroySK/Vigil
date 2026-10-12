@@ -25,12 +25,19 @@ pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
     let (up, down) = parse_counts(&counts);
     let hero = hero_html(site, up, down, at);
     let mut body = hero;
-    body.push_str(&crate::range::pills(range, |option| {
-        format!("/?range={}", option.param)
-    }));
     body.push_str(&sections(db, site, at, None, range).await?);
     let links = links_html(&site.links);
-    Response::from_html(shell(&site.title, &site.title, &links, &counts, at, site.refresh_ms(), &body))
+    let menu = crate::range::menu(range, |option| format!("/?range={}", option.param));
+    Response::from_html(shell(
+        &site.title,
+        &site.title,
+        &links,
+        &counts,
+        at,
+        site.refresh_ms(),
+        &menu,
+        &body,
+    ))
 }
 
 /// Parse an `up/down` counts string; malformed input yields `(0, 0)`.
@@ -380,8 +387,17 @@ pub fn time_html(at: i64, kind: &str, text: &str) -> String {
 /// Stamp: Hallmark genre modern-minimal · macrostructure Stat-Led ·
 /// theme Cobalt · nav N9 · footer Ft2 · enrichment none.
 #[must_use]
-#[allow(clippy::too_many_lines)]
-pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, refresh_ms: u64, body: &str) -> String {
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+pub fn shell(
+    page_title: &str,
+    brand: &str,
+    links: &str,
+    counts: &str,
+    at: i64,
+    refresh_ms: u64,
+    range_menu: &str,
+    body: &str,
+) -> String {
     let (cup, cdown) = parse_counts(counts);
     let total = cup.saturating_add(cdown);
     let pill = if total == 0 {
@@ -471,7 +487,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .pill[data-up=\"0\"]{{color:var(--color-ink);border-color:var(--color-bad)}}\
         .pill[data-up=\"2\"]{{color:var(--color-muted);border-style:dashed}}\
         @media (pointer:coarse){{\
-        .pill,.theme-toggle,.tz-toggle,.links a,.det,.range-pills a,.range-pills [aria-current]{{min-height:44px}}}}\
+        .pill,.theme-toggle,.tz-toggle,.range-menu summary,.range-pop a,.links a,.det{{min-height:44px}}}}\
         .theme-toggle{{font-family:var(--font-body);font-size:var(--text-sm);white-space:nowrap;\
         display:inline-flex;align-items:center;justify-content:center;min-width:2.75rem;min-height:2rem;height:2rem;box-sizing:border-box;\
         border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
@@ -485,6 +501,29 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         color:var(--color-muted);background:transparent;cursor:pointer}}\
         .tz-toggle:hover{{color:var(--color-ink);border-color:var(--color-neutral)}}\
         .tz-toggle[aria-pressed=\"true\"]{{color:var(--color-ink);border-color:var(--color-accent)}}\
+        .range-menu{{position:relative;flex:none}}\
+        .range-menu summary{{list-style:none;cursor:pointer;font-family:var(--font-mono);\
+        font-weight:600;font-size:var(--text-xs);letter-spacing:.08em;white-space:nowrap;\
+        font-variant-numeric:tabular-nums;display:inline-flex;align-items:center;gap:var(--space-2xs);\
+        min-width:3.5rem;min-height:2rem;border:1px solid var(--color-rule);\
+        border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
+        color:var(--color-muted);background:transparent}}\
+        .range-menu summary::-webkit-details-marker{{display:none}}\
+        .range-menu summary::after{{content:\"\";border:solid var(--color-muted);\
+        border-width:0 1.5px 1.5px 0;padding:2.5px;transform:rotate(45deg) translateY(-1px)}}\
+        .range-menu summary:hover{{color:var(--color-ink);border-color:var(--color-neutral)}}\
+        .range-menu summary:hover::after{{border-color:var(--color-ink)}}\
+        .range-menu[open] summary{{color:var(--color-ink);border-color:var(--color-accent)}}\
+        .range-pop{{position:absolute;right:0;top:calc(100% + var(--space-2xs));\
+        display:flex;flex-direction:column;gap:2px;min-width:7rem;z-index:var(--z-sticky);\
+        background:var(--color-paper-2);border:1px solid var(--color-rule);\
+        border-radius:var(--radius-m);padding:var(--space-2xs);box-shadow:var(--shadow)}}\
+        .range-pop a{{font-family:var(--font-mono);font-weight:600;font-size:var(--text-xs);\
+        letter-spacing:.08em;white-space:nowrap;text-decoration:none;display:flex;\
+        align-items:center;min-height:2rem;border-radius:var(--radius-s);\
+        padding:var(--space-3xs) var(--space-sm);color:var(--color-muted)}}\
+        .range-pop a:hover{{color:var(--color-ink);background:color-mix(in oklch,var(--color-paper) 60%,transparent)}}\
+        .range-pop a[aria-current]{{color:var(--color-ink)}}\
         .theme-toggle svg{{width:16px;height:16px;display:block;color:var(--color-ink);stroke:var(--color-ink);fill:none}}.theme-toggle svg *{{stroke:inherit;fill:inherit}}\
         .theme-toggle .icon-sun{{display:none}}\
         [data-theme=\"dark\"] .theme-toggle .icon-sun{{display:block}}\
@@ -615,15 +654,6 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         text-transform:uppercase;letter-spacing:.08em;color:var(--color-muted);\
         text-decoration:none;white-space:nowrap}}\
         .crumb a:hover{{color:var(--color-accent)}}\
-        .range-pills{{display:flex;flex-wrap:wrap;gap:var(--space-2xs);margin:var(--space-sm) 0 0}}\
-        .range-pills a,.range-pills [aria-current]{{font-family:var(--font-mono);font-weight:600;\
-        font-size:var(--text-xs);letter-spacing:.08em;white-space:nowrap;display:inline-flex;\
-        align-items:center;min-height:2rem;text-decoration:none;border:1px solid var(--color-rule);\
-        border-radius:var(--radius-pill);padding:var(--space-3xs) var(--space-sm);\
-        color:var(--color-muted);background:transparent;font-variant-numeric:tabular-nums}}\
-        .range-pills a:hover{{color:var(--color-ink);border-color:var(--color-accent)}}\
-        .range-pills [aria-current]{{color:var(--color-ink);border-color:var(--color-accent);\
-        background:var(--color-paper-2)}}\
         .detail-hero h2{{font-family:var(--font-display);font-weight:700;font-style:normal;\
         font-size:clamp(2rem,4vw + 1rem,3rem);letter-spacing:-.025em;line-height:1.05;\
         margin:var(--space-sm) 0 var(--space-2xs);overflow-wrap:anywhere;min-width:0}}\
@@ -661,7 +691,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         *,*::before,*::after{{animation-duration:150ms !important;transition-duration:150ms !important}}\
         .r:hover{{transform:none}}}}\
         </style></head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
-        <header class=nav-edge><a class=wordmark href=\"/\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=tz-toggle id=tz-toggle type=button aria-label=\"Toggle time zone\" aria-pressed=\"false\" title=\"Times shown in UTC\">UTC</button><button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
+        <header class=nav-edge><a class=wordmark href=\"/\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=tz-toggle id=tz-toggle type=button aria-label=\"Toggle time zone\" aria-pressed=\"false\" title=\"Times shown in UTC\">UTC</button>{menu}<button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
         <nav class=links aria-label=\"Site\"><span class=links-label>Quick links:</span>{links}</nav>\
         <main id=main data-at=\"{at}\" tabindex=-1>{body}</main>\
         <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>Checked {time}</span></footer>\
@@ -746,7 +776,8 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         esc(page_title),
         esc(brand),
         esc(brand),
-        time = time_html(at.max(0), "rel", &vigil_core::time_label(at.max(0)))
+        time = time_html(at.max(0), "rel", &vigil_core::time_label(at.max(0))),
+        menu = range_menu
     )
 }
 
