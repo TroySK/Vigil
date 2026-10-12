@@ -29,6 +29,7 @@ pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
     let links = links_html(&site.links);
     let menu = crate::range::menu(range, |option| format!("/?range={}", option.param));
     let home = format!("/?range={}", range.param);
+    let speculation = speculation_rule("/monitor*");
     Response::from_html(shell(
         &site.title,
         &site.title,
@@ -38,6 +39,7 @@ pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
         site.refresh_ms(),
         &menu,
         &home,
+        &speculation,
         &body,
     ))
 }
@@ -381,6 +383,19 @@ pub fn time_html(at: i64, kind: &str, text: &str) -> String {
     format!("<time data-ts=\"{at}\" data-tk=\"{kind}\">{text}</time>")
 }
 
+/// Speculation-rules tag prerendering same-origin navigations matching
+/// `pattern` on hover intent (`moderate` eagerness): Chromium turns likely
+/// next-page hovers into instant navigations; other browsers ignore the
+/// tag. Targets are display-only GETs, so a wasted prerender costs a few
+/// cached reads — and prerendered pages stay hidden, where the pollers and
+/// rel-time interval already stand down.
+#[must_use]
+pub(crate) fn speculation_rule(pattern: &str) -> String {
+    format!(
+        "<script type=\"speculationrules\">{{\"prerender\":[{{\"source\":\"document\",\"where\":{{\"href_matches\":\"{pattern}\"}},\"eagerness\":\"moderate\"}}]}}</script>"
+    )
+}
+
 /// Full HTML shell: head, Cobalt tokens, N9 header, body, Ft2 footer.
 ///
 /// `page_title` names the browser tab; `brand` (always the site title) names
@@ -400,6 +415,7 @@ pub fn shell(
     refresh_ms: u64,
     range_menu: &str,
     home_url: &str,
+    speculation: &str,
     body: &str,
 ) -> String {
     let (cup, cdown) = parse_counts(counts);
@@ -694,7 +710,7 @@ pub fn shell(
         @media (prefers-reduced-motion:reduce){{\
         *,*::before,*::after{{animation-duration:150ms !important;transition-duration:150ms !important}}\
         .r:hover{{transform:none}}}}\
-        </style></head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
+        </style>{spec}</head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
         <header class=nav-edge><a class=wordmark href=\"{home}\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=tz-toggle id=tz-toggle type=button aria-label=\"Toggle time zone\" aria-pressed=\"false\" title=\"Times shown in UTC\">UTC</button>{menu}<button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
         <nav class=links aria-label=\"Site\"><span class=links-label>Quick links:</span>{links}</nav>\
         <main id=main data-at=\"{at}\" tabindex=-1>{body}</main>\
@@ -782,13 +798,14 @@ pub fn shell(
         esc(brand),
         home = home_url,
         time = time_html(at.max(0), "rel", &vigil_core::time_label(at.max(0))),
+        spec = speculation,
         menu = range_menu
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{favicon_origin, links_html, one_row, parse_counts, time_html};
+    use super::{favicon_origin, links_html, one_row, parse_counts, speculation_rule, time_html};
     use crate::range::{RANGE_24H, RANGE_7D};
     use crate::reads::SampleOut;
     use std::collections::BTreeMap;
@@ -929,6 +946,18 @@ mod tests {
         m.name = "<img src=x>".into();
         let html = one_row(&m, RANGE_24H, 10_000, None, &[], None, &[]);
         assert!(!html.contains("<img src=x>"));
+    }
+
+    #[test]
+    fn speculation_rule_prerenders_on_hover_intent() {
+        let tag = speculation_rule("/monitor*");
+        assert!(tag.starts_with("<script type=\"speculationrules\">"));
+        let json: serde_json::Value =
+            serde_json::from_str(tag.trim_start_matches("<script type=\"speculationrules\">").trim_end_matches("</script>"))
+                .unwrap();
+        assert_eq!(json["prerender"][0]["source"], "document");
+        assert_eq!(json["prerender"][0]["where"]["href_matches"], "/monitor*");
+        assert_eq!(json["prerender"][0]["eagerness"], "moderate");
     }
 
     fn http_monitor(url: &str) -> Monitor {
