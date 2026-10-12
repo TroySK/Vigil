@@ -131,9 +131,9 @@ pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String,
     Ok(out)
 }
 
-/// Gaps overlapping the last-24-hours window per monitor, keyed by id.
-/// Older closed gaps cannot affect hourly cells, so they never leave D1.
-pub async fn gaps_24h_by_monitor(
+/// Gaps overlapping `[cutoff, now]` per monitor, keyed by id. Older closed
+/// gaps cannot affect history cells, so they never leave D1.
+pub async fn gaps_window_by_monitor(
     db: &Db,
     ids: &[&str],
     cutoff: i64,
@@ -243,14 +243,29 @@ pub async fn recent_gaps_by_monitor(
     Ok(out)
 }
 
-/// Up to `limit` newest samples per monitor, keyed by id, newest first.
-/// One window-function query replaces a round trip per monitor. Odd
-/// recency ranks only: half the dots over the same window, since index
-/// sparklines are glanceable trends, not precise instruments.
+/// Exact query behind [`series_by_monitor`], exposed so tests execute the
+/// shipped text against bundled SQLite. `?1..?N` monitor ids, then cutoff,
+/// `max_points - 1`, `max_points`: the stride derives from each monitor's
+/// own window count, so sparse and dense monitors alike spread at most
+/// `max_points` points over the full window, newest included.
+fn series_window_sql(n: usize) -> String {
+    format!(
+        "SELECT id, at, ms, up, place FROM (SELECT id, at, ms, up, place, ROW_NUMBER() OVER (PARTITION BY id ORDER BY at DESC) AS rn, COUNT(*) OVER (PARTITION BY id) AS cnt FROM samples WHERE id IN ({}) AND at >= ?{}) WHERE (rn - 1) % ((cnt + ?{}) / ?{}) = 0 ORDER BY id ASC, at DESC",
+        placeholders(n),
+        n + 1,
+        n + 2,
+        n + 3,
+    )
+}
+
+/// Up to `max_points` samples per monitor inside `[cutoff, +inf)`, keyed
+/// by id, newest first. One window-function query replaces a round trip
+/// per monitor.
 pub async fn series_by_monitor(
     db: &Db,
     ids: &[&str],
-    limit: i64,
+    cutoff: i64,
+    max_points: i64,
 ) -> Result<BTreeMap<String, Vec<SampleOut>>> {
     #[derive(Debug, Deserialize)]
     struct Row {
@@ -264,16 +279,13 @@ pub async fn series_by_monitor(
     if ids.is_empty() {
         return Ok(out);
     }
+    let max_points = max_points.max(1);
     let rows: Vec<Row> = db
-        .q(&format!(
-            "SELECT id, at, ms, up, place FROM (SELECT id, at, ms, up, place, ROW_NUMBER() OVER (PARTITION BY id ORDER BY at DESC) AS rn FROM samples WHERE id IN ({})) WHERE rn <= ?{} AND rn % 2 = 1 ORDER BY id ASC, at DESC",
-            placeholders(ids.len()),
-            ids.len() + 1
-        ))
+        .q(&series_window_sql(ids.len()))
         .bind(
             &bind_ids(ids)
                 .into_iter()
-                .chain(std::iter::once(num(limit.max(1))))
+                .chain([num(cutoff), num(max_points - 1), num(max_points)])
                 .collect::<Vec<_>>(),
         )?
         .all()
@@ -348,7 +360,7 @@ pub async fn region_latest(db: &Db, id: &str) -> Result<Vec<SampleOut>> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
-    use super::{series_ranged_sql, stride_for};
+    use super::{series_ranged_sql, series_window_sql, stride_for};
     use rusqlite::params;
 
     #[test]
@@ -460,5 +472,29 @@ mod tests {
         assert_eq!(ats[0], 1_800_000_000);
         let steps: std::collections::BTreeSet<i64> = ats.windows(2).map(|w| w[0] - w[1]).collect();
         assert_eq!(steps.into_iter().collect::<Vec<_>>(), vec![2_100]);
+    }
+
+    #[test]
+    fn windowed_series_strides_each_monitor_to_thirty_points() {
+        let conn = seed_db();
+        let mut stmt = conn.prepare(&series_window_sql(2)).unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map(params!["m1", "m3", 0.0, 29.0, 30.0], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 60);
+        // Per-id stride from the window count: 300 rows → every 10th.
+        let (m1, m3) = (rows[0..30].to_vec(), rows[30..60].to_vec());
+        assert!(m1.iter().all(|(id, _)| id == "m1"));
+        assert!(m3.iter().all(|(id, _)| id == "m3"));
+        assert_eq!(m1[0].1, 1_800_000_000);
+        assert_eq!(m3[0].1, 1_800_000_000);
+        let steps: std::collections::BTreeSet<i64> =
+            m1.windows(2).map(|w| w[0].1 - w[1].1).collect();
+        assert_eq!(steps.into_iter().collect::<Vec<_>>(), vec![3_000]);
+        assert_eq!(m3.len(), 30);
     }
 }

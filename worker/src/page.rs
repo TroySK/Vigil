@@ -5,28 +5,30 @@ use std::fmt::Write as _;
 
 use crate::auth::esc;
 use crate::db::Db;
+use crate::range::{bars_for, Range};
 use crate::reads::{
-    first_by_monitor, gaps_24h_by_monitor, latest_by_monitor, series_by_monitor, SampleOut,
+    first_by_monitor, gaps_window_by_monitor, latest_by_monitor, series_by_monitor, SampleOut,
 };
 use vigil_core::config::{Monitor, Probe, Site};
-use vigil_core::rollup::{bar_color, hour_bars, latency_chart, percentile};
+use vigil_core::rollup::{bar_color, latency_chart, percentile};
 use vigil_core::state::Gap;
 use worker::{Response, Result};
 
-/// Hours of history shown on the index page (last 24 hours, hourly cells).
-pub const INDEX_HISTORY_HOURS: usize = 24;
-/// Latency sample window per sparkline on the index page (rendered
-/// strided to half this many points; same window, half the SVG weight).
-pub const INDEX_LATENCY_SAMPLES: i64 = 60;
+/// Latency chart points per sparkline on the index page: each monitor's
+/// window spreads at most this many dots (see `series_by_monitor`).
+pub const INDEX_CHART_POINTS: i64 = 30;
 
 /// Render the full status page.
-pub async fn render(db: &Db, site: &Site) -> Result<Response> {
+pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
     let at = last_tick_at(db).await?;
     let counts = db.get("counts").await?.unwrap_or_else(default_counts);
     let (up, down) = parse_counts(&counts);
     let hero = hero_html(site, up, down, at);
     let mut body = hero;
-    body.push_str(&sections(db, site, at, None).await?);
+    body.push_str(&crate::range::pills(range, |option| {
+        format!("/?range={}", option.param)
+    }));
+    body.push_str(&sections(db, site, at, None, range).await?);
     let links = links_html(&site.links);
     Response::from_html(shell(&site.title, &site.title, &links, &counts, at, site.refresh_ms(), &body))
 }
@@ -86,7 +88,13 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
 }
 
 /// Render upkeep banners plus monitor sections (optionally one group only).
-pub async fn sections(db: &Db, site: &Site, at: i64, only_group: Option<&str>) -> Result<String> {
+pub async fn sections(
+    db: &Db,
+    site: &Site,
+    at: i64,
+    only_group: Option<&str>,
+    range: Range,
+) -> Result<String> {
     let mut out = String::new();
     for upkeep in &site.upkeep {
         if let Some((kind, text)) = vigil_core::upkeep::upkeep_banner(upkeep, at) {
@@ -102,12 +110,13 @@ pub async fn sections(db: &Db, site: &Site, at: i64, only_group: Option<&str>) -
         .iter()
         .map(|monitor| monitor.id.as_str())
         .collect();
-    let cutoff = at.max(1).saturating_sub(86_400);
+    let now = at.max(1);
+    let cutoff = now.saturating_sub(range.secs());
     let (latest, gap_lists, since_map, series) = futures_util::try_join!(
         latest_by_monitor(db, &ids),
-        gaps_24h_by_monitor(db, &ids, cutoff),
+        gaps_window_by_monitor(db, &ids, cutoff),
         first_by_monitor(db, &ids),
-        series_by_monitor(db, &ids, INDEX_LATENCY_SAMPLES),
+        series_by_monitor(db, &ids, cutoff, INDEX_CHART_POINTS),
     )?;
     // Rows assemble synchronously in file order; groups slice them below.
     let rows: BTreeMap<String, String> = site
@@ -118,6 +127,7 @@ pub async fn sections(db: &Db, site: &Site, at: i64, only_group: Option<&str>) -
                 monitor.id.clone(),
                 one_row(
                     monitor,
+                    range,
                     at,
                     latest.get(&monitor.id),
                     gap_lists.get(&monitor.id).map_or(&[], Vec::as_slice),
@@ -167,11 +177,12 @@ pub async fn sections(db: &Db, site: &Site, at: i64, only_group: Option<&str>) -
 /// numerics, status carried by dot + word (never color alone).
 ///
 /// Pure: all reads arrive batched from [`sections`], so row rendering costs
-/// no I/O and is unit-testable. `gaps` covers the last 24 hours, `lat` the
-/// newest sparkline samples, `since` the monitor's first sample (if any).
+/// no I/O and is unit-testable. `gaps` covers the selected window, `lat`
+/// its chart samples, `since` the monitor's first sample (if any).
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 fn one_row(
     monitor: &Monitor,
+    range: Range,
     at: i64,
     current: Option<&SampleOut>,
     gaps: &[Gap],
@@ -192,48 +203,50 @@ fn one_row(
         Some(_) => "Check failing".to_owned(),
         None => "No data yet".to_owned(),
     };
+    let strip = bars_for(gaps, at.max(1), range, since);
     let mut cells = String::new();
     let mut covered = 0_usize;
     let mut sum = 0.0_f64;
-    for bar in hour_bars(gaps, at.max(1), INDEX_HISTORY_HOURS, since) {
+    let label = strip.label;
+    for bar in &strip.cells {
         if bar.has_data {
             covered += 1;
             sum += bar.pct;
             let v = format!("{:.1}%", bar.pct);
             let _ = write!(
                 cells,
-                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"short\" data-v=\"{v}\" style=\"background:{}\"></i>",
+                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"{kind}\" data-v=\"{v}\" style=\"background:{}\"></i>",
                 bar_color(bar.pct),
                 day = bar.day,
-                tip = format!(
-                    "{}: {:.1}%",
-                    vigil_core::short_label(bar.day),
-                    bar.pct
-                ),
+                kind = strip.kind,
+                tip = format!("{}: {:.1}%", label(bar.day), bar.pct),
             );
         } else {
             let _ = write!(
                 cells,
-                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"short\"></i>",
+                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"{kind}\"></i>",
                 day = bar.day,
-                tip = format!("{}: no data", vigil_core::short_label(bar.day)),
+                kind = strip.kind,
+                tip = format!("{}: no data", label(bar.day)),
             );
         }
     }
     let bars_label = if covered == 0 {
-        format!("Last {INDEX_HISTORY_HOURS} hours: no data yet")
+        format!("Last {}: no data yet", range.label)
     } else {
         format!(
-            "Last {} hours: {:.1}% average uptime over {} hours with data. {} is {}.",
-            INDEX_HISTORY_HOURS,
+            "Last {}: {:.1}% average uptime over {} {} with data. {} is {}.",
+            range.label,
             sum / covered as f64,
             covered,
+            strip.period,
             monitor.name,
             word
         )
     };
     let mut extra = format!(
-        "<div class=bars role=img aria-label=\"{}\" tabindex=0>{cells}</div>",
+        "<div class={} role=img aria-label=\"{}\" tabindex=0>{cells}</div>",
+        strip.class,
         esc(&bars_label)
     );
     if !monitor.quiet_chart {
@@ -734,6 +747,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
 #[cfg(test)]
 mod tests {
     use super::{favicon_origin, links_html, one_row, parse_counts, time_html};
+    use crate::range::{RANGE_24H, RANGE_7D};
     use crate::reads::SampleOut;
     use std::collections::BTreeMap;
     use vigil_core::config::{Monitor, Probe};
@@ -790,36 +804,77 @@ mod tests {
     #[test]
     fn row_states_carry_dot_word_and_detail() {
         let m = http_monitor("https://example.com");
-        let up = one_row(&m, 10_000, Some(&tried(9_900, 54, 1)), &[], None, &[]);
+        let up = one_row(
+            &m,
+            RANGE_24H,
+            10_000,
+            Some(&tried(9_900, 54, 1)),
+            &[],
+            None,
+            &[],
+        );
         assert!(up.contains("data-up=\"1\""));
         assert!(up.contains("<i>UP</i>"));
         assert!(up.contains("54ms"));
         assert!(up.contains("BOM"));
         assert!(up.contains("No samples yet"));
-        let down = one_row(&m, 10_000, Some(&tried(9_900, 0, 0)), &[], None, &[]);
+        let down = one_row(
+            &m,
+            RANGE_24H,
+            10_000,
+            Some(&tried(9_900, 0, 0)),
+            &[],
+            None,
+            &[],
+        );
         assert!(down.contains("data-up=\"0\""));
         assert!(down.contains("DOWN"));
         assert!(down.contains("Check failing"));
-        let fresh = one_row(&m, 10_000, None, &[], None, &[]);
+        let fresh = one_row(&m, RANGE_24H, 10_000, None, &[], None, &[]);
         assert!(fresh.contains("No data yet"));
     }
 
     #[test]
     fn row_paints_24_hour_cells() {
         let m = http_monitor("https://example.com");
-        let html = one_row(&m, 200_000, None, &[], Some(1), &[]);
+        let html = one_row(&m, RANGE_24H, 200_000, None, &[], Some(1), &[]);
         assert_eq!(html.matches("<i ").count(), 24);
+    }
+
+    #[test]
+    fn row_paints_daily_cells_for_week_range() {
+        let m = http_monitor("https://example.com");
+        let html = one_row(&m, RANGE_7D, 30 * 86_400, None, &[], Some(1), &[]);
+        assert_eq!(html.matches("<i ").count(), 7);
+        assert!(html.contains("class=bars90"));
+        assert!(html.contains("Last 7 days"));
     }
 
     #[test]
     fn row_charts_latency_unless_quiet() {
         let mut m = http_monitor("https://example.com");
         let lat = vec![tried(9_900, 54, 1), tried(9_800, 60, 1)];
-        let html = one_row(&m, 10_000, Some(&tried(9_900, 54, 1)), &[], None, &lat);
+        let html = one_row(
+            &m,
+            RANGE_24H,
+            10_000,
+            Some(&tried(9_900, 54, 1)),
+            &[],
+            None,
+            &lat,
+        );
         assert!(html.contains("<svg"));
         assert!(html.contains("class=lat"));
         m.quiet_chart = true;
-        let quiet = one_row(&m, 10_000, Some(&tried(9_900, 54, 1)), &[], None, &lat);
+        let quiet = one_row(
+            &m,
+            RANGE_24H,
+            10_000,
+            Some(&tried(9_900, 54, 1)),
+            &[],
+            None,
+            &lat,
+        );
         assert!(!quiet.contains("class=lat"));
         assert!(!quiet.contains("<svg"));
     }
@@ -828,7 +883,7 @@ mod tests {
     fn row_escapes_monitor_name() {
         let mut m = http_monitor("https://example.com");
         m.name = "<img src=x>".into();
-        let html = one_row(&m, 10_000, None, &[], None, &[]);
+        let html = one_row(&m, RANGE_24H, 10_000, None, &[], None, &[]);
         assert!(!html.contains("<img src=x>"));
     }
 

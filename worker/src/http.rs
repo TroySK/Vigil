@@ -38,7 +38,10 @@ async fn route(req: Request, env: Env, url: &url::Url) -> Result<Response> {
         db.init().await?;
     }
     match url.path() {
-        "/" | "/index.html" => crate::page::render(&db, &site).await,
+        "/" | "/index.html" => {
+            let range = crate::range::parse_range(range_param(url).as_deref());
+            crate::page::render(&db, &site, range).await
+        }
         "/monitor" => match detail_id(url) {
             Some(id) => {
                 let range = crate::range::parse_range(range_param(url).as_deref());
