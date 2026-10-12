@@ -662,6 +662,18 @@ pub fn shell(
         .r,.chart{{scroll-margin-top:6rem}}\
         main{{animation:rise var(--dur-short) var(--ease-out)}}\
         @keyframes rise{{from{{opacity:0}}to{{opacity:1}}}}\
+        @view-transition{{navigation:auto}}\
+        :active-view-transition-type(forward)::view-transition-old(root){{animation:vt-out-left var(--dur-short) var(--ease-out)}}\
+        :active-view-transition-type(forward)::view-transition-new(root){{animation:vt-in-right var(--dur-short) var(--ease-out)}}\
+        :active-view-transition-type(back)::view-transition-old(root){{animation:vt-out-right var(--dur-short) var(--ease-out)}}\
+        :active-view-transition-type(back)::view-transition-new(root){{animation:vt-in-left var(--dur-short) var(--ease-out)}}\
+        :active-view-transition-type(fade)::view-transition-old(root),\
+        :active-view-transition-type(fade)::view-transition-new(root){{animation:vt-fade var(--dur-short) var(--ease-out)}}\
+        @keyframes vt-in-right{{from{{transform:translateX(2rem);opacity:0}}to{{transform:none;opacity:1}}}}\
+        @keyframes vt-out-left{{from{{transform:none;opacity:1}}to{{transform:translateX(-2rem);opacity:0}}}}\
+        @keyframes vt-in-left{{from{{transform:translateX(-2rem);opacity:0}}to{{transform:none;opacity:1}}}}\
+        @keyframes vt-out-right{{from{{transform:none;opacity:1}}to{{transform:translateX(2rem);opacity:0}}}}\
+        @keyframes vt-fade{{from{{opacity:0}}to{{opacity:1}}}}\
         .note{{padding:var(--space-sm) var(--space-md);border-radius:var(--radius-m);\
         margin:var(--space-md) 0;border:1px solid var(--color-rule);\
         background:var(--color-paper-2);font-size:var(--text-sm)}}\
@@ -708,6 +720,7 @@ pub fn shell(
         .foot-mast .meta{{margin-left:auto;font-size:var(--text-sm);color:var(--color-muted)}}\
         a:active{{color:var(--color-ink)}}\
         @media (prefers-reduced-motion:reduce){{\
+        @view-transition{{navigation:none}}\
         *,*::before,*::after{{animation-duration:150ms !important;transition-duration:150ms !important}}\
         .r:hover{{transform:none}}}}\
         </style>{spec}</head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
@@ -786,6 +799,13 @@ pub fn shell(
         applyTz();\
         if(document.querySelector('time[data-tk=\"rel\"]')){{\
         setInterval(function(){{if(document.hidden)return;applyTz();}},30000);}}\
+        try{{window.addEventListener('pageswap',function(e){{try{{\
+        var act=e.activation;if(!act||!e.viewTransition)return;\
+        if(act.navigationType==='reload')return;\
+        var to=new URL(act.entry.url).pathname;\
+        var here=new URL(window.location.href).pathname;\
+        var t=(to===here)?'fade':((to.indexOf('/monitor')===0)?'forward':((to==='/')?'back':null));\
+        if(t)e.viewTransition.types.add(t);}}catch(err){{}}}});}}catch(err){{}}\
         var mainEl=document.querySelector('main[data-at]');\
         if(mainEl&&{refresh_ms}>0){{var seen=parseInt(mainEl.getAttribute('data-at'),10)||0;\
         setInterval(function(){{if(document.hidden)return;\
