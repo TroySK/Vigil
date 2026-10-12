@@ -79,10 +79,10 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         }
     }
     let bars_label = if covered == 0 {
-        format!("{DETAIL_HISTORY_DAYS}-day history: no data yet")
+        format!("Last {DETAIL_HISTORY_DAYS} days: no data yet")
     } else {
         format!(
-            "{DETAIL_HISTORY_DAYS}-day history: {:.1}% average uptime over {} days with data.",
+            "Last {DETAIL_HISTORY_DAYS} days: {:.1}% average uptime over {} days with data.",
             sum / covered as f64,
             covered
         )
@@ -131,7 +131,7 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         <section class=detail-hero aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>\
         <p class=status-line role=status><span class=status-word data-up=\"{flag}\">{word}</span> \
         <span class=tnum>{ms}</span></p>{notes}</section>\
-        <h3 class=sect>90 days</h3><div class=bars90 role=img aria-label=\"{bars_label}\" tabindex=0>{cells}</div>\
+        <h3 class=sect>Last 90 days</h3><div class=bars90 role=img aria-label=\"{bars_label}\" tabindex=0>{cells}</div>\
         <h3 class=sect>Latency</h3><p class=tnum>p50 {p50}ms &middot; p95 {p95}ms &middot; {n} samples</p>{spark} \
         <h3 class=sect>Latency by region &middot; last {geo_days} days</h3><p class=tnum>Per-region latency over the last {geo_days} days, grouped by probe origin.</p>{geo_table} \
         <h3 class=sect>Incidents</h3><table class=inc><caption class=sr-only>Downtime windows for {name}</caption><thead><tr><th scope=col>From</th><th scope=col>To</th><th scope=col>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
@@ -186,7 +186,7 @@ pub fn geo_latency_table(lat: &[SampleOut], at: i64) -> String {
             .map(|s| (s.at, s.ms))
             .collect();
         let chart = if window.is_empty() {
-            "<span class=empty>no samples in last 7 days</span>".to_owned()
+            "<span class=empty>No samples in last 7 days</span>".to_owned()
         } else {
             sparkline_points(&window, 160, 36)
         };
@@ -211,7 +211,7 @@ pub fn geo_latency_table(lat: &[SampleOut], at: i64) -> String {
 /// "418ms last probe · BOM" for the detail hero, or the empty state.
 fn last_probe_label(current: Option<&SampleOut>) -> String {
     current.map_or_else(
-        || "no probes yet".to_owned(),
+        || "No probes yet".to_owned(),
         |sample| {
             format!(
                 "{}ms last probe &middot; {}",
@@ -251,7 +251,7 @@ mod tests {
             last_probe_label(Some(&sample(1))),
             "418ms last probe &middot; BOM"
         );
-        assert_eq!(last_probe_label(None), "no probes yet");
+        assert_eq!(last_probe_label(None), "No probes yet");
     }
 
     #[test]
@@ -283,7 +283,7 @@ mod tests {
         let html = geo_latency_table(&lat, at);
         // OLD's only sample falls outside the window: row stays, chart does not.
         assert!(html.contains("OLD"));
-        assert!(html.contains("no samples in last 7 days"));
+        assert!(html.contains("No samples in last 7 days"));
     }
 
     #[test]
