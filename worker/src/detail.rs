@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use crate::auth::esc;
 use crate::db::Db;
 use crate::page::{default_counts, last_tick_at, links_html, shell, time_html};
-use crate::range::{bars_for, monitor_pills, Range};
+use crate::range::{bars_for, Range};
 use crate::reads::{first_sample_at, recent_gaps, region_latest, series_ranged, GapOut, SampleOut};
 use vigil_core::config::Site;
 use vigil_core::rollup::{bar_color, latency_chart, percentile, sparkline_points};
@@ -158,7 +158,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     }
     let body = format!(
         "<nav class=crumb aria-label=Breadcrumb><a href=\"/\">&lsaquo; all monitors</a></nav>\
-        <section class=detail-hero aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>{pills}\
+        <section class=detail-hero aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>\
         <p class=status-line role=status><span class=status-word data-up=\"{flag}\">{word}</span> \
         <span class=tnum>{ms}</span></p>{notes}</section>\
         <h3 class=sect>Last {range_label}</h3><div class={bars_class} role=img aria-label=\"{bars_label}\" tabindex=0>{cells}</div>\
@@ -167,7 +167,6 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
         <h3 class=sect>Incidents &middot; last {range_label}</h3><table class=inc><caption class=sr-only>Downtime windows for {name} over the last {range_label}</caption><thead><tr><th scope=col>From</th><th scope=col>To</th><th scope=col>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
         esc(&monitor.name),
         logo = crate::page::favicon_img(monitor, 24),
-        pills = monitor_pills(&monitor.id, range),
         word = if is_up { "UP" } else { "DOWN" },
         flag = if is_up { "1" } else { "0" },
         ms = last_probe_label(current),
@@ -182,7 +181,19 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     );
 
     let links = links_html(&site.links);
-    Response::from_html(shell(&monitor.name, &site.title, &links, &counts, at, site.refresh_ms(), &body))
+    let menu = crate::range::menu(range, |option| {
+        format!("/monitor?id={}&range={}", esc(&monitor.id), option.param)
+    });
+    Response::from_html(shell(
+        &monitor.name,
+        &site.title,
+        &links,
+        &counts,
+        at,
+        site.refresh_ms(),
+        &menu,
+        &body,
+    ))
 }
 
 /// Sentence-case relative age for standalone display ("just now" →
