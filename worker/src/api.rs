@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use crate::db::Db;
-use crate::reads::{latest, recent_gaps, series, GapOut, SampleOut};
-use futures_util::future::try_join_all;
+use crate::reads::{
+    latest, latest_by_monitor, recent_gaps, recent_gaps_by_monitor, series, SampleOut,
+};
 use vigil_core::config::Site;
 use vigil_core::rollup::percentile;
 use vigil_core::state::{Gap, Track};
@@ -27,46 +28,51 @@ pub const GAP_SCAN_ROWS: i64 = 500;
 pub async fn health(db: &Db, site: &Site) -> Result<Response> {
     let at = last_tick_at(db).await?;
     let (up, down) = parse_counts(&db.get("counts").await?.unwrap_or_else(default_counts));
-    // Same N+1 as the status page: two D1 round trips per monitor, fired
-    // in one wave instead of sequentially.
-    let fetched: Vec<(String, Option<SampleOut>, Vec<GapOut>)> =
-        try_join_all(site.monitors.iter().map(|monitor| async move {
-            let current = latest(db, &monitor.id).await?;
-            let gaps = recent_gaps(db, &monitor.id, GAP_SCAN_ROWS).await?;
-            Ok::<_, worker::Error>((monitor.id.clone(), current, gaps))
-        }))
-        .await?;
+    // Two batched round trips cover every monitor (was: two per monitor).
+    let ids: Vec<&str> = site
+        .monitors
+        .iter()
+        .map(|monitor| monitor.id.as_str())
+        .collect();
+    let (latest, gap_lists) = futures_util::try_join!(
+        latest_by_monitor(db, &ids),
+        recent_gaps_by_monitor(db, &ids, GAP_SCAN_ROWS),
+    )?;
     let mut items = serde_json::Map::new();
-    for (id, current, gaps) in fetched {
-        let is_up = current.as_ref().map_or(true, |r| r.up == 1);
-        let track = Track {
-            gaps: gaps
-                .iter()
-                .map(|g| Gap {
-                    at: g.at,
-                    to: g.to,
-                    why: g.why.clone(),
-                })
-                .collect(),
-        };
-        let base = at.max(1);
+    for monitor in &site.monitors {
         items.insert(
-            id,
-            serde_json::json!({
-                "up": is_up,
-                "ms": current.as_ref().map_or(0, |r| r.ms),
-                "at": current.as_ref().map_or(at, |r| r.at),
-                "uptime": {
-                    "day": track.uptime_pct(base, DAY_SECS),
-                    "week": track.uptime_pct(base, WEEK_SECS),
-                    "month": track.uptime_pct(base, MONTH_SECS),
-                },
-            }),
+            monitor.id.clone(),
+            monitor_status(
+                latest.get(&monitor.id),
+                gap_lists.get(&monitor.id).map_or(&[], Vec::as_slice),
+                at.max(1),
+            ),
         );
     }
     Response::from_json(&serde_json::json!({
         "title": site.title, "up": up, "down": down, "at": at, "monitors": items,
     }))
+}
+
+/// One monitor's health entry: status, latency, and day/week/month uptime.
+/// Pure shaping over already-fetched rows, so the snapshot assembly is
+/// unit-testable without D1. Missing samples read as up with zeroed
+/// readings, matching the old per-monitor path.
+fn monitor_status(current: Option<&SampleOut>, gaps: &[Gap], base: i64) -> serde_json::Value {
+    let is_up = current.map_or(true, |r| r.up == 1);
+    let track = Track {
+        gaps: gaps.to_vec(),
+    };
+    serde_json::json!({
+        "up": is_up,
+        "ms": current.map_or(0, |r| r.ms),
+        "at": current.map_or(base, |r| r.at),
+        "uptime": {
+            "day": track.uptime_pct(base, DAY_SECS),
+            "week": track.uptime_pct(base, WEEK_SECS),
+            "month": track.uptime_pct(base, MONTH_SECS),
+        },
+    })
 }
 
 /// Shields-style SVG badge for one monitor (`?id=`) or the whole site.
@@ -150,7 +156,9 @@ fn query_param(url: &url::Url, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_counts, parse_counts, query_param};
+    use super::{default_counts, monitor_status, parse_counts, query_param};
+    use crate::reads::SampleOut;
+    use vigil_core::state::Gap;
 
     #[test]
     fn health_counts_fall_back_to_zero() {
@@ -165,5 +173,43 @@ mod tests {
         assert_eq!(query_param(&url, "id").as_deref(), Some("a"));
         assert_eq!(query_param(&url, "limit").as_deref(), Some("5"));
         assert_eq!(query_param(&url, "missing"), None);
+    }
+
+    fn tried(at: i64, ms: i64, up: i64) -> SampleOut {
+        SampleOut {
+            at,
+            ms,
+            up,
+            place: "BOM".into(),
+        }
+    }
+
+    #[test]
+    fn status_shapes_up_monitor() {
+        let v = monitor_status(Some(&tried(1_000, 54, 1)), &[], 2_000);
+        assert_eq!(v["up"].as_bool(), Some(true));
+        assert_eq!(v["ms"].as_i64(), Some(54));
+        assert_eq!(v["at"].as_i64(), Some(1_000));
+        assert_eq!(v["uptime"]["day"].as_f64(), Some(100.0));
+    }
+
+    #[test]
+    fn status_falls_back_without_samples() {
+        let v = monitor_status(None, &[], 2_000);
+        assert_eq!(v["up"].as_bool(), Some(true));
+        assert_eq!(v["ms"].as_i64(), Some(0));
+        assert_eq!(v["at"].as_i64(), Some(2_000));
+    }
+
+    #[test]
+    fn status_marks_down_monitor() {
+        let gap = Gap {
+            at: 1_000,
+            to: Some(1_500),
+            why: "refused".into(),
+        };
+        let v = monitor_status(Some(&tried(1_500, 0, 0)), &[gap], 2_000);
+        assert_eq!(v["up"].as_bool(), Some(false));
+        assert!(v["uptime"]["day"].as_f64().unwrap() < 100.0);
     }
 }
