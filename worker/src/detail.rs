@@ -350,7 +350,7 @@ pub fn geo_latency_table(
             "<tr><td data-label=\"Region\">{}</td>\
             <td data-label=\"Last checked\">{}</td>\
             <td data-label=\"Latency\">{ms}ms</td>\
-            <td data-label=\"Last 7 days\">{chart}</td></tr>",
+            <td data-label=\"Last {window_label}\">{chart}</td></tr>",
             esc(place),
             time_html(recent.at, "rel", &vigil_core::time_label(recent.at)),
             ms = recent.ms,
@@ -358,7 +358,7 @@ pub fn geo_latency_table(
     }
     format!(
         "<table class=\"inc geo\"><caption class=sr-only>Latency by probe region over the last {window_label}</caption>\
-        <thead><tr><th scope=col>Region</th><th scope=col>Last checked</th><th scope=col>Latency</th><th scope=col>Last 7 days</th></tr></thead>\
+        <thead><tr><th scope=col>Region</th><th scope=col>Last checked</th><th scope=col>Latency</th><th scope=col>Last {window_label}</th></tr></thead>\
         <tbody>{rows}</tbody></table>"
     )
 }
@@ -473,5 +473,13 @@ mod tests {
     #[test]
     fn geo_table_empty_without_samples() {
         assert!(geo_latency_table(&[], 1_000, 7, "7 days").contains("No regional samples yet"));
+    }
+
+    #[test]
+    fn geo_table_labels_follow_the_window() {
+        let lat = vec![placed(2_000, 120, "BOM")];
+        let html = geo_latency_table(&lat, 2_000, 90, "90 days");
+        assert!(html.contains("Last 90 days"));
+        assert!(!html.contains("7 days"));
     }
 }
