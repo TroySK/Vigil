@@ -200,7 +200,9 @@ pub async fn first_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, 
 }
 
 /// Up to `limit` newest samples per monitor, keyed by id, newest first.
-/// One window-function query replaces a round trip per monitor.
+/// One window-function query replaces a round trip per monitor. Odd
+/// recency ranks only: half the dots over the same window, since index
+/// sparklines are glanceable trends, not precise instruments.
 pub async fn series_by_monitor(
     db: &Db,
     ids: &[&str],
@@ -220,7 +222,7 @@ pub async fn series_by_monitor(
     }
     let rows: Vec<Row> = db
         .q(&format!(
-            "SELECT id, at, ms, up, place FROM (SELECT id, at, ms, up, place, ROW_NUMBER() OVER (PARTITION BY id ORDER BY at DESC) AS rn FROM samples WHERE id IN ({})) WHERE rn <= ?{} ORDER BY id ASC, at DESC",
+            "SELECT id, at, ms, up, place FROM (SELECT id, at, ms, up, place, ROW_NUMBER() OVER (PARTITION BY id ORDER BY at DESC) AS rn FROM samples WHERE id IN ({})) WHERE rn <= ?{} AND rn % 2 = 1 ORDER BY id ASC, at DESC",
             placeholders(ids.len()),
             ids.len() + 1
         ))

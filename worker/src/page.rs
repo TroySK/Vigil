@@ -15,7 +15,8 @@ use worker::{Response, Result};
 
 /// Hours of history shown on the index page (last 24 hours, hourly cells).
 pub const INDEX_HISTORY_HOURS: usize = 24;
-/// Latency samples per sparkline on the index page.
+/// Latency sample window per sparkline on the index page (rendered
+/// strided to half this many points; same window, half the SVG weight).
 pub const INDEX_LATENCY_SAMPLES: i64 = 60;
 
 /// Render the full status page.
