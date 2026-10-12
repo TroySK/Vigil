@@ -51,22 +51,23 @@ pub async fn tick(env: Env) -> Result<()> {
     let db = Db::of(&env)?;
     db.init().await?;
     let now = sec_now();
-    // One D1 round trip for every monitor's cadence state (was: one per
-    // monitor). First sightings with a phase offset queue their marker
-    // write into the end-of-tick batch instead of issuing it here.
-    let last_map = kv_map(
-        &db,
-        &site
-            .monitors
-            .iter()
-            .map(|monitor| format!("last:{}", monitor.id))
-            .collect::<Vec<_>>(),
-    )
-    .await?;
+    // One D1 round trip for every `kv` key the tick needs: cadence stamps
+    // plus alert counters for all monitors (was: one query per monitor for
+    // cadence, then two more per due monitor for alerts). First sightings
+    // with a phase offset queue their marker write into the end-of-tick
+    // batch instead of issuing it here.
+    let ids: Vec<&str> = site
+        .monitors
+        .iter()
+        .map(|monitor| monitor.id.as_str())
+        .collect();
+    let kv = kv_map(&db, &state_keys(&ids)).await?;
     let mut writes: Vec<D1PreparedStatement> = Vec::new();
     let mut due_set = BTreeSet::new();
     for monitor in &site.monitors {
-        let last: Option<i64> = last_map.get(&monitor.id).and_then(|s| s.parse().ok());
+        let last = kv
+            .get(&format!("last:{}", monitor.id))
+            .and_then(|s| s.parse().ok());
         match plan_due(&monitor.id, last, site.cadence_min(monitor), now) {
             Due::Skip => {}
             Due::Probe => {
@@ -99,14 +100,13 @@ pub async fn tick(env: Env) -> Result<()> {
         .await;
         probed.append(&mut wave);
     }
-    // Two more batched reads cover gap maintenance and alert counters for
-    // every due monitor (was: several round trips per monitor).
+    // One more batched read covers gap maintenance for every due monitor
+    // (was: one round trip per monitor).
     let due_ids: Vec<&str> = due_monitors
         .iter()
         .map(|monitor| monitor.id.as_str())
         .collect();
     let gaps = open_gaps(&db, &due_ids).await?;
-    let alerts = alert_state(&db, &due_ids).await?;
     let grace = i64::try_from(site.notify.grace_min.max(1)).unwrap_or(1);
     let mut up = 0_u32;
     let mut down = 0_u32;
@@ -130,10 +130,7 @@ pub async fn tick(env: Env) -> Result<()> {
             location,
             gaps.get(monitor.id.as_str()),
         )?);
-        let (prev_fails, was_up) = alerts
-            .get(monitor.id.as_str())
-            .copied()
-            .unwrap_or((0, true));
+        let (prev_fails, was_up) = alert_for(&kv, &monitor.id);
         let plan = plan_alert(prev_fails, was_up, verdict.up, grace);
         writes.push(db.put_stmt(&format!("fails:{}", monitor.id), &plan.fails.to_string())?);
         if let Some(marker) = plan.marker {
@@ -199,6 +196,31 @@ fn plan_due(id: &str, last: Option<i64>, every_min: u64, now: i64) -> Due {
             Due::Phase(format!("last:{id}"), phased.to_string())
         }
     }
+}
+
+/// Every `kv` key one tick needs: cadence stamps plus alert counters for
+/// all monitors, so the whole tick reads `kv` exactly once. (Counter rows
+/// for monitors that never failed simply come back absent.)
+fn state_keys(ids: &[&str]) -> Vec<String> {
+    let mut keys = Vec::with_capacity(ids.len() * 3);
+    for id in ids {
+        keys.push(format!("last:{id}"));
+        keys.push(format!("fails:{id}"));
+        keys.push(format!("alert:{id}"));
+    }
+    keys
+}
+
+/// Consecutive-failure count and stored up-state for one monitor from the
+/// batched `kv` map. Missing keys mean "never failed, currently up",
+/// matching the old per-monitor reads.
+fn alert_for(map: &BTreeMap<String, String>, id: &str) -> (i64, bool) {
+    let fails: i64 = map
+        .get(&format!("fails:{id}"))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let was_up = map.get(&format!("alert:{id}")).map_or(true, |s| s != "0");
+    (fails, was_up)
 }
 
 /// One `kv` row for batched reads.
@@ -273,28 +295,6 @@ async fn open_gaps(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, Gap>> {
     Ok(out)
 }
 
-/// Alert bookkeeping per monitor id: consecutive-failure count plus whether
-/// the stored state is up. Missing keys mean "never failed, currently up",
-/// matching the old per-monitor reads.
-async fn alert_state(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, (i64, bool)>> {
-    let mut keys = Vec::with_capacity(ids.len() * 2);
-    for id in ids {
-        keys.push(format!("fails:{id}"));
-        keys.push(format!("alert:{id}"));
-    }
-    let map = kv_map(db, &keys).await?;
-    let mut out = BTreeMap::new();
-    for id in ids {
-        let fails: i64 = map
-            .get(&format!("fails:{id}"))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let was_up = map.get(&format!("alert:{id}")).map_or(true, |s| s != "0");
-        out.insert((*id).to_owned(), (fails, was_up));
-    }
-    Ok(out)
-}
-
 /// Pure cadence math behind [`due`]: due with no history, or once at least
 /// `every_min` minutes elapsed since `last` (future stamps never count).
 #[must_use]
@@ -338,7 +338,8 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_due, plan_alert, plan_due, stagger_offset, wave_bounds, Due};
+    use super::{alert_for, is_due, plan_alert, plan_due, stagger_offset, state_keys, wave_bounds, Due};
+    use std::collections::BTreeMap;
 
     #[test]
     fn waves_partition_the_fleet() {
@@ -416,6 +417,35 @@ mod tests {
         assert_eq!(ongoing.fails, 6);
         assert_eq!(ongoing.marker, Some("0"));
         assert_eq!(ongoing.notify, None);
+    }
+
+    #[test]
+    fn state_keys_cover_cadence_and_alerts() {
+        assert_eq!(
+            state_keys(&["a", "b"]),
+            vec![
+                "last:a".to_owned(),
+                "fails:a".to_owned(),
+                "alert:a".to_owned(),
+                "last:b".to_owned(),
+                "fails:b".to_owned(),
+                "alert:b".to_owned(),
+            ]
+        );
+        assert!(state_keys(&[]).is_empty());
+    }
+
+    #[test]
+    fn alert_for_defaults_to_clean_upstream() {
+        assert_eq!(alert_for(&BTreeMap::new(), "a"), (0, true));
+        let map = BTreeMap::from([
+            ("fails:a".to_owned(), "3".to_owned()),
+            ("alert:a".to_owned(), "0".to_owned()),
+            ("fails:b".to_owned(), "oops".to_owned()),
+        ]);
+        assert_eq!(alert_for(&map, "a"), (3, false));
+        // Unparsable counters read as zero, never as failure.
+        assert_eq!(alert_for(&map, "b"), (0, true));
     }
 
     #[test]
