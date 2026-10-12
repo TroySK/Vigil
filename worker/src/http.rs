@@ -2,8 +2,8 @@
 
 use crate::api;
 use crate::auth::{authed, deny};
-use crate::db::Db;
-use worker::{Env, Request, Response, Result};
+use crate::db::{schema_due, Db};
+use worker::{Date, Env, Request, Response, Result};
 
 /// Handle every incoming `fetch`: gate, migrate, route, then harden and
 /// cache-tag the response on the single exit path.
@@ -33,7 +33,10 @@ async fn route(req: Request, env: Env, url: &url::Url) -> Result<Response> {
         return deny();
     }
     let db = Db::of(&env)?;
-    db.init().await?;
+    // Schema setup runs hourly (see schema_due): CI migrations own it.
+    if schema_due(sec_now()) {
+        db.init().await?;
+    }
     match url.path() {
         "/" | "/index.html" => crate::page::render(&db, &site).await,
         "/monitor" => match detail_id(url) {
@@ -64,6 +67,12 @@ fn range_param(url: &url::Url) -> Option<String> {
     url.query_pairs()
         .find(|(key, _)| key == "range")
         .map(|(_, value)| value.into_owned())
+}
+
+/// Current time truncated to whole seconds.
+#[allow(clippy::cast_possible_wrap)] // epoch millis fit in i64 for millennia
+fn sec_now() -> i64 {
+    (Date::now().as_millis() / 1_000) as i64
 }
 
 /// Shared cache policy per path: tick-granular pages and read APIs tolerate

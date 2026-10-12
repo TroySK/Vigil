@@ -19,6 +19,16 @@ pub fn num(value: i64) -> wasm_bindgen::JsValue {
     wasm_bindgen::JsValue::from_f64(value as f64)
 }
 
+/// Whether the schema setup should run on a tick/request landing at
+/// `now_secs`: the first two minutes of each clock hour. CI applies
+/// migrations on deploy, so this is only a self-heal net (fresh databases,
+/// manual setups) rather than the primary mechanism — no need to pay an
+/// idempotent DDL round trip on every request.
+#[must_use]
+pub fn schema_due(now_secs: i64) -> bool {
+    now_secs % 3_600 < 120
+}
+
 /// Thin wrapper around the D1 database with query helpers.
 ///
 /// `D1Database` is not `Clone`, so concurrent readers share `&Db` — fine
@@ -85,5 +95,21 @@ impl Db {
             .q("SELECT v FROM kv WHERE k = ?1")
             .bind(&[key.into()])?;
         query.first::<String>(Some("v")).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::schema_due;
+
+    #[test]
+    fn schema_init_runs_once_per_clock_hour() {
+        assert!(schema_due(0));
+        assert!(schema_due(119));
+        assert!(!schema_due(120));
+        assert!(!schema_due(3_599));
+        assert!(schema_due(3_600));
+        assert!(!schema_due(7_199));
+        assert!(schema_due(7_200));
     }
 }
