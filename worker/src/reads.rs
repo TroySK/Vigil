@@ -299,6 +299,16 @@ pub fn stride_for(count: i64, max_points: i64) -> i64 {
     ((count.max(0) + max_points - 1) / max_points).max(1)
 }
 
+/// Exact query behind [`series_ranged`], exposed so tests execute the
+/// shipped text against bundled SQLite (`?1` id, `?2` cutoff, `?3` stride,
+/// `?4` limit). Rows are 1-based recency ranks: `(rn - 1) % stride = 0`
+/// keeps the newest sample plus every stride-th one after it. (A bare
+/// `rn % stride = 1` matches nothing when stride is 1 and once emptied
+/// every short-range chart in production.)
+fn series_ranged_sql() -> &'static str {
+    "SELECT at, ms, up, place FROM (SELECT at, ms, up, place, ROW_NUMBER() OVER (ORDER BY at DESC) AS rn FROM samples WHERE id = ?1 AND at >= ?2) WHERE (rn - 1) % ?3 = 0 ORDER BY at DESC LIMIT ?4"
+}
+
 /// Samples inside `[cutoff, +inf)` spread over at most `max_points` chart
 /// points, newest first. Short ranges keep every sample; long ranges (where
 /// cadence × span reaches tens of thousands of rows) take every Nth row by
@@ -316,7 +326,7 @@ pub async fn series_ranged(
         .first(Some("n"))
         .await?;
     let stride = stride_for(count.unwrap_or(0), max_points).max(1);
-    db.q("SELECT at, ms, up, place FROM (SELECT at, ms, up, place, ROW_NUMBER() OVER (ORDER BY at DESC) AS rn FROM samples WHERE id = ?1 AND at >= ?2) WHERE rn % ?3 = 1 ORDER BY at DESC LIMIT ?4")
+    db.q(series_ranged_sql())
         .bind(&[id.into(), num(cutoff), num(stride), num(max_points)])?
         .all()
         .await?
@@ -337,7 +347,9 @@ pub async fn region_latest(db: &Db, id: &str) -> Result<Vec<SampleOut>> {
 
 #[cfg(test)]
 mod tests {
-    use super::stride_for;
+    #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
+    use super::{series_ranged_sql, stride_for};
+    use rusqlite::params;
 
     #[test]
     fn stride_keeps_short_ranges_at_full_fidelity() {
@@ -351,5 +363,102 @@ mod tests {
         assert_eq!(stride_for(301, 300), 2);
         assert_eq!(stride_for(2_016, 300), 7);
         assert_eq!(stride_for(25_920, 300), 87);
+    }
+
+    /// Seeded SQLite mirror of the D1 schema (D1 is SQLite; unit tests
+    /// have no D1). Binds floats like [`crate::db::num`] so affinity edge
+    /// cases execute exactly as in production.
+    #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
+    fn seed_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);
+             CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);",
+        )
+        .unwrap();
+        // m1: 300 samples on a 5-minute cadence ending at NOW.
+        let now = 1_800_000_000_i64;
+        for i in 0..300 {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    "m1",
+                    (now - i as i64 * 300) as f64,
+                    50.0 + (i % 7) as f64,
+                    1.0,
+                    "BOM"
+                ],
+            )
+            .unwrap();
+        }
+        // m3: 2,016 samples for stride-spread checks.
+        for i in 0..2016 {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                params!["m3", (now - i as i64 * 300) as f64, 50.0, 1.0, "SIN"],
+            )
+            .unwrap();
+        }
+        // m2: three stale samples plus two regions' latest rows.
+        for (at, ms, place) in [(1_000, 10, "SIN"), (2_000, 20, "SIN"), (3_000, 99, "BOM")] {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                params!["m2", at as f64, ms as f64, 1.0, place],
+            )
+            .unwrap();
+        }
+        // Five gaps for m1, newest last.
+        for (at, upto) in [
+            (100, None),
+            (200, Some(250)),
+            (300, None),
+            (400, Some(450)),
+            (500, None),
+        ] {
+            conn.execute(
+                "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+                params!["m1", at as f64, upto.map(|u| u as f64), "x"],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    fn col0(conn: &rusqlite::Connection, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Vec<i64> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        stmt.query_map(args, |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn ranged_series_covers_full_window_at_stride_one() {
+        // Regression: `rn % stride = 1` matches nothing when stride is 1
+        // (`rn % 1` is always 0), emptying every short-range chart.
+        let conn = seed_db();
+        let ats = col0(
+            &conn,
+            series_ranged_sql(),
+            &[
+                &"m1",
+                &((1_800_000_000_i64 - 90 * 86_400) as f64),
+                &1.0,
+                &300.0,
+            ],
+        );
+        assert_eq!(ats.len(), 300);
+        assert_eq!(ats[0], 1_800_000_000);
+    }
+
+    #[test]
+    fn ranged_series_spreads_evenly_at_stride_seven() {
+        let conn = seed_db();
+        let ats = col0(&conn, series_ranged_sql(), &[&"m3", &0.0, &7.0, &300.0]);
+        // 2,016 rows at stride 7 → ranks 1, 8, …, 2011 → 288 points.
+        assert_eq!(ats.len(), 288);
+        assert_eq!(ats[0], 1_800_000_000);
+        let steps: std::collections::BTreeSet<i64> = ats.windows(2).map(|w| w[0] - w[1]).collect();
+        assert_eq!(steps.into_iter().collect::<Vec<_>>(), vec![2_100]);
     }
 }
