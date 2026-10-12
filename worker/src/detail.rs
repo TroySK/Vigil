@@ -1,4 +1,10 @@
-//! Per-monitor detail: status, 90-day bars, latency chart, incidents.
+//! Per-monitor detail: status, range bars, latency chart, incidents.
+//!
+//! Every section covers the selected [`Range`] (24 hours plus 7/30/90 days,
+//! defaulting to 90): history bars switch hourly/daily granularity, the
+//! latency chart draws an honest spread of the window, the regional table
+//! and incident list filter to it, and pills after the monitor name switch
+//! ranges with a page reload.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -6,44 +12,125 @@ use std::fmt::Write as _;
 use crate::auth::esc;
 use crate::db::Db;
 use crate::page::{default_counts, last_tick_at, links_html, shell, time_html};
-use crate::reads::{first_sample_at, latest, recent_gaps, series, GapOut, SampleOut};
+use crate::reads::{first_sample_at, recent_gaps, region_latest, series_ranged, GapOut, SampleOut};
 use vigil_core::config::Site;
-use vigil_core::rollup::{bar_color, latency_chart, month_bars, percentile, sparkline_points};
+use vigil_core::rollup::{
+    bar_color, hour_bars, latency_chart, month_bars, percentile, sparkline_points, DayBar,
+};
 use vigil_core::state::Gap;
 use worker::{Response, Result};
 
-/// Days of history on the detail page.
-pub const DETAIL_HISTORY_DAYS: usize = 90;
-/// Latency samples on the detail page.
-pub const DETAIL_LATENCY_SAMPLES: i64 = 200;
-/// Days covered by the per-region latency table.
-pub const GEO_WINDOW_DAYS: i64 = 7;
+/// Detail time range: everything on the page covers exactly this window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Range {
+    /// Calendar days covered (1 selects the 24-hour view).
+    pub days: i64,
+    /// Human span used in headings ("24 hours", "7 days", …).
+    pub label: &'static str,
+    /// `?range=` value selecting this range.
+    pub param: &'static str,
+    /// Short pill text.
+    pub short: &'static str,
+}
+
+impl Range {
+    /// Seconds covered.
+    fn secs(self) -> i64 {
+        self.days.saturating_mul(86_400)
+    }
+
+    /// The 24-hour view renders hourly cells; day ranges render daily cells.
+    fn hourly(self) -> bool {
+        self.days <= 1
+    }
+}
+
+/// Range pills in display order.
+pub const RANGES: [Range; 4] = [RANGE_24H, RANGE_7D, RANGE_30D, RANGE_90D];
+pub const RANGE_24H: Range = Range {
+    days: 1,
+    label: "24 hours",
+    param: "24h",
+    short: "24H",
+};
+pub const RANGE_7D: Range = Range {
+    days: 7,
+    label: "7 days",
+    param: "7d",
+    short: "7D",
+};
+pub const RANGE_30D: Range = Range {
+    days: 30,
+    label: "30 days",
+    param: "30d",
+    short: "30D",
+};
+pub const RANGE_90D: Range = Range {
+    days: 90,
+    label: "90 days",
+    param: "90d",
+    short: "90D",
+};
+/// Default range: unknown or missing `?range=` values fall back here.
+pub const DEFAULT_RANGE: Range = RANGE_90D;
+
+/// Parse `?range=` (`24h`, `7d`, `30d`, `90d`, case-insensitive); anything
+/// else — including a missing value — selects the 90-day default.
+#[must_use]
+pub fn parse_range(raw: Option<&str>) -> Range {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("24h") => RANGE_24H,
+        Some("7d") => RANGE_7D,
+        Some("30d") => RANGE_30D,
+        _ => DEFAULT_RANGE,
+    }
+}
+
+/// One history strip: cells plus how to paint, label, and describe them.
+struct Bars {
+    cells: Vec<DayBar>,
+    class: &'static str,
+    kind: &'static str,
+    label: fn(i64) -> String,
+    period: &'static str,
+}
+
+/// Whether a downtime window touches `[cutoff, now]`: ongoing gaps always
+/// do; closed ones overlap when they end at or after the cutoff and start
+/// at or before now.
+fn gap_in_range(at: i64, to: Option<i64>, cutoff: i64, now: i64) -> bool {
+    at <= now && to.unwrap_or(now) >= cutoff
+}
+
+/// Latency chart points per range view: enough for a smooth line without
+/// bloating the inline SVG on long ranges.
+pub const DETAIL_LATENCY_POINTS: i64 = 300;
 /// Incident rows shown on the detail page.
 pub const DETAIL_INCIDENTS: usize = 50;
 
-/// Per-monitor detail: status, 90-day bars, latency p50/p95 + sparkline,
-/// incident table, upkeep scoped to this monitor.
+/// Per-monitor detail for one [`Range`]: status, range bars, latency
+/// p50/p95 + sparkline, regional table, incident table, upkeep scoped to
+/// this monitor.
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
-pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
+pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Response> {
     let Some(monitor) = site.get(id) else {
         return Response::error("unknown monitor", 404);
     };
     let at = last_tick_at(db).await?;
+    let now = at.max(1);
+    let cutoff = now.saturating_sub(range.secs());
     let counts = db.get("counts").await?.unwrap_or_else(default_counts);
-    // One D1 round trip dominates these reads, so fire all four at once
-    // instead of awaiting them one by one.
-    let (current, gaps, since, lat): (
-        Option<SampleOut>,
-        Vec<GapOut>,
-        Option<i64>,
-        Vec<SampleOut>,
-    ) = futures_util::try_join!(
-        latest(db, id),
+    // D1 round trips dominate these reads, so fire them all at once
+    // instead of awaiting them one by one. The global status comes from
+    // the newest per-region sample, so no separate latest-sample query.
+    let (regions, gaps, since, lat): (Vec<SampleOut>, Vec<GapOut>, Option<i64>, Vec<SampleOut>) = futures_util::try_join!(
+        region_latest(db, id),
         recent_gaps(db, id, crate::api::GAP_SCAN_ROWS),
         first_sample_at(db, id),
-        series(db, id, DETAIL_LATENCY_SAMPLES),
+        series_ranged(db, id, cutoff, DETAIL_LATENCY_POINTS),
     )?;
-    let is_up = current.as_ref().map_or(true, |r| r.up == 1);
+    let current = regions.first();
+    let is_up = current.map_or(true, |r| r.up == 1);
     let core: Vec<Gap> = gaps
         .iter()
         .map(|g| Gap {
@@ -52,42 +139,68 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
             why: g.why.clone(),
         })
         .collect();
+    // The 24-hour view renders 24 hourly cells; day ranges render one
+    // cell per day. Both share the DayBar shape, so one loop paints them.
+    let strip = if range.hourly() {
+        Bars {
+            cells: hour_bars(&core, now, 24, since),
+            class: "bars",
+            kind: "short",
+            label: vigil_core::short_label,
+            period: "hours",
+        }
+    } else {
+        Bars {
+            cells: month_bars(&core, now, usize::try_from(range.days).unwrap_or(90), since),
+            class: "bars90",
+            kind: "date",
+            label: vigil_core::date_label,
+            period: "days",
+        }
+    };
     let mut cells = String::new();
     let mut covered = 0_usize;
     let mut sum = 0.0_f64;
-    for bar in month_bars(&core, at.max(1), DETAIL_HISTORY_DAYS, since) {
+    let label = strip.label;
+    for bar in &strip.cells {
+        // Daily cells keep their percentage as (visually hidden) content,
+        // matching the old 90-day markup; hourly cells stay empty.
+        let content = if range.hourly() {
+            String::new()
+        } else {
+            format!("{:.1}%", bar.pct)
+        };
         if bar.has_data {
             covered += 1;
             sum += bar.pct;
             let v = format!("{:.1}%", bar.pct);
             let _ = write!(
                 cells,
-                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"date\" data-v=\"{v}\" style=\"background:{}\">{:.1}%</i>",
+                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"{kind}\" data-v=\"{v}\" style=\"background:{}\">{content}</i>",
                 bar_color(bar.pct),
-                bar.pct,
                 day = bar.day,
-                tip = format!(
-                    "{}: {:.1}%",
-                    vigil_core::date_label(bar.day),
-                    bar.pct
-                ),
+                kind = strip.kind,
+                tip = format!("{}: {:.1}%", label(bar.day), bar.pct),
             );
         } else {
             let _ = write!(
                 cells,
-                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"date\"></i>",
+                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"{kind}\"></i>",
                 day = bar.day,
-                tip = format!("{}: no data", vigil_core::date_label(bar.day)),
+                kind = strip.kind,
+                tip = format!("{}: no data", label(bar.day)),
             );
         }
     }
     let bars_label = if covered == 0 {
-        format!("Last {DETAIL_HISTORY_DAYS} days: no data yet")
+        format!("Last {}: no data yet", range.label)
     } else {
         format!(
-            "Last {DETAIL_HISTORY_DAYS} days: {:.1}% average uptime over {} days with data.",
+            "Last {}: {:.1}% average uptime over {} {} with data.",
+            range.label,
             sum / covered as f64,
-            covered
+            covered,
+            strip.period
         )
     };
     let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
@@ -108,7 +221,11 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
         )
     };
     let mut rows = String::new();
-    for gap in gaps.iter().take(DETAIL_INCIDENTS) {
+    for gap in gaps
+        .iter()
+        .filter(|g| gap_in_range(g.at, g.to, cutoff, now))
+        .take(DETAIL_INCIDENTS)
+    {
         let to = gap.to.map_or_else(
             || "ongoing".to_owned(),
             |t| time_html(t, "full", &vigil_core::time_label(t)),
@@ -120,7 +237,7 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
             esc(&gap.why)
         );
     }
-    let geo_table = geo_latency_table(&lat, at);
+    let geo_table = geo_latency_table(&lat, now, range.days, range.label);
     let mut notes = String::new();
     for upkeep in &site.upkeep {
         if !upkeep.only.is_empty() && !upkeep.only.iter().any(|only| only == id) {
@@ -132,23 +249,25 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
     }
     let body = format!(
         "<nav class=crumb aria-label=Breadcrumb><a href=\"/\">&lsaquo; all monitors</a></nav>\
-        <section class=detail-hero aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>\
+        <section class=detail-hero aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>{pills}\
         <p class=status-line role=status><span class=status-word data-up=\"{flag}\">{word}</span> \
         <span class=tnum>{ms}</span></p>{notes}</section>\
-        <h3 class=sect>Last 90 days</h3><div class=bars90 role=img aria-label=\"{bars_label}\" tabindex=0>{cells}</div>\
+        <h3 class=sect>Last {range_label}</h3><div class={bars_class} role=img aria-label=\"{bars_label}\" tabindex=0>{cells}</div>\
         <h3 class=sect>Latency</h3><p class=tnum>p50 {p50}ms &middot; p95 {p95}ms &middot; {n} samples</p>{spark} \
-        <h3 class=sect>Latency by region &middot; last {geo_days} days</h3><p class=tnum>Per-region latency over the last {geo_days} days, grouped by probe origin.</p>{geo_table} \
-        <h3 class=sect>Incidents</h3><table class=inc><caption class=sr-only>Downtime windows for {name}</caption><thead><tr><th scope=col>From</th><th scope=col>To</th><th scope=col>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
+        <h3 class=sect>Latency by region &middot; last {range_label}</h3><p class=tnum>Per-region latency over the last {range_label}, grouped by probe origin.</p>{geo_table} \
+        <h3 class=sect>Incidents &middot; last {range_label}</h3><table class=inc><caption class=sr-only>Downtime windows for {name} over the last {range_label}</caption><thead><tr><th scope=col>From</th><th scope=col>To</th><th scope=col>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
         esc(&monitor.name),
         logo = crate::page::favicon_img(monitor, 24),
+        pills = range_pills(&monitor.id, range),
         word = if is_up { "UP" } else { "DOWN" },
         flag = if is_up { "1" } else { "0" },
-        ms = last_probe_label(current.as_ref()),
+        ms = last_probe_label(current),
         p50 = p50,
         p95 = p95,
         n = vals.len(),
         spark = spark_html,
-        geo_days = GEO_WINDOW_DAYS,
+        range_label = range.label,
+        bars_class = strip.class,
         geo_table = geo_table,
         name = esc(&monitor.name),
     );
@@ -157,19 +276,51 @@ pub async fn render(db: &Db, site: &Site, id: &str) -> Result<Response> {
     Response::from_html(shell(&monitor.name, &site.title, &links, &counts, at, site.refresh_ms(), &body))
 }
 
+/// Range pills rendered directly after the monitor name: plain links (a
+/// page reload switches ranges) with the active range marked current
+/// instead of linked.
+fn range_pills(id: &str, active: Range) -> String {
+    let mut out = String::from("<nav class=range-pills aria-label=\"Time range\">");
+    for option in RANGES {
+        if option == active {
+            let _ = write!(
+                out,
+                "<span aria-current=page title=\"Last {}\">{}</span>",
+                option.label, option.short,
+            );
+        } else {
+            let _ = write!(
+                out,
+                "<a href=\"/monitor?id={}&range={}\" aria-label=\"Show last {}\">{}</a>",
+                esc(id),
+                option.param,
+                option.label,
+                option.short,
+            );
+        }
+    }
+    out.push_str("</nav>");
+    out
+}
+
 /// Per-region latency table: one row per probe origin (`place`) with its
-/// latest sample and a sparkline of its samples from the last
-/// [`GEO_WINDOW_DAYS`] days (`lat` is newest-first).
+/// latest sample and a sparkline of its samples inside the selected window
+/// (`lat` is newest-first and already spans the window).
 ///
 /// Rows sort by most recently seen region first. Regions with no samples
 /// inside the window keep their row with a placeholder instead of a chart.
 #[must_use]
-pub fn geo_latency_table(lat: &[SampleOut], at: i64) -> String {
+pub fn geo_latency_table(
+    lat: &[SampleOut],
+    at: i64,
+    window_days: i64,
+    window_label: &str,
+) -> String {
     if lat.is_empty() {
         return "<p class=empty>No regional samples yet — the table fills in after the next probe.</p>"
             .to_owned();
     }
-    let cutoff = at.max(1).saturating_sub(GEO_WINDOW_DAYS.saturating_mul(86_400));
+    let cutoff = at.max(1).saturating_sub(window_days.saturating_mul(86_400));
     let mut by_place: BTreeMap<&str, Vec<&SampleOut>> = BTreeMap::new();
     for sample in lat {
         by_place
@@ -190,7 +341,7 @@ pub fn geo_latency_table(lat: &[SampleOut], at: i64) -> String {
             .map(|s| (s.at, s.ms))
             .collect();
         let chart = if window.is_empty() {
-            "<span class=empty>No samples in last 7 days</span>".to_owned()
+            format!("<span class=empty>No samples in last {window_label}</span>")
         } else {
             sparkline_points(&window, 160, 36)
         };
@@ -206,7 +357,7 @@ pub fn geo_latency_table(lat: &[SampleOut], at: i64) -> String {
         );
     }
     format!(
-        "<table class=\"inc geo\"><caption class=sr-only>Latency by probe region over the last {GEO_WINDOW_DAYS} days</caption>\
+        "<table class=\"inc geo\"><caption class=sr-only>Latency by probe region over the last {window_label}</caption>\
         <thead><tr><th scope=col>Region</th><th scope=col>Last checked</th><th scope=col>Latency</th><th scope=col>Last 7 days</th></tr></thead>\
         <tbody>{rows}</tbody></table>"
     )
@@ -228,7 +379,7 @@ fn last_probe_label(current: Option<&SampleOut>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{geo_latency_table, last_probe_label, GEO_WINDOW_DAYS};
+    use super::{gap_in_range, geo_latency_table, last_probe_label, parse_range, RANGES};
     use crate::reads::SampleOut;
 
     fn sample(up: i64) -> SampleOut {
@@ -259,6 +410,32 @@ mod tests {
     }
 
     #[test]
+    fn range_parses_known_params_and_defaults_to_90_days() {
+        assert_eq!(parse_range(Some("24h")).days, 1);
+        assert_eq!(parse_range(Some("7d")).days, 7);
+        assert_eq!(parse_range(Some("30d")).days, 30);
+        assert_eq!(parse_range(Some("90d")).days, 90);
+        assert_eq!(parse_range(Some("7D")).days, 7);
+        assert_eq!(parse_range(None).days, 90);
+        assert_eq!(parse_range(Some("")).days, 90);
+        assert_eq!(parse_range(Some("bogus")).days, 90);
+        assert_eq!(RANGES.len(), 4);
+    }
+
+    #[test]
+    fn gap_overlap_keeps_open_and_straddling_windows() {
+        // Ongoing gaps always overlap the live edge.
+        assert!(gap_in_range(100, None, 500, 1_000));
+        // Fully inside, straddling the start, and touching the cutoff.
+        assert!(gap_in_range(600, Some(700), 500, 1_000));
+        assert!(gap_in_range(100, Some(600), 500, 1_000));
+        assert!(gap_in_range(100, Some(500), 500, 1_000));
+        // Entirely before the window or after now.
+        assert!(!gap_in_range(100, Some(499), 500, 1_000));
+        assert!(!gap_in_range(1_100, Some(1_200), 500, 1_000));
+    }
+
+    #[test]
     fn geo_table_groups_by_region_with_latest_first() {
         // Newest-first input; SIN's newest sample is older than BOM's.
         let lat = vec![
@@ -266,7 +443,7 @@ mod tests {
             placed(1_900, 300, "SIN"),
             placed(1_800, 110, "BOM"),
         ];
-        let html = geo_latency_table(&lat, 2_000);
+        let html = geo_latency_table(&lat, 2_000, 7, "7 days");
         assert!(html.contains("BOM"));
         assert!(html.contains("SIN"));
         assert!(html.contains("120ms"));
@@ -280,14 +457,14 @@ mod tests {
     }
 
     #[test]
-    fn geo_table_keeps_only_last_seven_days_in_charts() {
+    fn geo_table_keeps_only_window_samples_in_charts() {
         let at = 10 * 86_400;
-        let cutoff = at - GEO_WINDOW_DAYS * 86_400;
+        let cutoff = at - 7 * 86_400;
         let lat = vec![
             placed(at, 100, "BOM"),
             placed(cutoff - 1, 999, "OLD"),
         ];
-        let html = geo_latency_table(&lat, at);
+        let html = geo_latency_table(&lat, at, 7, "7 days");
         // OLD's only sample falls outside the window: row stays, chart does not.
         assert!(html.contains("OLD"));
         assert!(html.contains("No samples in last 7 days"));
@@ -295,6 +472,6 @@ mod tests {
 
     #[test]
     fn geo_table_empty_without_samples() {
-        assert!(geo_latency_table(&[], 1_000).contains("No regional samples yet"));
+        assert!(geo_latency_table(&[], 1_000, 7, "7 days").contains("No regional samples yet"));
     }
 }

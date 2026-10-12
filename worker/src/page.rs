@@ -450,7 +450,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .pill[data-up=\"0\"]{{color:var(--color-ink);border-color:var(--color-bad)}}\
         .pill[data-up=\"2\"]{{color:var(--color-muted);border-style:dashed}}\
         @media (pointer:coarse){{\
-        .pill,.theme-toggle,.tz-toggle,.links a,.det{{min-height:44px}}}}\
+        .pill,.theme-toggle,.tz-toggle,.links a,.det,.range-pills a,.range-pills [aria-current]{{min-height:44px}}}}\
         .theme-toggle{{font-family:var(--font-body);font-size:var(--text-sm);white-space:nowrap;\
         display:inline-flex;align-items:center;justify-content:center;min-width:2.75rem;min-height:2rem;height:2rem;box-sizing:border-box;\
         border:1px solid var(--color-rule);border-radius:999px;padding:var(--space-2xs) var(--space-sm);\
@@ -593,6 +593,15 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         text-transform:uppercase;letter-spacing:.08em;color:var(--color-muted);\
         text-decoration:none;white-space:nowrap}}\
         .crumb a:hover{{color:var(--color-accent)}}\
+        .range-pills{{display:flex;flex-wrap:wrap;gap:var(--space-2xs);margin:var(--space-sm) 0 0}}\
+        .range-pills a,.range-pills [aria-current]{{font-family:var(--font-mono);font-weight:600;\
+        font-size:var(--text-xs);letter-spacing:.08em;white-space:nowrap;display:inline-flex;\
+        align-items:center;min-height:2rem;text-decoration:none;border:1px solid var(--color-rule);\
+        border-radius:var(--radius-pill);padding:var(--space-3xs) var(--space-sm);\
+        color:var(--color-muted);background:transparent;font-variant-numeric:tabular-nums}}\
+        .range-pills a:hover{{color:var(--color-ink);border-color:var(--color-accent)}}\
+        .range-pills [aria-current]{{color:var(--color-ink);border-color:var(--color-accent);\
+        background:var(--color-paper-2)}}\
         .detail-hero h2{{font-family:var(--font-display);font-weight:700;font-style:normal;\
         font-size:clamp(2rem,4vw + 1rem,3rem);letter-spacing:-.025em;line-height:1.05;\
         margin:var(--space-sm) 0 var(--space-2xs);overflow-wrap:anywhere;min-width:0}}\

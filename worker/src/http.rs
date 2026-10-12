@@ -37,7 +37,10 @@ async fn route(req: Request, env: Env, url: &url::Url) -> Result<Response> {
     match url.path() {
         "/" | "/index.html" => crate::page::render(&db, &site).await,
         "/monitor" => match detail_id(url) {
-            Some(id) => crate::detail::render(&db, &site, &id).await,
+            Some(id) => {
+                let range = crate::detail::parse_range(range_param(url).as_deref());
+                crate::detail::render(&db, &site, &id, range).await
+            }
             None => Response::error("missing id", 400),
         },
         "/api/health" => api::health(&db, &site).await,
@@ -53,6 +56,13 @@ async fn route(req: Request, env: Env, url: &url::Url) -> Result<Response> {
 fn detail_id(url: &url::Url) -> Option<String> {
     url.query_pairs()
         .find(|(key, _)| key == "id")
+        .map(|(_, value)| value.into_owned())
+}
+
+/// Extract `?range=` from a detail URL.
+fn range_param(url: &url::Url) -> Option<String> {
+    url.query_pairs()
+        .find(|(key, _)| key == "range")
         .map(|(_, value)| value.into_owned())
 }
 
