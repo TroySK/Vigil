@@ -532,11 +532,11 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         transition:color var(--dur-short) var(--ease-out),border-color var(--dur-short) var(--ease-out)}}\
         .det:hover{{color:var(--color-ink);border-color:var(--color-accent)}}\
         .det:active{{color:var(--color-ink)}}\
-        .r-meta{{display:flex;align-items:center;flex-wrap:wrap;row-gap:var(--space-2xs);\
+        .r-meta{{display:flex;align-items:center;flex-wrap:nowrap;\
         min-width:0;justify-content:flex-start}}\
         @media (min-width:40rem){{.r-meta{{justify-content:flex-end}}}}\
         .r-meta s{{flex:1 1 auto}}\
-        .r-meta>i::before,.r-meta>.det::before{{content:\"·\";color:var(--color-neutral);\
+        .r-meta>i::before,.r-meta>i::after{{content:\"·\";color:var(--color-neutral);\
         margin-inline:var(--space-sm)}}\
         .bars{{display:flex;gap:var(--space-3xs);margin:var(--space-sm) 0 var(--space-xs)}}\
         .bars i,.bars90 i{{position:relative;box-sizing:border-box}}\
