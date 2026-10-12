@@ -259,7 +259,7 @@ async fn one(db: &Db, monitor: &Monitor, at: i64) -> Result<String> {
     Ok(format!(
         "<article class=r data-up=\"{flag}\"{tip}>\
         <div class=r-head><span class=d aria-hidden=true></span>\
-        <b>{name}</b><i>{word}</i><a class=det href=\"/monitor?id={}\">details &rsaquo;</a><s>{detail}</s></div>\
+        <b>{name}</b><div class=r-meta><s>{detail}</s><i>{word}</i><a class=det href=\"/monitor?id={}\">details &rsaquo;</a></div></div>\
         {extra}</article>",
         monitor.id
     ))
@@ -505,7 +505,7 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         .r-head{{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--space-2xs) var(--space-md);\
         align-items:baseline}}\
         @media (min-width:40rem){{\
-        .r-head{{grid-template-columns:12px minmax(0,1.4fr) auto auto minmax(0,1fr);align-items:center}}}}\
+        .r-head{{grid-template-columns:12px minmax(0,1.4fr) minmax(0,1fr);align-items:center}}}}\
         .d{{width:10px;height:10px;border-radius:50%;background:var(--color-neutral)}}\
         .r[data-up=\"1\"] .d{{background:var(--color-ok)}}\
         .r[data-up=\"0\"] .d{{background:var(--color-bad)}}\
@@ -532,6 +532,12 @@ pub fn shell(page_title: &str, brand: &str, links: &str, counts: &str, at: i64, 
         transition:color var(--dur-short) var(--ease-out),border-color var(--dur-short) var(--ease-out)}}\
         .det:hover{{color:var(--color-ink);border-color:var(--color-accent)}}\
         .det:active{{color:var(--color-ink)}}\
+        .r-meta{{display:flex;align-items:center;flex-wrap:wrap;row-gap:var(--space-2xs);\
+        min-width:0;justify-content:flex-start}}\
+        @media (min-width:40rem){{.r-meta{{justify-content:flex-end}}}}\
+        .r-meta s{{flex:1 1 auto}}\
+        .r-meta>i::before,.r-meta>.det::before{{content:\"·\";color:var(--color-neutral);\
+        margin-inline:var(--space-sm)}}\
         .bars{{display:flex;gap:var(--space-3xs);margin:var(--space-sm) 0 var(--space-xs)}}\
         .bars i,.bars90 i{{position:relative;box-sizing:border-box}}\
         .bars i.nodata,.bars90 i.nodata{{background:var(--color-paper-2);\
