@@ -41,7 +41,7 @@ async fn route(req: Request, env: Env, url: &url::Url) -> Result<Response> {
         "/" | "/index.html" => crate::page::render(&db, &site).await,
         "/monitor" => match detail_id(url) {
             Some(id) => {
-                let range = crate::detail::parse_range(range_param(url).as_deref());
+                let range = crate::range::parse_range(range_param(url).as_deref());
                 crate::detail::render(&db, &site, &id, range).await
             }
             None => Response::error("missing id", 400),

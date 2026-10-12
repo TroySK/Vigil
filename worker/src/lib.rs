@@ -6,6 +6,7 @@ mod http;
 mod icons;
 mod page;
 mod probe;
+mod range;
 mod reads;
 mod tick;
 
