@@ -157,7 +157,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
         }
     }
     let body = format!(
-        "<nav class=crumb aria-label=Breadcrumb><a href=\"/\">&lsaquo; all monitors</a></nav>\
+        "<nav class=crumb aria-label=Breadcrumb><a href=\"/?range={range_param}\">&lsaquo; all monitors</a></nav>\
         <section class=detail-hero aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>\
         <p class=status-line role=status><span class=status-word data-up=\"{flag}\">{word}</span> \
         <span class=tnum>{ms}</span></p>{notes}</section>\
@@ -167,6 +167,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
         <h3 class=sect>Incidents &middot; last {range_label}</h3><table class=inc><caption class=sr-only>Downtime windows for {name} over the last {range_label}</caption><thead><tr><th scope=col>From</th><th scope=col>To</th><th scope=col>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
         esc(&monitor.name),
         logo = crate::page::favicon_img(monitor, 24),
+        range_param = range.param,
         word = if is_up { "UP" } else { "DOWN" },
         flag = if is_up { "1" } else { "0" },
         ms = last_probe_label(current),
@@ -184,6 +185,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     let menu = crate::range::menu(range, |option| {
         format!("/monitor?id={}&range={}", esc(&monitor.id), option.param)
     });
+    let home = format!("/?range={}", range.param);
     Response::from_html(shell(
         &monitor.name,
         &site.title,
@@ -192,6 +194,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
         at,
         site.refresh_ms(),
         &menu,
+        &home,
         &body,
     ))
 }
