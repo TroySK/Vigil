@@ -4,12 +4,15 @@
 //! plus webhook notifications with consecutive-failure grace. Old rows
 //! beyond [`RETENTION_DAYS`] are pruned.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use futures_util::future::join_all;
 use serde::Deserialize;
 use vigil_core::checks::{judge, Say, Seen};
-use vigil_core::config::{Hook, Site};
+use vigil_core::config::{Hook, Monitor, Site};
 use vigil_core::state::{Gap, Track};
 use vigil_core::views;
+use worker::d1::D1PreparedStatement;
 use worker::{console_log, Date, Env, Error, Fetch, Headers, Method, Request, RequestInit, Result};
 
 use crate::db::{num, Db};
@@ -27,6 +30,13 @@ fn sec_now() -> i64 {
 }
 
 /// Probe all monitors once and persist the results.
+///
+/// D1 round trips dominate the tick's CPU budget (each crosses the
+/// WASM/JS boundary), so reads fan in through three batched queries and
+/// every write lands in one [`Db::batch`] call. The pre-batch design did
+/// one round trip per monitor and got the isolate killed on the free-plan
+/// CPU ceiling (`exceededCpu`) before the tick finished.
+#[allow(clippy::too_many_lines)]
 pub async fn tick(env: Env) -> Result<()> {
     let site = vigil::site();
     site.check().map_err(|errors| {
@@ -41,86 +51,248 @@ pub async fn tick(env: Env) -> Result<()> {
     let db = Db::of(&env)?;
     db.init().await?;
     let now = sec_now();
+    // One D1 round trip for every monitor's cadence state (was: one per
+    // monitor). First sightings with a phase offset queue their marker
+    // write into the end-of-tick batch instead of issuing it here.
+    let last_map = kv_map(
+        &db,
+        &site
+            .monitors
+            .iter()
+            .map(|monitor| format!("last:{}", monitor.id))
+            .collect::<Vec<_>>(),
+    )
+    .await?;
+    let mut writes: Vec<D1PreparedStatement> = Vec::new();
+    let mut due_set = BTreeSet::new();
+    for monitor in &site.monitors {
+        let last: Option<i64> = last_map.get(&monitor.id).and_then(|s| s.parse().ok());
+        match plan_due(&monitor.id, last, site.cadence_min(monitor), now) {
+            Due::Skip => {}
+            Due::Probe => {
+                due_set.insert(monitor.id.as_str());
+            }
+            Due::Phase(key, value) => writes.push(db.put_stmt(&key, &value)?),
+        }
+    }
+    let due_monitors: Vec<&Monitor> = site
+        .monitors
+        .iter()
+        .filter(|monitor| due_set.contains(monitor.id.as_str()))
+        .collect();
     // Probe every due monitor concurrently: 30 sequential fetches (each up
     // to `timeout_ms`) outlast the cron worker, so the tick died before
     // ever writing `counts`. `join_all` preserves order for the record
-    // pass below; skipped monitors yield `None` and keep their last state.
-    // (`&Db`/`&Site` are shared borrows: `Db` is not `Clone`, and the worker
-    // runtime is single-threaded so sharing across futures is safe.)
-    let db_ref = &db;
-    let site_ref = &site;
+    // pass below. (`&Site` is a shared borrow: the worker runtime is
+    // single-threaded so sharing across futures is safe.)
     // One lookup per tick: every probe in the wave shares this isolate.
     // (`Option<&str>` is `Copy`, so all thirty futures can hold it.)
     let colo_here = colo().await;
     let colo_ref = colo_here.as_deref();
-    let mut probes = Vec::with_capacity(site.monitors.len());
-    for (start, end) in wave_bounds(site.monitors.len(), PROBE_WAVE) {
-        let mut wave = join_all(site_ref.monitors[start..end].iter().map(|monitor| async move {
-            if !due(db_ref, &monitor.id, site_ref.cadence_min(monitor), now).await? {
-                return Ok::<_, worker::Error>(None);
-            }
+    let mut probed = Vec::with_capacity(due_monitors.len());
+    for (start, end) in wave_bounds(due_monitors.len(), PROBE_WAVE) {
+        // `probe` never throws: failures come back as `Seen::Dead`.
+        let mut wave = join_all(due_monitors[start..end].iter().map(|monitor| async move {
             let (seen, location) = probe(monitor, colo_ref).await;
-            Ok(Some((seen, location)))
+            (*monitor, seen, location)
         }))
         .await;
-        probes.append(&mut wave);
+        probed.append(&mut wave);
     }
+    // Two more batched reads cover gap maintenance and alert counters for
+    // every due monitor (was: several round trips per monitor).
+    let due_ids: Vec<&str> = due_monitors
+        .iter()
+        .map(|monitor| monitor.id.as_str())
+        .collect();
+    let gaps = open_gaps(&db, &due_ids).await?;
+    let alerts = alert_state(&db, &due_ids).await?;
+    let grace = i64::try_from(site.notify.grace_min.max(1)).unwrap_or(1);
     let mut up = 0_u32;
     let mut down = 0_u32;
-    for (monitor, probed) in site.monitors.iter().zip(probes) {
-        let Some((seen, location)) = probed? else {
-            continue;
-        };
-        let verdict = judge(monitor, &seen);
+    // Webhooks fire only after the write batch lands, so a failed tick
+    // never pages without persisting its alert marker (and never pages
+    // twice for one transition).
+    let mut pending_hooks: Vec<(String, bool, String)> = Vec::new();
+    for (monitor, seen, location) in &probed {
+        let verdict = judge(monitor, seen);
         if verdict.up {
             up += 1;
         } else {
             down += 1;
         }
-        record(&db, &monitor.id, now, &seen, &verdict, &location).await?;
-        db.put(&format!("last:{}", monitor.id), &now.to_string())
-            .await?;
-        if !site.notify.mute.iter().any(|muted| muted == &monitor.id) {
-            maybe_alert(&db, &site, &monitor.id, &monitor.name, now, &verdict).await?;
+        writes.extend(record_stmts(
+            &db,
+            &monitor.id,
+            now,
+            seen,
+            &verdict,
+            location,
+            gaps.get(monitor.id.as_str()),
+        )?);
+        let (prev_fails, was_up) = alerts
+            .get(monitor.id.as_str())
+            .copied()
+            .unwrap_or((0, true));
+        let plan = plan_alert(prev_fails, was_up, verdict.up, grace);
+        writes.push(db.put_stmt(&format!("fails:{}", monitor.id), &plan.fails.to_string())?);
+        if let Some(marker) = plan.marker {
+            writes.push(db.put_stmt(&format!("alert:{}", monitor.id), marker)?);
         }
+        if !site.notify.mute.iter().any(|muted| muted == &monitor.id) {
+            if let Some(notify_up) = plan.notify {
+                pending_hooks.push((monitor.name.clone(), notify_up, verdict.why.clone()));
+            }
+        }
+        writes.push(db.put_stmt(&format!("last:{}", monitor.id), &now.to_string())?);
     }
     // A skip-only tick probed nothing, so its 0/0 would overwrite the last
     // real counts with a lie: skipped monitors keep their state, making the
     // previous counts still accurate. Only publish when something probed.
     if up + down > 0 {
-        db.put("counts", &format!("{up}/{down}")).await?;
+        writes.push(db.put_stmt("counts", &format!("{up}/{down}"))?);
     }
-    db.put("at", &now.to_string()).await?;
-    prune(&db, now).await?;
+    writes.push(db.put_stmt("at", &now.to_string())?);
+    // Retention sweeping runs on the first tick of each clock hour: the
+    // DELETEs cost round trips every tick otherwise, for data that only
+    // ages daily. Folded into the same batch — no extra round trip.
+    if now % (60 * 60) < 60 {
+        writes.extend(prune_stmts(&db, now)?);
+    }
+    db.batch(writes).await?;
+    for (name, notify_up, why) in &pending_hooks {
+        notify(&site, name, *notify_up, why, now).await?;
+    }
     Ok(())
 }
 
-/// Whether a monitor is due for probing: never probed before, or at least
-/// `every_min` minutes elapsed since its last probe (tracked in `kv`).
+/// Cadence decision for one monitor: probe now, skip this tick, or record
+/// a staggered first-sighting marker (`last:{id}` key/value) so a fleet
+/// with the same cadence doesn't synchronize onto one tick.
+#[derive(Debug, PartialEq, Eq)]
+enum Due {
+    Probe,
+    Skip,
+    Phase(String, String),
+}
+
+/// Pure cadence math behind the tick's due pass. `last` is the stored
+/// `last:{id}` stamp, if any; see [`is_due`] for the interval rule.
 ///
-/// First sightings spread across the interval by id hash so a fleet with
-/// the same cadence doesn't synchronize onto one tick (and into a shared
-/// skip window). The default every-tick cadence always probes immediately.
-async fn due(db: &Db, id: &str, every_min: u64, now: i64) -> Result<bool> {
+/// First sightings spread across the interval by id hash (and into a
+/// shared skip window). The default every-tick cadence always probes
+/// immediately.
+fn plan_due(id: &str, last: Option<i64>, every_min: u64, now: i64) -> Due {
     let every_secs = every_min.saturating_mul(60);
-    let last: Option<i64> = db
-        .get(&format!("last:{id}"))
-        .await?
-        .and_then(|s| s.parse().ok());
-    let Some(last) = last else {
-        if every_min <= 1 {
-            return Ok(true);
+    match last {
+        Some(_) if is_due(last, every_min, now) => Due::Probe,
+        Some(_) => Due::Skip,
+        None => {
+            if every_min <= 1 {
+                return Due::Probe;
+            }
+            let offset = stagger_offset(id, every_secs);
+            if offset == 0 {
+                return Due::Probe;
+            }
+            let phased = now.saturating_sub(i64::try_from(offset).unwrap_or(i64::MAX));
+            Due::Phase(format!("last:{id}"), phased.to_string())
         }
-        let offset = stagger_offset(id, every_secs);
-        if offset == 0 {
-            return Ok(true);
-        }
-        let phased = now.saturating_sub(i64::try_from(offset).unwrap_or(i64::MAX));
-        db.put(&format!("last:{id}"), &phased.to_string())
-            .await?;
-        return Ok(false);
-    };
-    Ok(is_due(Some(last), every_min, now))
+    }
+}
+
+/// One `kv` row for batched reads.
+#[derive(Debug, Deserialize)]
+struct KvRow {
+    k: String,
+    v: String,
+}
+
+/// Read many `kv` entries in one D1 round trip (empty input: no query).
+async fn kv_map(db: &Db, keys: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    if keys.is_empty() {
+        return Ok(out);
+    }
+    let placeholders: Vec<String> = (0..keys.len()).map(|i| format!("?{}", i + 1)).collect();
+    let stmt = db
+        .q(&format!(
+            "SELECT k, v FROM kv WHERE k IN ({})",
+            placeholders.join(",")
+        ))
+        .bind(
+            &keys
+                .iter()
+                .map(|key| key.clone().into())
+                .collect::<Vec<wasm_bindgen::JsValue>>(),
+        )?;
+    let rows: Vec<KvRow> = stmt.all().await?.results()?;
+    for row in rows {
+        out.insert(row.k, row.v);
+    }
+    Ok(out)
+}
+
+/// Open (unterminated) gap per monitor id, from one batched query over the
+/// due monitors. Monitors without an open gap are absent from the map.
+async fn open_gaps(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, Gap>> {
+    #[derive(Debug, Deserialize)]
+    struct GapIdRow {
+        id: String,
+        at: i64,
+        #[serde(alias = "upto")]
+        to: Option<i64>,
+        why: String,
+    }
+    let mut out = BTreeMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
+    let stmt = db
+        .q(&format!(
+            "SELECT id, at, upto, why FROM gaps WHERE id IN ({}) ORDER BY id ASC, at DESC",
+            placeholders.join(",")
+        ))
+        .bind(
+            &ids.iter()
+                .map(|id| (*id).into())
+                .collect::<Vec<wasm_bindgen::JsValue>>(),
+        )?;
+    let rows: Vec<GapIdRow> = stmt.all().await?.results()?;
+    for row in rows {
+        // Newest first per id: the first row decides; older rows are history.
+        out.entry(row.id.clone()).or_insert_with(|| Gap {
+            at: row.at,
+            to: row.to,
+            why: row.why.clone(),
+        });
+    }
+    // Only open gaps matter to the record pass.
+    out.retain(|_, gap| gap.to.is_none());
+    Ok(out)
+}
+
+/// Alert bookkeeping per monitor id: consecutive-failure count plus whether
+/// the stored state is up. Missing keys mean "never failed, currently up",
+/// matching the old per-monitor reads.
+async fn alert_state(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, (i64, bool)>> {
+    let mut keys = Vec::with_capacity(ids.len() * 2);
+    for id in ids {
+        keys.push(format!("fails:{id}"));
+        keys.push(format!("alert:{id}"));
+    }
+    let map = kv_map(db, &keys).await?;
+    let mut out = BTreeMap::new();
+    for id in ids {
+        let fails: i64 = map
+            .get(&format!("fails:{id}"))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let was_up = map.get(&format!("alert:{id}")).map_or(true, |s| s != "0");
+        out.insert((*id).to_owned(), (fails, was_up));
+    }
+    Ok(out)
 }
 
 /// Pure cadence math behind [`due`]: due with no history, or once at least
@@ -166,7 +338,7 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_due, stagger_offset, wave_bounds};
+    use super::{is_due, plan_alert, plan_due, stagger_offset, wave_bounds, Due};
 
     #[test]
     fn waves_partition_the_fleet() {
@@ -197,6 +369,56 @@ mod tests {
     }
 
     #[test]
+    fn plan_due_probes_skips_and_phases() {
+        // Due or overdue history probes; fresh history skips.
+        assert_eq!(plan_due("a", Some(1_000), 1, 1_060), Due::Probe);
+        assert_eq!(plan_due("a", Some(1_000), 1, 1_059), Due::Skip);
+        // Every-tick cadence always probes, even on first sighting.
+        assert_eq!(plan_due("a", None, 1, 1_000), Due::Probe);
+        assert_eq!(plan_due("a", None, 0, 1_000), Due::Probe);
+        // First sightings with a cadence either probe (zero offset) or
+        // queue a staggered marker write for the end-of-tick batch.
+        match plan_due("alpha", None, 5, 10_000) {
+            Due::Probe => {}
+            Due::Phase(key, value) => {
+                assert_eq!(key, "last:alpha");
+                let phased: i64 = value.parse().unwrap();
+                assert!(phased <= 10_000 && phased > 10_000 - 300);
+            }
+            Due::Skip => panic!("first sighting never hard-skips"),
+        }
+    }
+
+    #[test]
+    fn plan_alert_pages_once_per_transition() {
+        // Steady up: reset the counter, page nothing, touch nothing.
+        let steady = plan_alert(0, true, true, 2);
+        assert_eq!(steady.fails, 0);
+        assert_eq!(steady.marker, None);
+        assert_eq!(steady.notify, None);
+        // Recovery pages and flips the marker in the same batch.
+        let recovery = plan_alert(3, false, true, 2);
+        assert_eq!(recovery.fails, 0);
+        assert_eq!(recovery.marker, Some("1"));
+        assert_eq!(recovery.notify, Some(true));
+        // First failure below grace: count, page nothing, touch nothing.
+        let first = plan_alert(0, true, false, 2);
+        assert_eq!(first.fails, 1);
+        assert_eq!(first.marker, None);
+        assert_eq!(first.notify, None);
+        // Grace reached: page down and mark it.
+        let page = plan_alert(1, true, false, 2);
+        assert_eq!(page.fails, 2);
+        assert_eq!(page.marker, Some("0"));
+        assert_eq!(page.notify, Some(false));
+        // Still down: refresh the marker, never re-page.
+        let ongoing = plan_alert(5, false, false, 2);
+        assert_eq!(ongoing.fails, 6);
+        assert_eq!(ongoing.marker, Some("0"));
+        assert_eq!(ongoing.notify, None);
+    }
+
+    #[test]
     fn stagger_is_deterministic_bounded_and_spread() {
         let a = stagger_offset("alpha", 300);
         assert_eq!(a, stagger_offset("alpha", 300));
@@ -208,133 +430,111 @@ mod tests {
     }
 }
 
-/// Write one sample row and maintain the open/closed gap for a monitor.
-async fn record(
+/// One sample row plus gap open/close maintenance, as prepared statements
+/// for the end-of-tick write batch. `open` is this monitor's unterminated
+/// gap, if any. Decision logic mirrors the old executing version exactly.
+fn record_stmts(
     db: &Db,
     id: &str,
     now: i64,
     seen: &Seen,
     verdict: &Say,
     location: &str,
-) -> Result<()> {
+    open: Option<&Gap>,
+) -> Result<Vec<D1PreparedStatement>> {
+    let mut out = Vec::with_capacity(3);
     let up_flag = i64::from(verdict.up);
     let elapsed_ms = i64::try_from(seen.ms).unwrap_or(i64::MAX);
-    db.q("INSERT INTO samples (id, at, ms, up, place) VALUES (?1, ?2, ?3, ?4, ?5)")
-        .bind(&[
-            id.into(),
-            num(now),
-            num(elapsed_ms),
-            num(up_flag),
-            location.into(),
-        ])?
-        .run()
-        .await?;
-    let gaps: Vec<GapRow> = db
-        .q("SELECT at, upto, why FROM gaps WHERE id = ?1 ORDER BY at DESC LIMIT 1")
-        .bind(&[id.into()])?
-        .all()
-        .await?
-        .results()?;
+    out.push(
+        db.q("INSERT INTO samples (id, at, ms, up, place) VALUES (?1, ?2, ?3, ?4, ?5)")
+            .bind(&[
+                id.into(),
+                num(now),
+                num(elapsed_ms),
+                num(up_flag),
+                location.into(),
+            ])?,
+    );
     let mut track = Track::default();
-    if let Some(open) = gaps.first().filter(|g| g.to.is_none()) {
+    if let Some(gap) = open {
         track.gaps.push(Gap {
-            at: open.at,
+            at: gap.at,
             to: None,
-            why: open.why.clone(),
+            why: gap.why.clone(),
         });
     }
     if verdict.up {
         if track.note_up(now) {
-            db.q("UPDATE gaps SET upto = ?1 WHERE id = ?2 AND upto IS NULL")
-                .bind(&[num(now), id.into()])?
-                .run()
-                .await?;
+            out.push(
+                db.q("UPDATE gaps SET upto = ?1 WHERE id = ?2 AND upto IS NULL")
+                    .bind(&[num(now), id.into()])?,
+            );
         }
     } else if track.note_down(now, &verdict.why) {
-        if let Some(open) = gaps.first().filter(|g| g.to.is_none()) {
-            db.q("UPDATE gaps SET why = ?1 WHERE id = ?2 AND upto IS NULL")
-                .bind(&[format!("{} | {}", open.why, verdict.why).into(), id.into()])?
-                .run()
-                .await?;
+        if let Some(gap) = open {
+            out.push(
+                db.q("UPDATE gaps SET why = ?1 WHERE id = ?2 AND upto IS NULL")
+                    .bind(&[format!("{} | {}", gap.why, verdict.why).into(), id.into()])?,
+            );
         } else {
-            db.q("INSERT INTO gaps (id, at, upto, why) VALUES (?1, ?2, NULL, ?3)")
-                .bind(&[id.into(), num(now), verdict.why.clone().into()])?
-                .run()
-                .await?;
+            out.push(
+                db.q("INSERT INTO gaps (id, at, upto, why) VALUES (?1, ?2, NULL, ?3)")
+                    .bind(&[id.into(), num(now), verdict.why.clone().into()])?,
+            );
         }
     }
-    Ok(())
+    Ok(out)
 }
 
-/// Latest gap row for gap-maintenance bookkeeping.
-#[derive(Debug, Deserialize)]
-struct GapRow {
-    at: i64,
-    #[serde(alias = "upto")]
-    to: Option<i64>,
-    why: String,
+/// Webhook plan for one verdict: the `fails:` value to persist, the
+/// `alert:` marker to persist (if any), and whether to page (with the
+/// new state) after the write batch lands.
+struct AlertPlan {
+    fails: i64,
+    marker: Option<&'static str>,
+    notify: Option<bool>,
 }
 
-/// Page webhooks on down-transitions (after grace) and on every recovery.
-async fn maybe_alert(
-    db: &Db,
-    site: &Site,
-    id: &str,
-    name: &str,
-    now: i64,
-    verdict: &Say,
-) -> Result<()> {
-    // Consecutive-failure grace: only page when a monitor has been down for
-    // `grace_min` ticks in a row. A recovery always notifies (flap control
-    // is the caller's job via mute, not ours).
-    let fail_key = format!("fails:{id}");
-    let fails: i64 = if verdict.up {
-        db.put(&fail_key, "0").await?;
-        0
-    } else {
-        let count: i64 = db
-            .get(&fail_key)
-            .await?
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0)
-            .saturating_add(1);
-        db.put(&fail_key, &count.to_string()).await?;
-        count
-    };
-    let state_key = format!("alert:{id}");
-    let was_up: bool = db.get(&state_key).await?.map_or(true, |s| s != "0");
-    if verdict.up {
-        if !was_up {
-            notify(db, site, &state_key, name, true, &verdict.why, now).await?;
-        }
-        return Ok(());
+/// Pure alert bookkeeping behind the tick's alert pass.
+///
+/// Consecutive-failure grace: page on down-transitions only after
+/// `grace` failing ticks in a row. A recovery always notifies (flap
+/// control is the caller's job via mute, not ours).
+fn plan_alert(prev_fails: i64, was_up: bool, verdict_up: bool, grace: i64) -> AlertPlan {
+    if verdict_up {
+        return AlertPlan {
+            fails: 0,
+            // A recovery flips the marker alongside the page; a steady up
+            // leaves it untouched, exactly like the old executing version.
+            marker: (!was_up).then_some("1"),
+            notify: (!was_up).then_some(true),
+        };
     }
-    let grace = i64::try_from(site.notify.grace_min.max(1)).unwrap_or(1);
+    let fails = prev_fails.saturating_add(1);
     if was_up && fails >= grace {
-        notify(db, site, &state_key, name, false, &verdict.why, now).await?;
-    } else if !was_up {
-        // Still down: refresh the stored marker but don't re-page.
-        db.put(&state_key, "0").await?;
+        AlertPlan {
+            fails,
+            marker: Some("0"),
+            notify: Some(false),
+        }
+    } else {
+        AlertPlan {
+            fails,
+            marker: (!was_up).then_some("0"),
+            notify: None,
+        }
     }
-    Ok(())
 }
 
-/// Fire all configured webhooks, then persist the new alert state.
-async fn notify(
-    db: &Db,
-    site: &Site,
-    state_key: &str,
-    name: &str,
-    up: bool,
-    why: &str,
-    now: i64,
-) -> Result<()> {
+/// Fire all configured webhooks for a transition. Best-effort by design:
+/// delivery never fails the tick, and the alert marker is already in the
+/// write batch before this runs, so a failed tick can't double-page.
+async fn notify(site: &Site, name: &str, up: bool, why: &str, now: i64) -> Result<()> {
     let stamp = vigil_core::time_label(now);
     for hook in &site.notify.hooks {
         let body = views::fill(&hook.text, name, up, why, &stamp);
         fire_hook(hook, &body).await?;
     }
-    db.put(state_key, if up { "1" } else { "0" }).await?;
     Ok(())
 }
 
@@ -367,16 +567,14 @@ async fn fire_hook(hook: &Hook, body: &str) -> Result<()> {
     Ok(())
 }
 
-/// Delete samples and closed gaps older than the retention window.
-async fn prune(db: &Db, now: i64) -> Result<()> {
+/// Retention-window DELETEs as prepared statements, folded into the
+/// end-of-tick write batch so sweeping costs no extra round trip.
+fn prune_stmts(db: &Db, now: i64) -> Result<Vec<D1PreparedStatement>> {
     let cutoff = now.saturating_sub(RETENTION_DAYS.saturating_mul(SECS_PER_DAY));
-    db.q("DELETE FROM samples WHERE at < ?1")
-        .bind(&[num(cutoff)])?
-        .run()
-        .await?;
-    db.q("DELETE FROM gaps WHERE upto IS NOT NULL AND upto < ?1")
-        .bind(&[num(cutoff)])?
-        .run()
-        .await?;
-    Ok(())
+    Ok(vec![
+        db.q("DELETE FROM samples WHERE at < ?1")
+            .bind(&[num(cutoff)])?,
+        db.q("DELETE FROM gaps WHERE upto IS NOT NULL AND upto < ?1")
+            .bind(&[num(cutoff)])?,
+    ])
 }

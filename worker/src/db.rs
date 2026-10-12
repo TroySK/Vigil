@@ -41,6 +41,30 @@ impl Db {
         self.inner.prepare(sql)
     }
 
+    /// Upsert a `kv` value, prepared for inclusion in a write batch.
+    /// Prefer batched [`Db::batch`] writes on hot paths; see [`Db::batch`].
+    pub fn put_stmt(&self, key: &str, value: &str) -> Result<D1PreparedStatement> {
+        self.q("INSERT INTO kv (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+            .bind(&[key.into(), value.into()])
+    }
+
+    /// Execute prepared statements in as few round trips as possible.
+    ///
+    /// The cron tick batches every write through here: dozens of sequential
+    /// D1 round trips burned the free-plan CPU budget and got the isolate
+    /// killed (`exceededCpu`) before the tick finished.
+    pub async fn batch(&self, statements: Vec<D1PreparedStatement>) -> Result<()> {
+        // D1 caps statements per batch call; chunk so a full-transition
+        // tick with every monitor due still fits.
+        let mut rest = statements;
+        while !rest.is_empty() {
+            let take = rest.len().min(50);
+            let chunk: Vec<D1PreparedStatement> = rest.drain(..take).collect();
+            self.inner.batch(chunk).await?;
+        }
+        Ok(())
+    }
+
     /// Create tables/indexes on first boot. Idempotent.
     pub async fn init(&self) -> Result<()> {
         self.inner
@@ -61,14 +85,5 @@ impl Db {
             .q("SELECT v FROM kv WHERE k = ?1")
             .bind(&[key.into()])?;
         query.first::<String>(Some("v")).await
-    }
-
-    /// Upsert a `kv` value.
-    pub async fn put(&self, key: &str, value: &str) -> Result<()> {
-        self.q("INSERT INTO kv (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
-            .bind(&[key.into(), value.into()])?
-            .run()
-            .await
-            .map(|_| ())
     }
 }
