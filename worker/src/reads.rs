@@ -199,6 +199,50 @@ pub async fn first_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, 
     Ok(out)
 }
 
+/// Up to `limit` newest gaps per monitor, keyed by id, newest first. One
+/// window-function query replaces a round trip per monitor.
+pub async fn recent_gaps_by_monitor(
+    db: &Db,
+    ids: &[&str],
+    limit: i64,
+) -> Result<BTreeMap<String, Vec<Gap>>> {
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        id: String,
+        at: i64,
+        #[serde(alias = "upto")]
+        to: Option<i64>,
+        why: String,
+    }
+    let mut out: BTreeMap<String, Vec<Gap>> = BTreeMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let rows: Vec<Row> = db
+        .q(&format!(
+            "SELECT id, at, upto, why FROM (SELECT id, at, upto, why, ROW_NUMBER() OVER (PARTITION BY id ORDER BY at DESC) AS rn FROM gaps WHERE id IN ({})) WHERE rn <= ?{} ORDER BY id ASC, at DESC",
+            placeholders(ids.len()),
+            ids.len() + 1
+        ))
+        .bind(
+            &bind_ids(ids)
+                .into_iter()
+                .chain(std::iter::once(num(limit.max(1))))
+                .collect::<Vec<_>>(),
+        )?
+        .all()
+        .await?
+        .results()?;
+    for row in rows {
+        out.entry(row.id.clone()).or_default().push(Gap {
+            at: row.at,
+            to: row.to,
+            why: row.why.clone(),
+        });
+    }
+    Ok(out)
+}
+
 /// Up to `limit` newest samples per monitor, keyed by id, newest first.
 /// One window-function query replaces a round trip per monitor. Odd
 /// recency ranks only: half the dots over the same window, since index
