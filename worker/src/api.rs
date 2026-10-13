@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::db::Db;
 use crate::reads::{
-    latest, latest_by_monitor, recent_gaps, recent_gaps_by_monitor, series, SampleOut,
+    data_at_of, latest, latest_by_monitor, recent_gaps, recent_gaps_by_monitor, series, SampleOut,
 };
 use vigil_core::config::Site;
 use vigil_core::rollup::percentile;
@@ -28,6 +28,10 @@ pub const GAP_SCAN_ROWS: i64 = 500;
 pub async fn health(db: &Db, site: &Site) -> Result<Response> {
     let at = last_tick_at(db).await?;
     let (up, down) = parse_counts(&db.get("counts").await?.unwrap_or_else(default_counts));
+    // Last tick that probed something: the refresh poller reloads on this,
+    // not on the tick clock, so skip-only ticks cost a cheap poll instead
+    // of a full page render.
+    let probed = data_at_of(db.get("data_at").await?, at);
     // Two batched round trips cover every monitor (was: two per monitor).
     let ids: Vec<&str> = site
         .monitors
@@ -52,7 +56,7 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
         );
     }
     Response::from_json(&serde_json::json!({
-        "title": site.title, "up": up, "down": down, "at": at, "monitors": items,
+        "title": site.title, "up": up, "down": down, "at": at, "dataAt": probed, "monitors": items,
     }))
 }
 

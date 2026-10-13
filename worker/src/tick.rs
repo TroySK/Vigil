@@ -151,6 +151,10 @@ pub async fn tick(env: Env) -> Result<()> {
     // previous counts still accurate. Only publish when something probed.
     if up + down > 0 {
         writes.push(db.put_stmt("counts", &format!("{up}/{down}"))?);
+        // Skip-only ticks probe nothing: without this marker the pages
+        // would reload every minute on the tick clock even though no
+        // displayed data changed (see the refresh poller).
+        writes.push(db.put_stmt("data_at", &now.to_string())?);
     }
     writes.push(db.put_stmt("at", &now.to_string())?);
     // Retention sweeping runs on the first tick of each clock hour: the

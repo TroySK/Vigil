@@ -13,7 +13,9 @@ use crate::auth::esc;
 use crate::db::Db;
 use crate::page::{default_counts, last_tick_at, links_html, shell, time_html};
 use crate::range::{bars_for, Range};
-use crate::reads::{first_sample_at, recent_gaps, region_latest, series_ranged, GapOut, SampleOut};
+use crate::reads::{
+    data_at_of, first_sample_at, recent_gaps, region_latest, series_ranged, GapOut, SampleOut,
+};
 use vigil_core::config::Site;
 use vigil_core::rollup::{bar_color, latency_chart, percentile, sparkline_points};
 use vigil_core::state::Gap;
@@ -44,6 +46,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     let now = at.max(1);
     let cutoff = now.saturating_sub(range.secs());
     let counts = db.get("counts").await?.unwrap_or_else(default_counts);
+    let probed = data_at_of(db.get("data_at").await?, at);
     // D1 round trips dominate these reads, so fire them all at once
     // instead of awaiting them one by one. The global status comes from
     // the newest per-region sample, so no separate latest-sample query.
@@ -197,6 +200,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
         &menu,
         &home,
         &speculation,
+        probed,
         &body,
     ))
 }
