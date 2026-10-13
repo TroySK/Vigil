@@ -34,9 +34,11 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
         .iter()
         .map(|monitor| monitor.id.as_str())
         .collect();
+    let base = at.max(1);
+    // Month uptime needs 30 days of gaps; older closures cannot affect it.
     let (latest, gap_lists) = futures_util::try_join!(
         latest_by_monitor(db, &ids),
-        recent_gaps_by_monitor(db, &ids, GAP_SCAN_ROWS),
+        recent_gaps_by_monitor(db, &ids, GAP_SCAN_ROWS, base.saturating_sub(MONTH_SECS)),
     )?;
     let mut items = serde_json::Map::new();
     for monitor in &site.monitors {
@@ -45,7 +47,7 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
             monitor_status(
                 latest.get(&monitor.id),
                 gap_lists.get(&monitor.id).map_or(&[], Vec::as_slice),
-                at.max(1),
+                base,
             ),
         );
     }

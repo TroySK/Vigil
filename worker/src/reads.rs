@@ -199,12 +199,27 @@ pub async fn first_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, 
     Ok(out)
 }
 
-/// Up to `limit` newest gaps per monitor, keyed by id, newest first. One
-/// window-function query replaces a round trip per monitor.
+/// Exact query behind [`recent_gaps_by_monitor`], exposed so tests execute
+/// the shipped text against bundled SQLite. `?1..?N` monitor ids, then
+/// cutoff, then limit: only gaps touching `[cutoff, +inf)` are ranked, so
+/// ancient history never consumes the per-monitor budget.
+fn recent_gaps_window_sql(n: usize) -> String {
+    format!(
+        "SELECT id, at, upto, why FROM (SELECT id, at, upto, why, ROW_NUMBER() OVER (PARTITION BY id ORDER BY at DESC) AS rn FROM gaps WHERE id IN ({}) AND (upto IS NULL OR upto >= ?{})) WHERE rn <= ?{} ORDER BY id ASC, at DESC",
+        placeholders(n),
+        n + 1,
+        n + 2,
+    )
+}
+
+/// Up to `limit` newest gaps per monitor inside `[cutoff, +inf)`, keyed by
+/// id, newest first. One window-function query replaces a round trip per
+/// monitor; predated closures never leave D1.
 pub async fn recent_gaps_by_monitor(
     db: &Db,
     ids: &[&str],
     limit: i64,
+    cutoff: i64,
 ) -> Result<BTreeMap<String, Vec<Gap>>> {
     #[derive(Debug, Deserialize)]
     struct Row {
@@ -219,15 +234,11 @@ pub async fn recent_gaps_by_monitor(
         return Ok(out);
     }
     let rows: Vec<Row> = db
-        .q(&format!(
-            "SELECT id, at, upto, why FROM (SELECT id, at, upto, why, ROW_NUMBER() OVER (PARTITION BY id ORDER BY at DESC) AS rn FROM gaps WHERE id IN ({})) WHERE rn <= ?{} ORDER BY id ASC, at DESC",
-            placeholders(ids.len()),
-            ids.len() + 1
-        ))
+        .q(&recent_gaps_window_sql(ids.len()))
         .bind(
             &bind_ids(ids)
                 .into_iter()
-                .chain(std::iter::once(num(limit.max(1))))
+                .chain([num(cutoff), num(limit.max(1))])
                 .collect::<Vec<_>>(),
         )?
         .all()
@@ -360,7 +371,7 @@ pub async fn region_latest(db: &Db, id: &str) -> Result<Vec<SampleOut>> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
-    use super::{series_ranged_sql, series_window_sql, stride_for};
+    use super::{recent_gaps_window_sql, series_ranged_sql, series_window_sql, stride_for};
     use rusqlite::params;
 
     #[test]
@@ -472,6 +483,20 @@ mod tests {
         assert_eq!(ats[0], 1_800_000_000);
         let steps: std::collections::BTreeSet<i64> = ats.windows(2).map(|w| w[0] - w[1]).collect();
         assert_eq!(steps.into_iter().collect::<Vec<_>>(), vec![2_100]);
+    }
+
+    #[test]
+    fn recent_gaps_window_excludes_predated_closures() {
+        let conn = seed_db();
+        let mut stmt = conn.prepare(&recent_gaps_window_sql(1)).unwrap();
+        let ats: Vec<i64> = stmt
+            .query_map(params!["m1", 350.0, 500.0], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // Cutoff 350, limit 500: open gaps plus closures ending at/after
+        // it, newest first. (200, 250) predates the window.
+        assert_eq!(ats, vec![500, 400, 300, 100]);
     }
 
     #[test]
