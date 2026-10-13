@@ -7,11 +7,11 @@ use crate::auth::esc;
 use crate::db::Db;
 use crate::range::{bars_for, Range};
 use crate::reads::{
-    data_at_of, first_by_monitor, gaps_window_by_monitor, latest_by_monitor, series_by_monitor,
+    data_at_of, gaps_window_by_monitor, latest_and_first_by_monitor, series_by_monitor,
     SampleOut,
 };
 use vigil_core::config::{Monitor, Probe, Site};
-use vigil_core::rollup::{bar_color, latency_chart, percentile};
+use vigil_core::rollup::{bar_color, latency_chart, percentile_pair};
 use vigil_core::state::Gap;
 use worker::{Response, Result};
 
@@ -117,7 +117,7 @@ pub async fn sections(
             let _ = write!(out, "<div class=\"note {kind}\">{}</div>", esc(&text));
         }
     }
-    // Four batched D1 round trips cover every monitor (was: four per
+    // Three batched D1 round trips cover every monitor (was: four per
     // monitor, ~120 trips at 30 monitors). The homepage is the
     // highest-traffic page; per-monitor fan-out risked the same CPU
     // exhaustion that killed the tick.
@@ -132,13 +132,21 @@ pub async fn sections(
     // range: a range-wide sparkline would scan the full window per monitor
     // per load (~777k rows at 90 days), burning the D1 rows-read quota for
     // a glanceable trend. Bars carry the range history instead.
+    // `quiet_chart` monitors skip the sparkline query entirely: their
+    // series were fetched and then discarded.
     let pulse_cutoff = now.saturating_sub(86_400);
-    let (latest, gap_lists, since_map, series) = futures_util::try_join!(
-        latest_by_monitor(db, &ids),
+    let chart_ids: Vec<&str> = site
+        .monitors
+        .iter()
+        .filter(|monitor| !monitor.quiet_chart)
+        .map(|monitor| monitor.id.as_str())
+        .collect();
+    let (latest_first, gap_lists, series) = futures_util::try_join!(
+        latest_and_first_by_monitor(db, &ids),
         gaps_window_by_monitor(db, &ids, cutoff),
-        first_by_monitor(db, &ids),
-        series_by_monitor(db, &ids, pulse_cutoff, INDEX_CHART_POINTS),
+        series_by_monitor(db, &chart_ids, pulse_cutoff, INDEX_CHART_POINTS),
     )?;
+    let (latest, since_map) = latest_first;
     // Rows assemble synchronously in file order; groups slice them below.
     let rows: BTreeMap<String, String> = site
         .monitors
@@ -274,8 +282,8 @@ fn one_row(
         let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
         let points: Vec<(i64, i64, &str)> =
             lat.iter().rev().map(|r| (r.at, r.ms, r.place.as_str())).collect();
-        let p50 = percentile(&vals, 50.0);
-        let p95 = percentile(&vals, 95.0);
+        // One sort for both percentiles (was: one sort each).
+        let (p50, p95) = percentile_pair(&vals, 50.0, 95.0);
         let spark = latency_chart(&points, 560, 120, range.hourly());
         let chart = if spark.is_empty() {
             "<s>No samples yet</s>".to_owned()

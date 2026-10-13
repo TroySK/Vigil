@@ -86,22 +86,48 @@ impl Track {
     /// Returns `100.0` for non-positive windows.
     #[must_use]
     pub fn uptime_pct(&self, now: i64, window: i64) -> f64 {
-        if window <= 0 {
-            return 100.0;
-        }
-        let from = now.saturating_sub(window);
-        let mut down = 0_i64;
+        self.uptime_many(now, &[window])[0]
+    }
+
+    /// Uptime percentages for several windows in one pass over gaps.
+    ///
+    /// Hot pages need day/week/month per monitor; three [`Track::uptime_pct`]
+    /// calls scan the same gaps three times. One pass computes every
+    /// window's overlap instead. Empty input yields an empty vec.
+    #[must_use]
+    pub fn uptime_many(&self, now: i64, windows: &[i64]) -> Vec<f64> {
+        let mut downs = vec![0_i64; windows.len()];
+        let froms: Vec<i64> = windows
+            .iter()
+            .map(|w| {
+                if *w <= 0 {
+                    now
+                } else {
+                    now.saturating_sub(*w)
+                }
+            })
+            .collect();
         for g in &self.gaps {
-            let start = g.at.max(from);
-            let end = g.to.unwrap_or(now).min(now);
-            if end > start {
-                down = down.saturating_add(end - start);
+            let end_all = g.to.unwrap_or(now).min(now);
+            for (i, from) in froms.iter().enumerate() {
+                let start = g.at.max(*from);
+                if end_all > start {
+                    downs[i] = downs[i].saturating_add(end_all - start);
+                }
             }
         }
-        let total = (now - from).max(1);
-        #[allow(clippy::cast_precision_loss)]
-        let pct = (total - down).max(0) as f64 / total as f64 * 100.0;
-        // Round to one decimal place without pulling in a float-format dep.
-        (pct * 10.0).round() / 10.0
+        windows
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                if *w <= 0 {
+                    return 100.0;
+                }
+                let total = (now - froms[i]).max(1);
+                #[allow(clippy::cast_precision_loss)]
+                let pct = (total - downs[i]).max(0) as f64 / total as f64 * 100.0;
+                (pct * 10.0).round() / 10.0
+            })
+            .collect()
     }
 }

@@ -64,11 +64,12 @@ impl Db {
     /// D1 round trips burned the free-plan CPU budget and got the isolate
     /// killed (`exceededCpu`) before the tick finished.
     pub async fn batch(&self, statements: Vec<D1PreparedStatement>) -> Result<()> {
-        // D1 caps statements per batch call; chunk so a full-transition
-        // tick with every monitor due still fits.
+        // D1 serves up to 100 statements per batch call; chunk so a
+        // full-transition tick with every monitor due still fits in as few
+        // round trips as possible.
         let mut rest = statements;
         while !rest.is_empty() {
-            let take = rest.len().min(50);
+            let take = rest.len().min(100);
             let chunk: Vec<D1PreparedStatement> = rest.drain(..take).collect();
             self.inner.batch(chunk).await?;
         }
@@ -82,8 +83,11 @@ impl Db {
                 "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);\
                  CREATE TABLE IF NOT EXISTS samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);\
                  CREATE INDEX IF NOT EXISTS idx_samples ON samples (id, at);\
+                 CREATE INDEX IF NOT EXISTS idx_samples_at ON samples (at);\
                  CREATE TABLE IF NOT EXISTS gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);\
-                 CREATE INDEX IF NOT EXISTS idx_gaps ON gaps (id, at);",
+                 CREATE INDEX IF NOT EXISTS idx_gaps ON gaps (id, at);\
+                 CREATE INDEX IF NOT EXISTS idx_gaps_upto ON gaps (upto);\
+                 CREATE INDEX IF NOT EXISTS idx_gaps_open ON gaps (id, upto, at DESC);",
             )
             .await
             .map(|_| ())

@@ -14,10 +14,10 @@ use crate::db::Db;
 use crate::page::{default_counts, last_tick_at, links_html, shell, time_html};
 use crate::range::{bars_for, Range};
 use crate::reads::{
-    data_at_of, first_sample_at, recent_gaps, region_latest, series_ranged, GapOut, SampleOut,
+    data_at_of, first_sample_at, recent_gaps, region_latest, series_ranged, SampleOut,
 };
 use vigil_core::config::Site;
-use vigil_core::rollup::{bar_color, latency_chart, percentile, sparkline_points};
+use vigil_core::rollup::{bar_color, latency_chart, percentile_pair, sparkline_points};
 use vigil_core::state::Gap;
 use worker::{Response, Result};
 
@@ -50,7 +50,9 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     // D1 round trips dominate these reads, so fire them all at once
     // instead of awaiting them one by one. The global status comes from
     // the newest per-region sample, so no separate latest-sample query.
-    let (regions, gaps, since, lat): (Vec<SampleOut>, Vec<GapOut>, Option<i64>, Vec<SampleOut>) = futures_util::try_join!(
+    // The gap fetch stays capped (GAP_SCAN_ROWS newest): an uncapped window
+    // scan would let one flapping monitor blow up rows-read here.
+    let (regions, gaps, since, lat) = futures_util::try_join!(
         region_latest(db, id),
         recent_gaps(db, id, crate::api::GAP_SCAN_ROWS),
         first_sample_at(db, id),
@@ -118,8 +120,8 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
     let points: Vec<(i64, i64, &str)> =
         lat.iter().rev().map(|r| (r.at, r.ms, r.place.as_str())).collect();
-    let p50 = percentile(&vals, 50.0);
-    let p95 = percentile(&vals, 95.0);
+    // One sort for both percentiles (was: one sort each).
+    let (p50, p95) = percentile_pair(&vals, 50.0, 95.0);
     let spark = latency_chart(&points, 600, 150, range.hourly());
     let spark_html = if spark.is_empty() {
         "<p class=empty>No latency samples yet — the chart fills in after the next probe.</p>"

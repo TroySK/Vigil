@@ -2,8 +2,8 @@
 
 use crate::api;
 use crate::auth::{authed, deny};
-use crate::db::{schema_due, Db};
-use worker::{Date, Env, Request, Response, Result};
+use crate::db::Db;
+use worker::{Env, Request, Response, Result};
 
 /// Handle every incoming `fetch`: gate, migrate, route, then harden and
 /// cache-tag the response on the single exit path.
@@ -33,10 +33,10 @@ async fn route(req: Request, env: Env, url: &url::Url) -> Result<Response> {
         return deny();
     }
     let db = Db::of(&env)?;
-    // Schema setup runs hourly (see schema_due): CI migrations own it.
-    if schema_due(sec_now()) {
-        db.init().await?;
-    }
+    // No schema setup here: DDL on the request path fired an idempotent
+    // migration on every request landing in the hourly window (a thundering
+    // herd under traffic). CI migrations plus the cron tick's self-heal own
+    // schema; requests just read.
     match url.path() {
         "/" | "/index.html" => {
             let range = crate::range::parse_range(range_param(url).as_deref());
@@ -72,19 +72,15 @@ fn range_param(url: &url::Url) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-/// Current time truncated to whole seconds.
-#[allow(clippy::cast_possible_wrap)] // epoch millis fit in i64 for millennia
-fn sec_now() -> i64 {
-    (Date::now().as_millis() / 1_000) as i64
-}
-
 /// Shared cache policy per path: tick-granular pages and read APIs tolerate
 /// 30s of staleness (the auto-refresh polls on the same interval), which
-/// caps D1 fan-out cost per visitor. Badge and icons set their own policy.
+/// caps D1 fan-out cost per visitor. Icons set their own immutable policy;
+/// the badge (polled by external embeds) tolerates 60s.
 fn cache_control(path: &str) -> Option<&'static str> {
     match path {
         "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history" | "/api/incidents"
         | "/api/latency" => Some("public, max-age=30"),
+        "/api/badge" => Some("public, max-age=60"),
         _ => None,
     }
 }
@@ -137,8 +133,9 @@ mod tests {
     }
 
     #[test]
-    fn badge_and_errors_stay_uncached() {
-        assert_eq!(cache_control("/api/badge"), None);
+    fn badge_caches_briefly_and_errors_stay_uncached() {
+        // Badge embeds poll constantly; 60s of staleness caps D1 reads.
+        assert_eq!(cache_control("/api/badge"), Some("public, max-age=60"));
         assert_eq!(cache_control("/nope"), None);
     }
 }
