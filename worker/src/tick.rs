@@ -258,6 +258,17 @@ async fn kv_map(db: &Db, keys: &[String]) -> Result<BTreeMap<String, String>> {
     Ok(out)
 }
 
+/// Exact query behind [`open_gaps`], exposed so tests execute the shipped
+/// text against bundled SQLite. Only unterminated gaps leave D1 — the
+/// record pass discards closed ones, so fetching 90 days of closed history
+/// every tick only burns rows-read quota.
+fn open_gaps_sql(n: usize) -> String {
+    format!(
+        "SELECT id, at, upto, why FROM gaps WHERE id IN ({}) AND upto IS NULL ORDER BY id ASC, at DESC",
+        (0..n).map(|i| format!("?{}", i + 1)).collect::<Vec<_>>().join(",")
+    )
+}
+
 /// Open (unterminated) gap per monitor id, from one batched query over the
 /// due monitors. Monitors without an open gap are absent from the map.
 async fn open_gaps(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, Gap>> {
@@ -273,28 +284,21 @@ async fn open_gaps(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, Gap>> {
     if ids.is_empty() {
         return Ok(out);
     }
-    let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
-    let stmt = db
-        .q(&format!(
-            "SELECT id, at, upto, why FROM gaps WHERE id IN ({}) ORDER BY id ASC, at DESC",
-            placeholders.join(",")
-        ))
-        .bind(
-            &ids.iter()
-                .map(|id| (*id).into())
-                .collect::<Vec<wasm_bindgen::JsValue>>(),
-        )?;
+    let stmt = db.q(&open_gaps_sql(ids.len())).bind(
+        &ids.iter()
+            .map(|id| (*id).into())
+            .collect::<Vec<wasm_bindgen::JsValue>>(),
+    )?;
     let rows: Vec<GapIdRow> = stmt.all().await?.results()?;
     for row in rows {
         // Newest first per id: the first row decides; older rows are history.
+        // (The query only returns open gaps, so no closed-row filtering.)
         out.entry(row.id.clone()).or_insert_with(|| Gap {
             at: row.at,
             to: row.to,
             why: row.why.clone(),
         });
     }
-    // Only open gaps matter to the record pass.
-    out.retain(|_, gap| gap.to.is_none());
     Ok(out)
 }
 
@@ -342,7 +346,8 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, is_due, plan_alert, plan_due, stagger_offset, state_keys, wave_bounds, Due,
+        alert_for, is_due, open_gaps_sql, plan_alert, plan_due, stagger_offset, state_keys,
+        wave_bounds, Due,
     };
     use std::collections::BTreeMap;
 
@@ -422,6 +427,30 @@ mod tests {
         assert_eq!(ongoing.fails, 6);
         assert_eq!(ongoing.marker, Some("0"));
         assert_eq!(ongoing.notify, None);
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
+    fn open_gaps_sql_returns_only_unterminated() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);",
+        )
+        .unwrap();
+        for (at, upto) in [(100, None), (200, Some(250)), (300, None)] {
+            conn.execute(
+                "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params!["m1", at as f64, upto.map(|u| u as f64), "x"],
+            )
+            .unwrap();
+        }
+        let mut stmt = conn.prepare(&open_gaps_sql(1)).unwrap();
+        let ats: Vec<i64> = stmt
+            .query_map(rusqlite::params!["m1"], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(ats, vec![300, 100]);
     }
 
     #[test]
