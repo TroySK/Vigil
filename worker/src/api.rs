@@ -1,13 +1,11 @@
 //! JSON APIs: health snapshot, SVG badge, history, incidents, latency.
 
-use std::collections::BTreeMap;
-
 use crate::db::Db;
 use crate::reads::{
     data_at_of, latest, latest_by_monitor, recent_gaps, recent_gaps_by_monitor, series, SampleOut,
 };
 use vigil_core::config::Site;
-use vigil_core::rollup::percentile;
+use vigil_core::rollup::percentile_triple;
 use vigil_core::state::{Gap, Track};
 use worker::{Response, ResponseBody, Result};
 
@@ -40,6 +38,9 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
         .collect();
     let base = at.max(1);
     // Month uptime needs 30 days of gaps; older closures cannot affect it.
+    // The ranked per-monitor query caps rows at GAP_SCAN_ROWS inside the
+    // window, so a flapping monitor can't blow up rows-read on this
+    // highest-fan-out endpoint.
     let (latest, gap_lists) = futures_util::try_join!(
         latest_by_monitor(db, &ids),
         recent_gaps_by_monitor(db, &ids, GAP_SCAN_ROWS, base.saturating_sub(MONTH_SECS)),
@@ -69,14 +70,16 @@ fn monitor_status(current: Option<&SampleOut>, gaps: &[Gap], base: i64) -> serde
     let track = Track {
         gaps: gaps.to_vec(),
     };
+    // One pass over gaps for all three windows (was: three scans).
+    let uptimes = track.uptime_many(base, &[DAY_SECS, WEEK_SECS, MONTH_SECS]);
     serde_json::json!({
         "up": is_up,
         "ms": current.map_or(0, |r| r.ms),
         "at": current.map_or(base, |r| r.at),
         "uptime": {
-            "day": track.uptime_pct(base, DAY_SECS),
-            "week": track.uptime_pct(base, WEEK_SECS),
-            "month": track.uptime_pct(base, MONTH_SECS),
+            "day": uptimes[0],
+            "week": uptimes[1],
+            "month": uptimes[2],
         },
     })
 }
@@ -96,9 +99,11 @@ pub async fn badge(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
     };
     let (word, color) = vigil_core::views::badge(is_up);
     let svg = vigil_core::views::svg(&label, word, color);
+    // Cache policy comes from the shared `cache_control` in `http.rs`
+    // (60s public): badge embeds poll constantly, and every uncached hit
+    // costs D1 reads.
     Ok(Response::builder()
         .with_header("content-type", "image/svg+xml")?
-        .with_header("cache-control", "no-store")?
         .body(ResponseBody::Body(svg.into_bytes())))
 }
 
@@ -123,10 +128,12 @@ pub async fn latency(db: &Db, url: &url::Url) -> Result<Response> {
     let id = query_param(url, "id").unwrap_or_default();
     let rows = series(db, &id, MAX_ROWS).await?;
     let vals: Vec<i64> = rows.iter().map(|r| r.ms).collect();
+    // One sort for all three percentiles (was: three sorts).
+    let (p50, p95, p99) = percentile_triple(&vals, 50.0, 95.0, 99.0);
     Response::from_json(&serde_json::json!({
-        "p50": percentile(&vals, 50.0),
-        "p95": percentile(&vals, 95.0),
-        "p99": percentile(&vals, 99.0),
+        "p50": p50,
+        "p95": p95,
+        "p99": p99,
         "samples": rows,
     }))
 }
@@ -152,12 +159,14 @@ fn parse_counts(counts: &str) -> (u32, u32) {
     })
 }
 
-/// Extract one query parameter value (uses a map so repeated scans are cheap
-/// when several params are read from the same URL).
+/// Extract one query parameter value with a single scan over the pairs
+/// (the old map-collecting version re-parsed and allocated the full query
+/// string on every call — twice per API request).
 #[allow(clippy::needless_pass_by_value)]
 fn query_param(url: &url::Url, name: &str) -> Option<String> {
-    let params: BTreeMap<String, String> = url.query_pairs().into_owned().collect();
-    params.get(name).cloned()
+    url.query_pairs()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
 }
 
 #[cfg(test)]

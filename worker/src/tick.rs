@@ -135,7 +135,12 @@ pub async fn tick(env: Env) -> Result<()> {
         )?);
         let (prev_fails, was_up) = alert_for(&kv, &monitor.id);
         let plan = plan_alert(prev_fails, was_up, verdict.up, grace);
-        writes.push(db.put_stmt(&format!("fails:{}", monitor.id), &plan.fails.to_string())?);
+        // Steady-up ticks dominate the fleet: rewriting an identical
+        // `fails:0` every minute costs a D1 write per monitor for no state
+        // change. Only persist when the counter actually moved.
+        if plan.fails != prev_fails {
+            writes.push(db.put_stmt(&format!("fails:{}", monitor.id), &plan.fails.to_string())?);
+        }
         if let Some(marker) = plan.marker {
             writes.push(db.put_stmt(&format!("alert:{}", monitor.id), marker)?);
         }
@@ -157,10 +162,10 @@ pub async fn tick(env: Env) -> Result<()> {
         writes.push(db.put_stmt("data_at", &now.to_string())?);
     }
     writes.push(db.put_stmt("at", &now.to_string())?);
-    // Retention sweeping runs on the first tick of each clock hour: the
+    // Retention sweeping runs on the first tick of each clock day: the
     // DELETEs cost round trips every tick otherwise, for data that only
     // ages daily. Folded into the same batch — no extra round trip.
-    if now % (60 * 60) < 60 {
+    if now % (60 * 60 * 24) < 60 {
         writes.extend(prune_stmts(&db, now)?);
     }
     db.batch(writes).await?;
@@ -498,6 +503,23 @@ mod tests {
     }
 }
 
+/// Cap for a gap's accumulated `why` text: each failing tick appends
+/// `" | {reason}"`, so a month-long outage would otherwise grow one TEXT
+/// value (and every copy of it) without bound.
+pub const MAX_WHY_LEN: usize = 500;
+
+/// Truncate `s` to at most [`MAX_WHY_LEN`] bytes on a char boundary.
+fn cap_why(s: &str) -> &str {
+    if s.len() <= MAX_WHY_LEN {
+        return s;
+    }
+    let mut end = MAX_WHY_LEN;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// One sample row plus gap open/close maintenance, as prepared statements
 /// for the end-of-tick write batch. `open` is this monitor's unterminated
 /// gap, if any. Decision logic mirrors the old executing version exactly.
@@ -540,9 +562,11 @@ fn record_stmts(
         }
     } else if track.note_down(now, &verdict.why) {
         if let Some(gap) = open {
+            let joined = format!("{} | {}", gap.why, verdict.why);
+            let why = cap_why(&joined).to_owned();
             out.push(
                 db.q("UPDATE gaps SET why = ?1 WHERE id = ?2 AND upto IS NULL")
-                    .bind(&[format!("{} | {}", gap.why, verdict.why).into(), id.into()])?,
+                    .bind(&[why.into(), id.into()])?,
             );
         } else {
             out.push(

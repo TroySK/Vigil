@@ -96,6 +96,19 @@ fn bind_ids(ids: &[&str]) -> Vec<wasm_bindgen::JsValue> {
 /// within each group (documented bare-column behavior with a single
 /// min/max aggregate).
 pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, SampleOut>> {
+    let (latest, _) = latest_and_first_by_monitor(db, ids).await?;
+    Ok(latest)
+}
+
+/// Newest sample plus earliest sample per monitor from one round trip.
+///
+/// The homepage needs both (status rows + `has_data` bars) and paid two
+/// `GROUP BY` scans for them. One grouped query returns both: `MIN(at)`
+/// for the bar cutoff plus the `MAX(at)` row's bare columns for status.
+pub async fn latest_and_first_by_monitor(
+    db: &Db,
+    ids: &[&str],
+) -> Result<(BTreeMap<String, SampleOut>, BTreeMap<String, i64>)> {
     #[derive(Debug, Deserialize)]
     struct Row {
         id: String,
@@ -103,14 +116,16 @@ pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String,
         ms: i64,
         up: i64,
         place: String,
+        first: i64,
     }
-    let mut out = BTreeMap::new();
+    let mut latest = BTreeMap::new();
+    let mut first = BTreeMap::new();
     if ids.is_empty() {
-        return Ok(out);
+        return Ok((latest, first));
     }
     let rows: Vec<Row> = db
         .q(&format!(
-            "SELECT id, MAX(at) AS at, ms, up, place FROM samples WHERE id IN ({}) GROUP BY id",
+            "SELECT id, MAX(at) AS at, ms, up, place, MIN(at) AS first FROM samples WHERE id IN ({}) GROUP BY id",
             placeholders(ids.len())
         ))
         .bind(&bind_ids(ids))?
@@ -118,7 +133,8 @@ pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String,
         .await?
         .results()?;
     for row in rows {
-        out.insert(
+        first.insert(row.id.clone(), row.first);
+        latest.insert(
             row.id.clone(),
             SampleOut {
                 at: row.at,
@@ -128,7 +144,7 @@ pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String,
             },
         );
     }
-    Ok(out)
+    Ok((latest, first))
 }
 
 /// Gaps overlapping `[cutoff, now]` per monitor, keyed by id. Older closed
@@ -172,8 +188,10 @@ pub async fn gaps_window_by_monitor(
     Ok(out)
 }
 
-/// Earliest sample per monitor, keyed by id: days before it render as
-/// "no data", never as 100% uptime.
+/// Earliest sample per monitor, keyed by id (superseded by
+/// [`latest_and_first_by_monitor`], kept for single-purpose callers): days
+/// before it render as "no data", never as 100% uptime.
+#[allow(dead_code)]
 pub async fn first_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, i64>> {
     #[derive(Debug, Deserialize)]
     struct Row {

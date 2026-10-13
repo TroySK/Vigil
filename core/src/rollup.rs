@@ -129,6 +129,50 @@ pub fn percentile(values: &[i64], p: f64) -> i64 {
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
+/// Two nearest-rank percentiles with a single sort.
+///
+/// Hot pages need p50 + p95 per monitor; two [`percentile`] calls sort the
+/// same samples twice. Returns `(0, 0)` when empty.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn percentile_pair(values: &[i64], p1: f64, p2: f64) -> (i64, i64) {
+    if values.is_empty() {
+        return (0, 0);
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let len = sorted.len();
+    let rank = |p: f64| {
+        ((p.clamp(0.0, 100.0) / 100.0 * len as f64).ceil() as usize).clamp(1, len) - 1
+    };
+    (sorted[rank(p1)], sorted[rank(p2)])
+}
+
+/// Three nearest-rank percentiles with a single sort (latency API).
+/// Returns `(0, 0, 0)` when empty.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn percentile_triple(values: &[i64], p1: f64, p2: f64, p3: f64) -> (i64, i64, i64) {
+    if values.is_empty() {
+        return (0, 0, 0);
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let len = sorted.len();
+    let rank = |p: f64| {
+        ((p.clamp(0.0, 100.0) / 100.0 * len as f64).ceil() as usize).clamp(1, len) - 1
+    };
+    (sorted[rank(p1)], sorted[rank(p2)], sorted[rank(p3)])
+}
+
 /// Smooth SVG path through pixel points: quadratic segments joined at
 /// edge midpoints, so latency lines read as trends instead of zigzags.
 /// Midpoints bound every coordinate to the inputs' range — unlike
