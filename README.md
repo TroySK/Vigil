@@ -56,7 +56,8 @@ comment header at the top of that file):
   aren't due — first sightings spread across the interval so a fleet never
   synchronizes onto one tick.
 - `refresh_secs`: page auto-refresh interval in seconds (default 30,
-  `0` disables polling). Pages reload only when a newer tick lands.
+  `0` disables polling). Pages poll on this interval but reload only when
+  a tick probed new data.
 - `links` render as chips in file order (first link is leftmost) and open
   in a new tab.
 - Group monitors with `groups` (name to list of monitor ids). Monitors not

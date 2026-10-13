@@ -313,6 +313,14 @@ pub async fn series_by_monitor(
     Ok(out)
 }
 
+/// Last tick that probed at least one monitor, falling back to the tick
+/// clock when no probe has ever landed (fresh database): pages then keep
+/// reloading on ticks until the first real data arrives.
+#[must_use]
+pub fn data_at_of(stored: Option<String>, at: i64) -> i64 {
+    stored.and_then(|s| s.parse().ok()).unwrap_or(at)
+}
+
 /// Row stride spreading a window of `count` samples over at most
 /// `max_points` chart points: full fidelity while the window fits, every
 /// Nth row by recency rank beyond that.
@@ -371,7 +379,9 @@ pub async fn region_latest(db: &Db, id: &str) -> Result<Vec<SampleOut>> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
-    use super::{recent_gaps_window_sql, series_ranged_sql, series_window_sql, stride_for};
+    use super::{
+        data_at_of, recent_gaps_window_sql, series_ranged_sql, series_window_sql, stride_for,
+    };
     use rusqlite::params;
 
     #[test]
@@ -379,6 +389,13 @@ mod tests {
         assert_eq!(stride_for(0, 300), 1);
         assert_eq!(stride_for(288, 300), 1);
         assert_eq!(stride_for(300, 300), 1);
+    }
+
+    #[test]
+    fn probed_clock_falls_back_to_tick_clock() {
+        assert_eq!(data_at_of(Some("bogus".to_owned()), 2_000), 2_000);
+        assert_eq!(data_at_of(Some("1500".to_owned()), 2_000), 1_500);
+        assert_eq!(data_at_of(None, 2_000), 2_000);
     }
 
     #[test]

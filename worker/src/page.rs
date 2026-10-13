@@ -7,7 +7,8 @@ use crate::auth::esc;
 use crate::db::Db;
 use crate::range::{bars_for, Range};
 use crate::reads::{
-    first_by_monitor, gaps_window_by_monitor, latest_by_monitor, series_by_monitor, SampleOut,
+    data_at_of, first_by_monitor, gaps_window_by_monitor, latest_by_monitor, series_by_monitor,
+    SampleOut,
 };
 use vigil_core::config::{Monitor, Probe, Site};
 use vigil_core::rollup::{bar_color, latency_chart, percentile};
@@ -22,6 +23,9 @@ pub const INDEX_CHART_POINTS: i64 = 30;
 pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
     let at = last_tick_at(db).await?;
     let counts = db.get("counts").await?.unwrap_or_else(default_counts);
+    // Last tick that probed something: the refresh poller reloads on this,
+    // not on the tick clock, so skip-only ticks cost a cheap poll.
+    let probed = data_at_of(db.get("data_at").await?, at);
     let (up, down) = parse_counts(&counts);
     let hero = hero_html(site, up, down, at);
     let mut body = hero;
@@ -40,6 +44,7 @@ pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
         &menu,
         &home,
         &speculation,
+        probed,
         &body,
     ))
 }
@@ -421,6 +426,7 @@ pub fn shell(
     range_menu: &str,
     home_url: &str,
     speculation: &str,
+    probed_at: i64,
     body: &str,
 ) -> String {
     let (cup, cdown) = parse_counts(counts);
@@ -731,7 +737,7 @@ pub fn shell(
         </style>{spec}</head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
         <header class=nav-edge><a class=wordmark href=\"{home}\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=tz-toggle id=tz-toggle type=button aria-label=\"Toggle time zone\" aria-pressed=\"false\" title=\"Times shown in UTC\">UTC</button>{menu}<button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
         <nav class=links aria-label=\"Site\"><span class=links-label>Quick links:</span>{links}</nav>\
-        <main id=main data-at=\"{at}\" tabindex=-1>{body}</main>\
+        <main id=main data-probed=\"{probed_at}\" tabindex=-1>{body}</main>\
         <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>Checked {time}</span></footer>\
         </div><script>(function(){{var el=document.querySelector('[data-count]');\
         if(el){{var raw=el.getAttribute('data-count');var target=parseInt(raw,10);\
@@ -811,12 +817,12 @@ pub fn shell(
         var here=new URL(window.location.href).pathname;\
         var t=(to===here)?'fade':((to.indexOf('/monitor')===0)?'forward':((to==='/')?'back':null));\
         if(t)e.viewTransition.types.add(t);}}catch(err){{}}}});}}catch(err){{}}\
-        var mainEl=document.querySelector('main[data-at]');\
-        if(mainEl&&{refresh_ms}>0){{var seen=parseInt(mainEl.getAttribute('data-at'),10)||0;\
+        var mainEl=document.querySelector('main[data-probed]');\
+        if(mainEl&&{refresh_ms}>0){{var seen=parseInt(mainEl.getAttribute('data-probed'),10)||0;\
         setInterval(function(){{if(document.hidden)return;\
         fetch('/api/health',{{headers:{{'accept':'application/json'}}}})\
         .then(function(r){{return r.ok?r.json():null;}})\
-        .then(function(j){{if(j&&j.at>seen)location.reload();}})\
+        .then(function(j){{var nxt=(j&&j.dataAt!=null)?j.dataAt:((j&&j.at)||0);if(nxt>seen)location.reload();}})\
         .catch(function(){{}});}},{refresh_ms});}}}})();</script><script>var FB=[\"/favicon.ico\",\"/favicon.png\",\"/favicon.svg\",\"/icon.svg\",\"/icon.png\",\"/apple-touch-icon.png\"];function nextFavicon(el){{var i=parseInt(el.getAttribute('data-fb')||'0',10)+1;if(i<FB.length){{el.setAttribute('data-fb',String(i));el.src=el.getAttribute('data-origin')+FB[i];}}else{{el.remove();}}}}</script></body></html>",
         esc(page_title),
         esc(brand),
