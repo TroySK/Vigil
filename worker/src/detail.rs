@@ -190,7 +190,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     let menu = crate::range::menu(range, |option| {
         format!("/monitor?id={}&range={}", esc(&monitor.id), option.param)
     });
-    let home = format!("/?range={}", range.param);
+    let home = "/";
     let speculation = crate::page::speculation_rule("/*");
     Response::from_html(shell(
         &monitor.name,
