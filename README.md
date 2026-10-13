@@ -124,8 +124,8 @@ push to `main` and on manual dispatch. What it does:
 
 1. Runs `cargo test -p vigil-core -p vigil` and
    `cargo check -p vigil-worker --target wasm32-unknown-unknown`.
-2. Resolves the Cloudflare account id: uses the `CLOUDFLARE_ACCOUNT_ID`
-   secret when set, otherwise looks it up via the API token.
+2. Requires the `CLOUDFLARE_ACCOUNT_ID` secret to be set and fails fast
+   otherwise.
 3. Ensures the `vigil` D1 database exists (creates it on first run), pins
    its id into `worker/wrangler.toml`, and runs
    `wrangler d1 migrations apply DB --remote`.
@@ -141,8 +141,8 @@ if you want required reviewers before a deploy):
 
 | Secret | Required | Purpose |
 | --- | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Yes | API token with **Workers Scripts: Edit**, **D1: Edit**, and **Account: Read** permissions ([create one here](https://dash.cloudflare.com/profile/api-tokens)). First run without `CLOUDFLARE_ACCOUNT_ID` needs the account lookup to succeed. |
-| `CLOUDFLARE_ACCOUNT_ID` | No | Pins the deploy target; when omitted the workflow fetches it via the API token. Set it to skip the lookup and tighten token scopes. |
+| `CLOUDFLARE_API_TOKEN` | Yes | API token with **Workers Scripts: Edit** and **D1: Edit** permissions ([create one here](https://dash.cloudflare.com/profile/api-tokens)). |
+| `CLOUDFLARE_ACCOUNT_ID` | Yes | Pins the deploy target (find it in the Cloudflare dashboard URL or **Workers & Pages → Overview**). The workflow fails fast when it is missing. |
 | `STATUS_PASSWORD` | No | Value for the `STATUS_PASSWORD` worker secret (Basic-auth password when `pass_env = "STATUS_PASSWORD"` is configured). Omit to keep the status page public. |
 
 > Forks note: secrets are not available to pull-request runs from forks,
