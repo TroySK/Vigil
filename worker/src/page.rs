@@ -634,7 +634,7 @@ pub fn shell(
         .r-meta{{display:flex;align-items:center;flex-wrap:nowrap;\
         min-width:0;justify-content:flex-start}}\
         @media (min-width:40rem){{.r-meta{{justify-content:flex-end}}}}\
-        .r-meta s{{flex:1 1 auto;min-width:min(100%,16ch)}}\
+        .r-meta s{{flex:1 1 auto;min-width:100%}}\
         .r-meta>i,.r-meta>.det{{flex:none;white-space:nowrap}}\
         .r-meta>i::before,.r-meta>i::after{{content:\"·\";color:var(--color-neutral);\
         margin-inline:var(--space-sm)}}\
