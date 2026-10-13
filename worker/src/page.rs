@@ -747,7 +747,13 @@ pub fn shell(
         <nav class=links aria-label=\"Site\"><span class=links-label>Quick links:</span>{links}</nav>\
         <main id=main data-probed=\"{probed_at}\" tabindex=-1>{body}</main>\
         <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>Checked {time}</span></footer>\
-        </div><script>(function(){{var el=document.querySelector('[data-count]');\
+        </div><script>try{{window.addEventListener('pageswap',function(e){{try{{\
+        var act=e.activation;if(!act||!e.viewTransition)return;\
+        if(act.navigationType==='reload')return;\
+        var to=new URL(act.entry.url).pathname;\
+        var here=new URL(window.location.href).pathname;\
+        var t=(to===here)?'fade':((to.indexOf('/monitor')===0)?'forward':((to==='/')?'back':null));\
+        if(t)e.viewTransition.types.add(t);}}catch(err){{}}}});}}catch(err){{}}</script><script>(function(){{var el=document.querySelector('[data-count]');\
         if(el){{var raw=el.getAttribute('data-count');var target=parseInt(raw,10);\
         if(isFinite(target)&&!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)){{\
         var t0=null,dur=600;function step(t){{if(!t0)t0=t;var p=Math.min(1,(t-t0)/dur);\
@@ -818,13 +824,6 @@ pub fn shell(
         applyTz();\
         if(document.querySelector('time[data-tk=\"rel\"]')){{\
         setInterval(function(){{if(document.hidden)return;applyTz();}},30000);}}\
-        try{{window.addEventListener('pageswap',function(e){{try{{\
-        var act=e.activation;if(!act||!e.viewTransition)return;\
-        if(act.navigationType==='reload')return;\
-        var to=new URL(act.entry.url).pathname;\
-        var here=new URL(window.location.href).pathname;\
-        var t=(to===here)?'fade':((to.indexOf('/monitor')===0)?'forward':((to==='/')?'back':null));\
-        if(t)e.viewTransition.types.add(t);}}catch(err){{}}}});}}catch(err){{}}\
         var mainEl=document.querySelector('main[data-probed]');\
         if(mainEl&&{refresh_ms}>0){{var seen=parseInt(mainEl.getAttribute('data-probed'),10)||0;\
         setInterval(function(){{if(document.hidden)return;\
