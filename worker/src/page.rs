@@ -123,11 +123,16 @@ pub async fn sections(
         .collect();
     let now = at.max(1);
     let cutoff = now.saturating_sub(range.secs());
+    // Sparklines always pulse the last 24 hours while bars follow the
+    // range: a range-wide sparkline would scan the full window per monitor
+    // per load (~777k rows at 90 days), burning the D1 rows-read quota for
+    // a glanceable trend. Bars carry the range history instead.
+    let pulse_cutoff = now.saturating_sub(86_400);
     let (latest, gap_lists, since_map, series) = futures_util::try_join!(
         latest_by_monitor(db, &ids),
         gaps_window_by_monitor(db, &ids, cutoff),
         first_by_monitor(db, &ids),
-        series_by_monitor(db, &ids, cutoff, INDEX_CHART_POINTS),
+        series_by_monitor(db, &ids, pulse_cutoff, INDEX_CHART_POINTS),
     )?;
     // Rows assemble synchronously in file order; groups slice them below.
     let rows: BTreeMap<String, String> = site
