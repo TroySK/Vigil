@@ -32,7 +32,7 @@ pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
     body.push_str(&sections(db, site, at, None, range).await?);
     let links = links_html(&site.links);
     let menu = crate::range::menu(range, |option| format!("/?range={}", option.param));
-    let home = format!("/?range={}", range.param);
+    let home = "/";
     let speculation = speculation_rule("/monitor*");
     Response::from_html(shell(
         &site.title,
