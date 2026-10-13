@@ -232,22 +232,24 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
         f64::from(w) / (points.len() as f64 - 1.0)
     };
     let mut pixels = Vec::with_capacity(points.len());
+    let mut marks = String::with_capacity(points.len() * 32);
     let mut dots = String::with_capacity(points.len() * 64);
     for (i, &(at, ms)) in points.iter().enumerate() {
         let x = (i as f64 * step).round() as u32;
         let scaled = (ms.max(0) as f64 / max) * f64::from(h.saturating_sub(4));
         let y = h.saturating_sub(scaled.round() as u32 + 2);
         pixels.push((x, y));
+        let _ = write!(marks, "<circle class=\"dot\" cx=\"{x}\" cy=\"{y}\" r=\"2\"/>");
         let _ = write!(
             dots,
-            "<circle cx=\"{x}\" cy=\"{y}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"tip\" data-ms=\"{ms}\" data-tip=\"{} UTC: {ms}ms\"/>",
+            "<circle class=\"hit\" cx=\"{x}\" cy=\"{y}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"tip\" data-ms=\"{ms}\" data-tip=\"{} UTC: {ms}ms\"/>",
             crate::tip_stamp(at),
         );
     }
     format!(
         "<svg class=\"spark\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-label=\"Latency sparkline\">\
 <title>Latency sparkline</title>\
-<path d=\"{}\" class=\"line\"/>{dots}</svg>",
+<path d=\"{}\" class=\"line\"/>{marks}{dots}</svg>",
         smooth_path(&pixels)
     )
 }
@@ -288,13 +290,15 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32, hourly: bool) 
         pad_t + plot_h.saturating_sub(scaled.round() as u32)
     };
     let mut pixels = Vec::with_capacity(points.len());
+    let mut marks = String::with_capacity(points.len() * 48);
     let mut dots = String::with_capacity(points.len() * 96);
     for (i, &(at, ms, place)) in points.iter().enumerate() {
         pixels.push((x(i), y(ms)));
         let origin = crate::views::escape_html(place);
+        let _ = write!(marks, "<circle class=\"dot\" cx=\"{}\" cy=\"{}\" r=\"2\"/>", x(i), y(ms));
         let _ = write!(
             dots,
-            "<circle cx=\"{}\" cy=\"{}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"tip\" data-place=\"{origin}\" data-ms=\"{ms}\" data-tip=\"{} UTC &middot; {origin} &middot; {ms}ms\"/>",
+            "<circle class=\"hit\" cx=\"{}\" cy=\"{}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"tip\" data-place=\"{origin}\" data-ms=\"{ms}\" data-tip=\"{} UTC &middot; {origin} &middot; {ms}ms\"/>",
             x(i),
             y(ms),
             crate::tip_stamp(at),
@@ -320,7 +324,7 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32, hourly: bool) 
 <text x=\"{pad_l}\" y=\"{}\" text-anchor=\"start\" data-ts=\"{}\" data-tk=\"{}\">{}</text>\
 <text x=\"{}\" y=\"{}\" text-anchor=\"middle\" data-ts=\"{}\" data-tk=\"{}\">{}</text>\
 <text x=\"{}\" y=\"{}\" text-anchor=\"end\" data-ts=\"{}\" data-tk=\"{}\">{}</text>\
-<path d=\"{}\" class=\"line\"/>{dots}</svg>",
+<path d=\"{}\" class=\"line\"/>{marks}{dots}</svg>",
         y(max_ms),
         pad_l + plot_w,
         y(max_ms),
@@ -370,15 +374,17 @@ pub fn sparkline(vals: &[i64], w: u32, h: u32) -> String {
         f64::from(w) / (vals.len() as f64 - 1.0)
     };
     let mut pixels = Vec::with_capacity(vals.len());
+    let mut marks = String::with_capacity(vals.len() * 32);
     for (i, &v) in vals.iter().enumerate() {
         let x = (i as f64 * step).round() as u32;
         let scaled = (v.max(0) as f64 / max) * f64::from(h.saturating_sub(4));
         let y = h.saturating_sub(scaled.round() as u32 + 2);
         pixels.push((x, y));
+        let _ = write!(marks, "<circle cx=\"{x}\" cy=\"{y}\" r=\"2\" fill=\"#0969da\"/>");
     }
     format!(
         "<svg width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-hidden=\"true\">\
-<path d=\"{}\" fill=\"none\" stroke=\"#0969da\" stroke-width=\"1.5\"/></svg>",
+<path d=\"{}\" fill=\"none\" stroke=\"#0969da\" stroke-width=\"1.5\"/>{marks}</svg>",
         smooth_path(&pixels)
     )
 }

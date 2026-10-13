@@ -77,6 +77,7 @@ fn percentiles_and_spark() {
     assert_eq!(percentile(&[10, 20, 30, 40], 95.0), 40);
     let svg = sparkline(&[10, 20, 15], 90, 28);
     assert!(svg.contains("<path"));
+    assert_eq!(svg.matches("r=\"2\"").count(), 3);
     assert!(sparkline(&[], 90, 28).is_empty());
 }
 
@@ -90,6 +91,8 @@ fn spark_points_carry_time_tooltips() {
     assert!(svg.contains("data-ts=\"1000\""));
     assert!(svg.contains("data-tk=\"tip\""));
     assert!(svg.contains("@ 00:16 UTC"));
+    assert_eq!(svg.matches("class=\"dot\"").count(), 2);
+    assert_eq!(svg.matches("class=\"hit\"").count(), 2);
     assert!(sparkline_points(&[], 90, 28).is_empty());
 }
 
@@ -125,6 +128,8 @@ fn latency_chart_has_labeled_axes() {
     // Day ranges label axes `DD-Month`; the 24-hour view uses `HH:MM`.
     assert!(svg.contains("01-January"));
     assert!(svg.contains("data-tip=\"01-January @ 00:16 UTC"));
+    assert_eq!(svg.matches("class=\"dot\"").count(), 3);
+    assert_eq!(svg.matches("class=\"hit\"").count(), 3);
     let hourly = latency_chart(points, 600, 150, true);
     assert!(hourly.contains("data-tk=\"hour\""));
     assert!(hourly.contains(">00:16<"));

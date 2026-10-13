@@ -663,7 +663,8 @@ pub fn shell(
         font-variant-numeric:tabular-nums;margin:0}}\
         .lat s{{text-decoration:none}}\
         .spark .line,.chart .line{{fill:none;stroke:var(--color-accent);stroke-width:1.5}}\
-        .spark circle,.chart circle{{fill:transparent;pointer-events:all;cursor:crosshair}}\
+        .spark circle.hit,.chart circle.hit{{fill:transparent;pointer-events:all;cursor:crosshair}}\
+        .spark circle.dot,.chart circle.dot{{fill:var(--color-accent);pointer-events:none}}\
         .chart{{width:100%;height:auto;display:block;margin-top:var(--space-sm)}}\
         .chart text{{font-family:var(--font-body);font-size:var(--text-2xs);fill:var(--color-muted)}}\
         .chart .grid{{stroke:var(--color-rule);stroke-width:1}}\
