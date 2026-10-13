@@ -97,16 +97,25 @@ fn spark_points_carry_time_tooltips() {
 }
 
 #[test]
-fn smooth_path_curves_without_overshoot() {
+fn smooth_path_interpolates_without_overshoot() {
     assert_eq!(smooth_path(&[]), "");
     assert_eq!(smooth_path(&[(3, 7)]), "M3,7");
     // Two points render a straight segment.
     assert_eq!(smooth_path(&[(0, 10), (90, 10)]), "M0,10 L90,10");
     let curve = smooth_path(&[(0, 20), (45, 5), (90, 20)]);
     assert!(curve.starts_with("M0,20"));
-    assert!(curve.contains('Q'));
-    assert!(!curve.contains('C'));
-    assert!(curve.ends_with("L90,20"));
+    // Interpolating: every input point is a segment endpoint, so sample
+    // dots sit on the line.
+    let ends: Vec<&str> = curve
+        .split(['M', 'C', 'L', ' '])
+        .filter(|t| t.contains(','))
+        .collect();
+    for (x, y) in [(0, 20), (45, 5), (90, 20)] {
+        assert!(
+            ends.contains(&format!("{x},{y}").as_str()),
+            "missing {x},{y}: {curve}"
+        );
+    }
     // A spike to the canvas edge must not overshoot outside it: every
     // coordinate stays within the inputs' range (no negative values).
     let spiky = smooth_path(&[(0, 20), (45, 0), (90, 20)]);

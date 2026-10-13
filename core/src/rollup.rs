@@ -173,13 +173,18 @@ pub fn percentile_triple(values: &[i64], p1: f64, p2: f64, p3: f64) -> (i64, i64
     (sorted[rank(p1)], sorted[rank(p2)], sorted[rank(p3)])
 }
 
-/// Smooth SVG path through pixel points: quadratic segments joined at
-/// edge midpoints, so latency lines read as trends instead of zigzags.
-/// Midpoints bound every coordinate to the inputs' range — unlike
-/// Catmull-Rom splines this can never overshoot into sharp `^` peaks on
-/// spiky samples. Empty input yields an empty string; a single point
+/// Smooth SVG path through pixel points: monotone cubic (Fritsch–Carlson)
+/// segments, so latency lines read as trends instead of zigzags while
+/// passing through every input point — per-sample dots sit on the line.
+/// Monotonicity preservation keeps spiky samples from overshooting into
+/// sharp `^` peaks. Empty input yields an empty string; a single point
 /// yields a bare moveto (nothing visible).
 #[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn smooth_path(points: &[(u32, u32)]) -> String {
     if points.is_empty() {
         return String::new();
@@ -192,16 +197,74 @@ pub fn smooth_path(points: &[(u32, u32)]) -> String {
         let last = points[1];
         return format!("M{},{} L{},{}", first.0, first.1, last.0, last.1);
     }
-    let mid = |a: (u32, u32), b: (u32, u32)| ((a.0 + b.0) / 2, (a.1 + b.1) / 2);
-    let mut d = format!("M{},{}", first.0, first.1);
-    let m01 = mid(points[0], points[1]);
-    let _ = write!(d, " L{},{}", m01.0, m01.1);
-    for i in 1..points.len() - 1 {
-        let m = mid(points[i], points[i + 1]);
-        let _ = write!(d, " Q{},{} {},{}", points[i].0, points[i].1, m.0, m.1);
+    let n = points.len();
+    let xf: Vec<f64> = points.iter().map(|&(x, _)| f64::from(x)).collect();
+    let yf: Vec<f64> = points.iter().map(|&(_, y)| f64::from(y)).collect();
+    // Segment widths and slopes. Zero-width segments are vertical jumps
+    // (stacked samples in one pixel column): drawn as straight lines
+    // with flattened neighbor tangents.
+    let mut h = vec![0.0_f64; n - 1];
+    let mut delta = vec![0.0_f64; n - 1];
+    for i in 0..n - 1 {
+        h[i] = xf[i + 1] - xf[i];
+        delta[i] = if h[i] > 0.0 {
+            (yf[i + 1] - yf[i]) / h[i]
+        } else {
+            0.0
+        };
     }
-    let last = points[points.len() - 1];
-    let _ = write!(d, " L{},{}", last.0, last.1);
+    // Fritsch–Carlson tangents: zero at direction changes, slope-weighted
+    // harmonic mean elsewhere.
+    let mut m = vec![0.0_f64; n];
+    m[0] = delta[0];
+    m[n - 1] = delta[n - 2];
+    for i in 1..n - 1 {
+        if delta[i - 1] == 0.0
+            || delta[i] == 0.0
+            || delta[i - 1].signum() != delta[i].signum()
+        {
+            m[i] = 0.0;
+        } else {
+            let w1 = 2.0 * h[i] + h[i - 1];
+            let w2 = h[i] + 2.0 * h[i - 1];
+            m[i] = (w1 + w2) / (w1 / delta[i - 1] + w2 / delta[i]);
+        }
+    }
+    // Clamp tangents into the overshoot-free rectangle: segments with a
+    // flat slope pin both tangents, others scale to alpha²+β² ≤ 9.
+    for i in 0..n - 1 {
+        if delta[i] == 0.0 {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+        } else {
+            let alpha = m[i] / delta[i];
+            let beta = m[i + 1] / delta[i];
+            let over = alpha * alpha + beta * beta;
+            if over > 9.0 {
+                let scale = 3.0 / over.sqrt();
+                m[i] *= scale;
+                m[i + 1] *= scale;
+            }
+        }
+    }
+    // Pixel space has no negatives: clamp rounded control points at zero.
+    let round = |v: f64| v.round().max(0.0) as u32;
+    let mut d = format!("M{},{}", first.0, first.1);
+    for i in 0..n - 1 {
+        let (x2, y2) = points[i + 1];
+        if h[i] <= 0.0 {
+            let _ = write!(d, " L{x2},{y2}");
+            continue;
+        }
+        let _ = write!(
+            d,
+            " C{},{} {},{} {x2},{y2}",
+            round(xf[i] + h[i] / 3.0),
+            round(yf[i] + m[i] * h[i] / 3.0),
+            round(xf[i + 1] - h[i] / 3.0),
+            round(yf[i + 1] - m[i + 1] * h[i] / 3.0),
+        );
+    }
     d
 }
 
