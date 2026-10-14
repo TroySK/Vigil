@@ -2,7 +2,7 @@
 
 use crate::db::Db;
 use crate::reads::{
-    data_at_of, latest, latest_by_monitor, recent_gaps, recent_gaps_by_monitor, series, SampleOut,
+    clock, latest, latest_by_monitor, recent_gaps, recent_gaps_by_monitor, series, SampleOut,
 };
 use vigil_core::config::Site;
 use vigil_core::rollup::percentile_triple;
@@ -24,12 +24,12 @@ pub const GAP_SCAN_ROWS: i64 = 500;
 
 /// Aggregate snapshot: counts plus per-monitor status and uptime windows.
 pub async fn health(db: &Db, site: &Site) -> Result<Response> {
-    let at = last_tick_at(db).await?;
-    let (up, down) = parse_counts(&db.get("counts").await?.unwrap_or_else(default_counts));
-    // Last tick that probed something: the refresh poller reloads on this,
-    // not on the tick clock, so skip-only ticks cost a cheap poll instead
-    // of a full page render.
-    let probed = data_at_of(db.get("data_at").await?, at);
+    // One batched `kv` read for the tick clock, counts, and probe clock
+    // (was: three sequential round trips). The refresh poller reloads on
+    // the probe clock, not the tick clock, so skip-only ticks cost a
+    // cheap poll instead of a full page render.
+    let (at, counts, probed) = clock(db).await?;
+    let (up, down) = parse_counts(&counts.unwrap_or_else(default_counts));
     // Two batched round trips cover every monitor (was: two per monitor).
     let ids: Vec<&str> = site
         .monitors
@@ -136,15 +136,6 @@ pub async fn latency(db: &Db, url: &url::Url) -> Result<Response> {
         "p99": p99,
         "samples": rows,
     }))
-}
-
-/// Last cron tick time, `0` when the worker never ticked.
-async fn last_tick_at(db: &Db) -> Result<i64> {
-    Ok(db
-        .get("at")
-        .await?
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0))
 }
 
 /// Default `up/down` counts string before the first tick.

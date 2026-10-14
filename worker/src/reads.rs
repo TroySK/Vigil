@@ -355,6 +355,23 @@ pub fn data_at_of(stored: Option<String>, at: i64) -> i64 {
     stored.and_then(|s| s.parse().ok()).unwrap_or(at)
 }
 
+/// `(tick clock, counts, probe clock)` for pages and APIs from one
+/// batched `kv` read (was: three sequential round trips). `counts` is
+/// `None` before the first tick; callers fall back to `default_counts`.
+pub async fn clock(db: &Db) -> Result<(i64, Option<String>, i64)> {
+    let keys: Vec<String> = crate::db::clock_keys()
+        .iter()
+        .map(|key| (*key).to_owned())
+        .collect();
+    let map = db.kv_map(&keys).await?;
+    let at = map.get("at").and_then(|s| s.parse().ok()).unwrap_or(0);
+    Ok((
+        at,
+        map.get("counts").cloned(),
+        data_at_of(map.get("data_at").cloned(), at),
+    ))
+}
+
 /// Exact query behind [`series_ranged`], exposed so tests execute the
 /// shipped text against bundled SQLite (`?1` id, `?2` cutoff,
 /// `?3` `max_points - 1`, `?4` `max_points`). The stride derives from

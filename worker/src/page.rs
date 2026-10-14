@@ -7,8 +7,7 @@ use crate::auth::esc;
 use crate::db::Db;
 use crate::range::{bars_for, Range};
 use crate::reads::{
-    data_at_of, gaps_window_by_monitor, latest_and_first_by_monitor, series_by_monitor,
-    SampleOut,
+    clock, gaps_window_by_monitor, latest_and_first_by_monitor, series_by_monitor, SampleOut,
 };
 use vigil_core::config::{Monitor, Probe, Site};
 use vigil_core::rollup::{bar_color, latency_chart, percentile_pair};
@@ -21,11 +20,12 @@ pub const INDEX_CHART_POINTS: i64 = 30;
 
 /// Render the full status page.
 pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
-    let at = last_tick_at(db).await?;
-    let counts = db.get("counts").await?.unwrap_or_else(default_counts);
-    // Last tick that probed something: the refresh poller reloads on this,
-    // not on the tick clock, so skip-only ticks cost a cheap poll.
-    let probed = data_at_of(db.get("data_at").await?, at);
+    // One batched `kv` read for the tick clock, counts, and probe clock
+    // (was: three sequential round trips). The refresh poller reloads on
+    // the probe clock, not the tick clock, so skip-only ticks cost a
+    // cheap poll.
+    let (at, counts, probed) = clock(db).await?;
+    let counts = counts.unwrap_or_else(default_counts);
     let (up, down) = parse_counts(&counts);
     let hero = hero_html(site, up, down, at);
     let mut body = hero;
@@ -375,15 +375,6 @@ pub fn links_html(links: &indexmap::IndexMap<String, String>) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// Last cron tick time, `0` when the worker never ticked.
-pub async fn last_tick_at(db: &Db) -> Result<i64> {
-    Ok(db
-        .get("at")
-        .await?
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0))
 }
 
 /// Default `up/down` counts string before the first tick.

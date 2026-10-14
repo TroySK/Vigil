@@ -1,5 +1,8 @@
 //! D1 storage: typed key/value helpers plus schema setup.
 
+use std::collections::BTreeMap;
+
+use serde::Deserialize;
 use worker::d1::{D1Database, D1PreparedStatement};
 use worker::{Env, Result};
 
@@ -105,11 +108,103 @@ impl Db {
             .bind(&[key.into()])?;
         query.first::<String>(Some("v")).await
     }
+
+    /// Read many `kv` entries in as few D1 round trips as possible: one
+    /// query per [`MAX_PARAMS`] key chunk (empty input: no query). A
+    /// single `IN (3N)` query would exceed D1's 100-param budget past ~33
+    /// monitors and abort the whole tick.
+    pub async fn kv_map(&self, keys: &[String]) -> Result<BTreeMap<String, String>> {
+        let mut out = BTreeMap::new();
+        for chunk in keys.chunks(MAX_PARAMS) {
+            let stmt = self.q(&kv_select_sql(chunk.len())).bind(
+                &chunk
+                    .iter()
+                    .map(|key| key.clone().into())
+                    .collect::<Vec<wasm_bindgen::JsValue>>(),
+            )?;
+            let rows: Vec<KvRow> = stmt.all().await?.results()?;
+            for row in rows {
+                out.insert(row.k, row.v);
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// The three `kv` clock keys every page and API needs: tick clock,
+/// up/down counts, and last-probed clock.
+#[must_use]
+pub fn clock_keys() -> [&'static str; 3] {
+    ["at", "counts", "data_at"]
+}
+
+/// Exact query behind [`Db::kv_map`], exposed so tests execute the shipped
+/// text against bundled SQLite.
+fn kv_select_sql(n: usize) -> String {
+    format!(
+        "SELECT k, v FROM kv WHERE k IN ({})",
+        (0..n)
+            .map(|i| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+/// One `kv` row for batched reads.
+#[derive(Debug, Deserialize)]
+struct KvRow {
+    k: String,
+    v: String,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::schema_due;
+    use super::{clock_keys, kv_select_sql, schema_due, MAX_PARAMS};
+    use rusqlite::params_from_iter;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn clock_keys_cover_tick_clock_counts_and_probe_clock() {
+        assert_eq!(clock_keys(), ["at", "counts", "data_at"]);
+    }
+
+    #[test]
+    fn kv_select_covers_exactly_its_keys() {
+        let sql = kv_select_sql(3);
+        assert!(sql.contains("FROM kv WHERE k IN (?1,?2,?3)"));
+    }
+
+    #[test]
+    fn kv_reads_chunk_within_param_budget() {
+        // 102 keys exceed one query's param budget: split into chunks and
+        // merge, exactly like `Db::kv_map` must. Every chunk stays within
+        // `MAX_PARAMS` and the merged map is complete.
+        let keys: Vec<String> = (0..102).map(|i| format!("k:{i}")).collect();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);")
+            .unwrap();
+        for key in &keys {
+            conn.execute(
+                "INSERT INTO kv VALUES (?1, ?2)",
+                rusqlite::params![key, "v"],
+            )
+            .unwrap();
+        }
+        let mut merged = BTreeMap::new();
+        for chunk in keys.chunks(MAX_PARAMS) {
+            assert!(!chunk.is_empty() && chunk.len() <= MAX_PARAMS);
+            let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            let mut stmt = conn.prepare(&kv_select_sql(chunk.len())).unwrap();
+            let mut rows = stmt.query(params_from_iter(refs)).unwrap();
+            while let Some(row) = rows.next().unwrap() {
+                merged.insert(
+                    row.get::<_, String>(0).unwrap(),
+                    row.get::<_, String>(1).unwrap(),
+                );
+            }
+        }
+        assert_eq!(merged.len(), 102);
+    }
 
     /// Every index `Db::init` creates must also exist in the shipped
     /// migrations: prod databases migrate via CI, and the hourly self-heal
