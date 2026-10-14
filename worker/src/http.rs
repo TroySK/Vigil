@@ -9,11 +9,16 @@ use worker::{Env, Request, Response, Result};
 /// cache-tag the response on the single exit path.
 pub async fn handle(req: Request, env: Env) -> Result<Response> {
     let url = req.url()?;
+    // `site()` is a clone of the OnceLock-cached config: no I/O, no parse.
+    let gated = vigil::site().auth.is_some();
     let mut resp = route(req, env, &url).await?;
     for (name, value) in security_headers() {
         resp.headers_mut().set(name, value)?;
     }
-    if let Some(policy) = cache_control(url.path()) {
+    if gated {
+        resp.headers_mut().set("vary", "Authorization")?;
+    }
+    if let Some(policy) = cache_control(url.path(), gated) {
         resp.headers_mut().set("cache-control", policy)?;
     }
     Ok(resp)
@@ -74,13 +79,25 @@ fn range_param(url: &url::Url) -> Option<String> {
 
 /// Shared cache policy per path: tick-granular pages and read APIs tolerate
 /// 30s of staleness (the auto-refresh polls on the same interval), which
-/// caps D1 fan-out cost per visitor. Icons set their own immutable policy;
-/// the badge (polled by external embeds) tolerates 60s.
-fn cache_control(path: &str) -> Option<&'static str> {
+/// caps D1 fan-out cost per visitor. `s-maxage` + `stale-while-revalidate`
+/// let the Cloudflare edge absorb the tail (D1 variance is the P90) while
+/// browsers still refresh promptly; icons set their own immutable policy
+/// and the badge (polled by external embeds) tolerates 60s. When the auth
+/// gate is on (`gated`), responses are `private` so a shared cache never
+/// serves one visitor's page to another (see the `Vary` in `handle`).
+fn cache_control(path: &str, gated: bool) -> Option<&'static str> {
+    if gated {
+        return match path {
+            "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history" | "/api/incidents"
+            | "/api/latency" => Some("private, max-age=30"),
+            "/api/badge" => Some("private, max-age=60"),
+            _ => None,
+        };
+    }
     match path {
         "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history" | "/api/incidents"
-        | "/api/latency" => Some("public, max-age=30"),
-        "/api/badge" => Some("public, max-age=60"),
+        | "/api/latency" => Some("public, max-age=30, s-maxage=30, stale-while-revalidate=60"),
+        "/api/badge" => Some("public, max-age=60, s-maxage=60, stale-while-revalidate=120"),
         _ => None,
     }
 }
@@ -125,8 +142,8 @@ mod tests {
             "/api/latency",
         ] {
             assert_eq!(
-                cache_control(path),
-                Some("public, max-age=30"),
+                cache_control(path, false),
+                Some("public, max-age=30, s-maxage=30, stale-while-revalidate=60"),
                 "{path} must be cheap to serve"
             );
         }
@@ -135,7 +152,25 @@ mod tests {
     #[test]
     fn badge_caches_briefly_and_errors_stay_uncached() {
         // Badge embeds poll constantly; 60s of staleness caps D1 reads.
-        assert_eq!(cache_control("/api/badge"), Some("public, max-age=60"));
-        assert_eq!(cache_control("/nope"), None);
+        assert_eq!(
+            cache_control("/api/badge", false),
+            Some("public, max-age=60, s-maxage=60, stale-while-revalidate=120")
+        );
+        assert_eq!(cache_control("/nope", false), None);
+    }
+
+    #[test]
+    fn gated_sites_never_share_edge_cache() {
+        // With an auth gate, responses vary by credentials: a shared
+        // edge cache must not serve one visitor's page to another.
+        for path in ["/", "/monitor", "/api/health", "/api/badge"] {
+            let policy = cache_control(path, true).expect("{path} stays cached");
+            assert!(
+                policy.starts_with("private,"),
+                "{path} gated policy must be private, got {policy}"
+            );
+            assert!(!policy.contains("s-maxage"), "{path} must not set s-maxage");
+        }
+        assert_eq!(cache_control("/nope", true), None);
     }
 }
