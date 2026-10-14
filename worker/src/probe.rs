@@ -8,12 +8,19 @@ use std::future::Future;
 use std::pin::pin;
 use std::sync::OnceLock;
 use std::time::Duration;
+use futures_util::StreamExt as _;
 use vigil_core::checks::{place, Seen, What};
 use vigil_core::config::{Monitor, Probe};
 use worker::{console_log, Date, Delay, Error, Fetch, Headers, Method, Request, RequestInit, Socket};
 
 /// Maximum body bytes kept for keyword matching (bounds memory + D1 rows).
 pub const MAX_BODY_SAMPLE: usize = 8_192;
+
+/// Maximum response bytes downloaded per probe. Keyword matching only
+/// needs the prefix (see [`MAX_BODY_SAMPLE`]); anything beyond this is
+/// abandoned mid-stream instead of buffered into isolate memory, so one
+/// huge error page cannot OOM the tick.
+pub const MAX_DOWNLOAD_BYTES: usize = 64 * 1_024;
 
 /// Current time in milliseconds (Workers clock).
 fn now_ms() -> u64 {
@@ -106,8 +113,49 @@ fn parse_colo(body: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{colo_failure_note, memo_colo, parse_colo};
+    use super::{colo_failure_note, memo_colo, parse_colo, read_capped, Error};
+    use futures_util::FutureExt as _;
     use std::sync::OnceLock;
+
+    #[test]
+    fn capped_read_keeps_short_bodies_whole() {
+        let items = vec![Ok::<_, Error>(b"hel".to_vec()), Ok(b"lo".to_vec())];
+        let mut stream = Box::pin(futures_util::stream::iter(items));
+        let (bytes, cut) = read_capped(&mut stream, 64)
+            .now_or_never()
+            .expect("ready stream resolves")
+            .expect("ok");
+        assert_eq!(bytes, b"hello");
+        assert!(!cut);
+    }
+
+    #[test]
+    fn capped_read_stops_at_the_cap() {
+        let items = vec![Ok::<_, Error>(vec![b'a'; 10]), Ok(vec![b'b'; 10])];
+        let mut stream = Box::pin(futures_util::stream::iter(items));
+        let (bytes, cut) = read_capped(&mut stream, 12)
+            .now_or_never()
+            .expect("ready stream resolves")
+            .expect("ok");
+        let mut want = vec![b'a'; 10];
+        want.extend_from_slice(&[b'b'; 2]);
+        assert_eq!(bytes, want);
+        assert!(cut);
+    }
+
+    #[test]
+    fn capped_read_reports_stream_errors() {
+        let items = vec![
+            Ok::<_, Error>(b"ab".to_vec()),
+            Err(Error::from("boom".to_owned())),
+        ];
+        let mut stream = Box::pin(futures_util::stream::iter(items));
+        let error = read_capped(&mut stream, 64)
+            .now_or_never()
+            .expect("ready stream resolves")
+            .expect_err("must fail");
+        assert!(error.contains("boom"));
+    }
 
     #[test]
     fn colo_failures_explain_themselves() {
@@ -180,23 +228,61 @@ pub async fn probe(monitor: &Monitor, colo: Option<&str>) -> (Seen, String) {
             method,
             headers,
             body,
-        } => match probe_http(url, method, headers, body.as_deref(), monitor.timeout_ms).await {
-            Ok((code, text, ms)) => {
-                let mut sample = text;
-                // `truncate` lands on a char boundary — safe for UTF-8 bodies.
-                sample.truncate(sample_char_boundary(&sample, MAX_BODY_SAMPLE));
-                Seen {
-                    ms,
-                    what: What::Http { code, body: sample },
+        } => {
+            // The whole fetch incl. body read races the per-probe deadline:
+            // the send has its own timeout inside, and this backstop bounds
+            // a slow-drip body that would otherwise stall the tick forever.
+            let fetch = probe_http(url, method, headers, body.as_deref(), monitor.timeout_ms);
+            match with_timeout(
+                async { fetch.await.map_err(Error::from) },
+                monitor.timeout_ms,
+            )
+            .await
+            {
+                Ok((code, text, ms)) => {
+                    let mut sample = text;
+                    // `truncate` lands on a char boundary — safe for UTF-8 bodies.
+                    sample.truncate(sample_char_boundary(&sample, MAX_BODY_SAMPLE));
+                    Seen {
+                        ms,
+                        what: What::Http { code, body: sample },
+                    }
                 }
+                Err(e) => Seen {
+                    ms: now_ms().saturating_sub(start),
+                    what: What::Dead {
+                        why: e.to_string(),
+                    },
+                },
             }
-            Err(reason) => Seen {
-                ms: now_ms().saturating_sub(start),
-                what: What::Dead { why: reason },
-            },
-        },
+        }
     };
     (seen, location)
+}
+
+/// Read at most `cap` bytes from a byte-chunk stream, then stop polling:
+/// the network read is abandoned instead of buffering an unbounded body
+/// into isolate memory. Returns the bytes plus whether the body was cut
+/// (a body ending exactly at the cap still reports cut — more may follow).
+async fn read_capped<S>(stream: &mut S, cap: usize) -> Result<(Vec<u8>, bool), String>
+where
+    S: futures_util::Stream<Item = Result<Vec<u8>, Error>> + Unpin,
+{
+    let mut buf = Vec::new();
+    while buf.len() < cap {
+        match stream.next().await {
+            Some(Ok(chunk)) => {
+                let room = cap.saturating_sub(buf.len());
+                buf.extend_from_slice(&chunk[..chunk.len().min(room)]);
+                if buf.len() >= cap {
+                    return Ok((buf, true));
+                }
+            }
+            Some(Err(e)) => return Err(e.to_string()),
+            None => break,
+        }
+    }
+    Ok((buf, false))
 }
 
 /// Largest prefix of `s` that is `<= max_bytes` and ends on a char boundary.
@@ -238,7 +324,13 @@ async fn probe_http(
         .await
         .map_err(|e| e.to_string())?;
     let code = resp.status_code();
-    let text = resp.text().await.map_err(|e| e.to_string())?;
+    // Stream with a byte cap: `resp.text()` would buffer an unbounded
+    // body (one huge error page × concurrent probes OOMs the isolate).
+    // Lossy UTF-8 matches the old `text()` decoding; the existing
+    // char-boundary truncate below still trims to `MAX_BODY_SAMPLE`.
+    let mut stream = Box::pin(resp.stream().map_err(|e| e.to_string())?);
+    let (bytes, _) = read_capped(&mut stream, MAX_DOWNLOAD_BYTES).await?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
     Ok((code, text, now_ms().saturating_sub(start)))
 }
 
