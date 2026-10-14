@@ -2,7 +2,7 @@
 //!
 //! One tick = one `samples` row + gap open/close maintenance per monitor,
 //! plus webhook notifications with consecutive-failure grace. Old rows
-//! beyond [`RETENTION_DAYS`] are pruned.
+//! beyond [`RETENTION_SECS`](crate::db::RETENTION_SECS) are pruned.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,11 +17,10 @@ use worker::{console_log, Date, Env, Fetch, Headers, Method, Request, RequestIni
 
 use crate::db::{num, schema_due, Db};
 use crate::probe::{colo, probe, with_timeout};
+use crate::reads::first_by_monitor;
 
 /// Seconds in one day.
 pub const SECS_PER_DAY: i64 = 86_400;
-/// How long samples and closed gaps are kept.
-pub const RETENTION_DAYS: i64 = 90;
 
 /// Current time truncated to whole seconds.
 #[allow(clippy::cast_possible_wrap)] // epoch millis fit in i64 for millennia
@@ -113,6 +112,15 @@ pub async fn tick(env: Env) -> Result<()> {
         .map(|monitor| monitor.id.as_str())
         .collect();
     let gaps = open_gaps(&db, &due_ids).await?;
+    // One batched backfill for probed monitors with samples but no
+    // `first:` stamp (pre-existing fleets, first probes): steady-state
+    // ticks have no missing stamps and skip this query entirely.
+    let missing_first: Vec<&str> = due_monitors
+        .iter()
+        .filter(|monitor| !kv.contains_key(&format!("first:{}", monitor.id)))
+        .map(|monitor| monitor.id.as_str())
+        .collect();
+    let first_seen = first_by_monitor(&db, &missing_first).await?;
     let grace = i64::try_from(site.notify.grace_min.max(1)).unwrap_or(1);
     let mut up = 0_u32;
     let mut down = 0_u32;
@@ -153,6 +161,13 @@ pub async fn tick(env: Env) -> Result<()> {
             }
         }
         writes.push(db.put_stmt(&format!("last:{}", monitor.id), &now.to_string())?);
+        // First-seen stamp for the history bars: backfilled from retained
+        // samples once, then trusted forever (steady ticks find the key in
+        // `kv` and write nothing).
+        if !kv.contains_key(&format!("first:{}", monitor.id)) {
+            let first = first_value(first_seen.get(monitor.id.as_str()), now);
+            writes.push(db.put_stmt(&format!("first:{}", monitor.id), &first.to_string())?);
+        }
     }
     // A skip-only tick probed nothing, so its 0/0 would overwrite the last
     // real counts with a lie: skipped monitors keep their state, making the
@@ -214,16 +229,17 @@ fn plan_due(id: &str, last: Option<i64>, every_min: u64, now: i64) -> Due {
     }
 }
 
-/// Every `kv` key one tick needs: cadence stamps plus alert counters for
-/// all monitors, so the whole tick reads `kv` in as few queries as the
-/// param budget allows. (Counter rows for monitors that never failed
-/// simply come back absent.)
+/// Every `kv` key one tick needs: cadence stamps, alert counters, and
+/// first-seen stamps for all monitors, so the whole tick reads `kv` in as
+/// few queries as the param budget allows. (Counter rows for monitors
+/// that never failed simply come back absent.)
 fn state_keys(ids: &[&str]) -> Vec<String> {
-    let mut keys = Vec::with_capacity(ids.len() * 3);
+    let mut keys = Vec::with_capacity(ids.len() * 4);
     for id in ids {
         keys.push(format!("last:{id}"));
         keys.push(format!("fails:{id}"));
         keys.push(format!("alert:{id}"));
+        keys.push(format!("first:{id}"));
     }
     keys
 }
@@ -238,6 +254,13 @@ fn alert_for(map: &BTreeMap<String, String>, id: &str) -> (i64, bool) {
         .unwrap_or(0);
     let was_up = map.get(&format!("alert:{id}")).map_or(true, |s| s != "0");
     (fails, was_up)
+}
+
+/// Earliest-known sample time for a monitor lacking a `first:` stamp:
+/// the retained minimum when backfilling a pre-existing fleet, else now
+/// (first probe ever — the sample about to be written lands at `now`).
+fn first_value(backfilled: Option<&i64>, now: i64) -> i64 {
+    backfilled.copied().unwrap_or(now)
 }
 
 /// Exact query behind [`open_gaps`], exposed so tests execute the shipped
@@ -335,7 +358,7 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, is_due, open_gaps_sql, plan_alert, plan_due, probe_wave, prune_due,
+        alert_for, first_value, is_due, open_gaps_sql, plan_alert, plan_due, probe_wave, prune_due,
         prune_gaps_sql, prune_samples_sql, stagger_offset, state_keys, wave_bounds, Due,
     };
     use rusqlite::params_from_iter;
@@ -548,6 +571,12 @@ mod tests {
     }
 
     #[test]
+    fn first_value_prefers_earliest_sample() {
+        assert_eq!(first_value(Some(&1_000), 2_000), 1_000);
+        assert_eq!(first_value(None, 2_000), 2_000);
+    }
+
+    #[test]
     fn state_keys_cover_cadence_and_alerts() {
         assert_eq!(
             state_keys(&["a", "b"]),
@@ -555,9 +584,11 @@ mod tests {
                 "last:a".to_owned(),
                 "fails:a".to_owned(),
                 "alert:a".to_owned(),
+                "first:a".to_owned(),
                 "last:b".to_owned(),
                 "fails:b".to_owned(),
                 "alert:b".to_owned(),
+                "first:b".to_owned(),
             ]
         );
         assert!(state_keys(&[]).is_empty());
@@ -767,7 +798,7 @@ pub const PRUNE_CHUNKS: usize = 5;
 /// `SELECT rowid ... LIMIT`: portable across SQLite/D1 (a bare
 /// `DELETE ... LIMIT` is a dialect risk) and bounded per statement.
 fn prune_stmts(db: &Db, now: i64) -> Result<Vec<D1PreparedStatement>> {
-    let cutoff = now.saturating_sub(RETENTION_DAYS.saturating_mul(SECS_PER_DAY));
+    let cutoff = now.saturating_sub(crate::db::RETENTION_SECS);
     let mut out = Vec::with_capacity(2 * PRUNE_CHUNKS);
     for _ in 0..PRUNE_CHUNKS {
         out.push(

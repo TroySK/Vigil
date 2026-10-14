@@ -7,7 +7,7 @@ use crate::auth::esc;
 use crate::db::Db;
 use crate::range::{bars_for, Range};
 use crate::reads::{
-    clock, gaps_window_by_monitor, latest_and_first_by_monitor, series_by_monitor, SampleOut,
+    clock, gaps_window_by_monitor, latest_by_monitor, series_by_monitor, SampleOut,
 };
 use vigil_core::config::{Monitor, Probe, Site};
 use vigil_core::rollup::{bar_color, latency_chart, percentile_pair};
@@ -117,7 +117,7 @@ pub async fn sections(
             let _ = write!(out, "<div class=\"note {kind}\">{}</div>", esc(&text));
         }
     }
-    // Three batched D1 round trips cover every monitor (was: four per
+    // Four batched D1 round trips cover every monitor (was: four per
     // monitor, ~120 trips at 30 monitors). The homepage is the
     // highest-traffic page; per-monitor fan-out risked the same CPU
     // exhaustion that killed the tick.
@@ -141,12 +141,22 @@ pub async fn sections(
         .filter(|monitor| !monitor.quiet_chart)
         .map(|monitor| monitor.id.as_str())
         .collect();
-    let (latest_first, gap_lists, series) = futures_util::try_join!(
-        latest_and_first_by_monitor(db, &ids),
+    // History-bar cutoffs come from the `first:` kv stamps the tick
+    // maintains — no MIN(at) scan over the retention window (see
+    // `effective_since`).
+    let first_keys: Vec<String> = ids.iter().map(|id| format!("first:{id}")).collect();
+    let (latest, gap_lists, series, firsts) = futures_util::try_join!(
+        latest_by_monitor(db, &ids),
         gaps_window_by_monitor(db, &ids, cutoff, now),
         series_by_monitor(db, &chart_ids, pulse_cutoff, INDEX_CHART_POINTS),
+        db.kv_map(&first_keys),
     )?;
-    let (latest, since_map) = latest_first;
+    let since = |id: &str| {
+        crate::reads::effective_since(
+            firsts.get(&format!("first:{id}")).and_then(|s| s.parse().ok()),
+            now,
+        )
+    };
     // Rows assemble synchronously in file order; groups slice them below.
     let rows: BTreeMap<String, String> = site
         .monitors
@@ -160,7 +170,7 @@ pub async fn sections(
                     at,
                     latest.get(&monitor.id),
                     gap_lists.get(&monitor.id).map_or(&[], Vec::as_slice),
-                    since_map.get(&monitor.id).copied(),
+                    since(&monitor.id),
                     series.get(&monitor.id).map_or(&[], Vec::as_slice),
                 ),
             )
