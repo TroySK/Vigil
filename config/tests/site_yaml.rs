@@ -78,6 +78,13 @@ fn example_yaml_matches_documented_site() {
 }
 
 #[test]
+fn gated_matches_site_auth_without_cloning() {
+    // `gated()` must agree with the parsed config: it is the hot-path
+    // gate check, so it borrows the cached config instead of cloning it.
+    assert_eq!(vigil::gated(), vigil::site().auth.is_some());
+}
+
+#[test]
 fn live_site_yaml_parses_and_validates() {
     let site: Site = serde_yaml::from_str(vigil::SITE_YAML).expect("site.yaml parses");
     assert!(site.check().is_ok(), "site.yaml must pass validation");
