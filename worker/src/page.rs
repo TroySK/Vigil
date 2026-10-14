@@ -143,7 +143,7 @@ pub async fn sections(
         .collect();
     let (latest_first, gap_lists, series) = futures_util::try_join!(
         latest_and_first_by_monitor(db, &ids),
-        gaps_window_by_monitor(db, &ids, cutoff),
+        gaps_window_by_monitor(db, &ids, cutoff, now),
         series_by_monitor(db, &chart_ids, pulse_cutoff, INDEX_CHART_POINTS),
     )?;
     let (latest, since_map) = latest_first;
