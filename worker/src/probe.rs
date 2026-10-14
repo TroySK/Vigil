@@ -9,7 +9,7 @@ use std::pin::pin;
 use std::sync::OnceLock;
 use std::time::Duration;
 use futures_util::StreamExt as _;
-use vigil_core::checks::{place, Seen, What};
+use vigil_core::checks::{Seen, What};
 use vigil_core::config::{Monitor, Probe};
 use worker::{console_log, Date, Delay, Error, Fetch, Headers, Method, Request, RequestInit, Socket};
 
@@ -209,10 +209,11 @@ mod tests {
 }
 
 /// Run one monitor's probe; always returns a [`Seen`], never throws.
-pub async fn probe(monitor: &Monitor, colo: Option<&str>) -> (Seen, String) {
-    let location = place(colo);
+/// The origin stamp is computed once per tick by the caller (see
+/// `tick.rs`): every probe in a wave shares the isolate.
+pub async fn probe(monitor: &Monitor) -> Seen {
     let start = now_ms();
-    let seen = match &monitor.check {
+    match &monitor.check {
         Probe::Tcp { host, port } => match probe_tcp(host, *port, monitor.timeout_ms).await {
             Ok(ms) => Seen {
                 ms,
@@ -256,8 +257,7 @@ pub async fn probe(monitor: &Monitor, colo: Option<&str>) -> (Seen, String) {
                 },
             }
         }
-    };
-    (seen, location)
+    }
 }
 
 /// Read at most `cap` bytes from a byte-chunk stream, then stop polling:

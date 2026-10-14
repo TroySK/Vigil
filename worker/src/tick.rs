@@ -4,11 +4,11 @@
 //! plus webhook notifications with consecutive-failure grace. Old rows
 //! beyond [`RETENTION_SECS`](crate::db::RETENTION_SECS) are pruned.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashSet};
 
 use futures_util::future::join_all;
 use serde::Deserialize;
-use vigil_core::checks::{judge, Say, Seen};
+use vigil_core::checks::{judge, place, Say, Seen};
 use vigil_core::config::{Hook, Monitor, Site};
 use vigil_core::state::{Gap, Track};
 use vigil_core::views;
@@ -73,7 +73,9 @@ pub async fn tick(env: Env) -> Result<()> {
         db.init().await?;
     }
     let mut writes: Vec<D1PreparedStatement> = Vec::new();
-    let mut due_set = BTreeSet::new();
+    // Single pass: due monitors collect in site order directly (was: an
+    // id set plus a second filter pass over the fleet).
+    let mut due_monitors: Vec<&Monitor> = Vec::new();
     for monitor in &site.monitors {
         let last = kv
             .get(&format!("last:{}", monitor.id))
@@ -81,16 +83,11 @@ pub async fn tick(env: Env) -> Result<()> {
         match plan_due(&monitor.id, last, site.cadence_min(monitor), now) {
             Due::Skip => {}
             Due::Probe => {
-                due_set.insert(monitor.id.as_str());
+                due_monitors.push(monitor);
             }
             Due::Phase(key, value) => writes.push(db.put_stmt(&key, &value)?),
         }
     }
-    let due_monitors: Vec<&Monitor> = site
-        .monitors
-        .iter()
-        .filter(|monitor| due_set.contains(monitor.id.as_str()))
-        .collect();
     // Probe every due monitor concurrently: 30 sequential fetches (each up
     // to `timeout_ms`) outlast the cron worker, so the tick died before
     // ever writing `counts`. `join_all` preserves order for the record
@@ -99,14 +96,17 @@ pub async fn tick(env: Env) -> Result<()> {
     // One lookup per tick: every probe in the wave shares this isolate.
     // (`Option<&str>` is `Copy`, so all thirty futures can hold it.)
     let colo_here = colo().await;
-    let colo_ref = colo_here.as_deref();
+    // One location string per tick: every probe stamps the same origin
+    // (was: an identical uppercase + alloc per monitor).
+    let location = place(colo_here.as_deref());
     let mut probed = Vec::with_capacity(due_monitors.len());
     for (start, end) in wave_bounds(due_monitors.len(), probe_wave(site.notify.hooks.len())) {
         // `probe` never throws: failures come back as `Seen::Dead`.
-        let mut wave = join_all(due_monitors[start..end].iter().map(|monitor| async move {
-            let (seen, location) = probe(monitor, colo_ref).await;
-            (*monitor, seen, location)
-        }))
+        let mut wave = join_all(
+            due_monitors[start..end]
+                .iter()
+                .map(|monitor| async move { (*monitor, probe(monitor).await) }),
+        )
         .await;
         probed.append(&mut wave);
     }
@@ -133,7 +133,8 @@ pub async fn tick(env: Env) -> Result<()> {
     // never pages without persisting its alert marker (and never pages
     // twice for one transition).
     let mut pending_hooks: Vec<(String, bool, String)> = Vec::new();
-    for (monitor, seen, location) in &probed {
+    let muted = muted_set(&site.notify.mute);
+    for (monitor, seen) in &probed {
         let verdict = judge(monitor, seen);
         if verdict.up {
             up += 1;
@@ -146,7 +147,7 @@ pub async fn tick(env: Env) -> Result<()> {
             now,
             seen,
             &verdict,
-            location,
+            &location,
             gaps.get(monitor.id.as_str()),
         )?);
         let (prev_fails, was_up) = alert_for(&kv, &monitor.id);
@@ -160,7 +161,7 @@ pub async fn tick(env: Env) -> Result<()> {
         if let Some(marker) = plan.marker {
             writes.push(db.put_stmt(&format!("alert:{}", monitor.id), marker)?);
         }
-        if !site.notify.mute.iter().any(|muted| muted == &monitor.id) {
+        if !muted.contains(monitor.id.as_str()) {
             if let Some(notify_up) = plan.notify {
                 pending_hooks.push((monitor.name.clone(), notify_up, verdict.why.clone()));
             }
@@ -205,6 +206,12 @@ pub async fn tick(env: Env) -> Result<()> {
 /// it with no extra round trip (the marker rides the existing `kv` read).
 fn schema_current(stored: Option<&String>) -> bool {
     stored.is_some_and(|version| version == crate::db::SCHEMA_VERSION)
+}
+
+/// Mute-list as a set for O(1) membership per monitor (was: a linear
+/// scan per monitor per tick).
+fn muted_set(mute: &[String]) -> HashSet<&str> {
+    mute.iter().map(String::as_str).collect()
 }
 
 /// Cadence decision for one monitor: probe now, skip this tick, or record
@@ -371,9 +378,10 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, close_gap_sql, first_value, gap_why_update, is_due, open_gaps_sql, plan_alert,
-        plan_deliveries, plan_due, probe_wave, prune_due, prune_gaps_sql, prune_samples_sql,
-        schema_current, stagger_offset, state_keys, wave_bounds, why_gap_sql, Due,
+        alert_for, close_gap_sql, first_value, gap_why_update, is_due, muted_set, open_gaps_sql,
+        plan_alert, plan_deliveries, plan_due, probe_wave, prune_due, prune_gaps_sql,
+        prune_samples_sql, schema_current, stagger_offset, state_keys, wave_bounds, why_gap_sql,
+        Due,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
@@ -623,6 +631,16 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(uptos, vec![None, Some(500.0)]);
+    }
+
+    #[test]
+    fn muted_set_matches_by_id() {
+        let mute = ["a".to_owned(), "b".to_owned()];
+        let muted = muted_set(&mute);
+        assert!(muted.contains("a"));
+        assert!(muted.contains("b"));
+        assert!(!muted.contains("c"));
+        assert!(muted_set(&[]).is_empty());
     }
 
     #[test]
