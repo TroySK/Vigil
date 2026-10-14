@@ -188,9 +188,7 @@ pub async fn tick(env: Env) -> Result<()> {
         writes.extend(prune_stmts(&db, now)?);
     }
     db.batch(writes).await?;
-    for (name, notify_up, why) in &pending_hooks {
-        notify(&site, name, *notify_up, why, now).await?;
-    }
+    notify_all(&site, &pending_hooks, now).await;
     Ok(())
 }
 
@@ -358,11 +356,13 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, first_value, is_due, open_gaps_sql, plan_alert, plan_due, probe_wave, prune_due,
-        prune_gaps_sql, prune_samples_sql, stagger_offset, state_keys, wave_bounds, Due,
+        alert_for, first_value, is_due, open_gaps_sql, plan_alert, plan_deliveries, plan_due,
+        probe_wave, prune_due, prune_gaps_sql, prune_samples_sql, stagger_offset, state_keys,
+        wave_bounds, Due,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
+    use vigil_core::config::Site;
 
     #[test]
     fn open_gaps_reads_chunk_within_param_budget() {
@@ -515,6 +515,42 @@ mod tests {
             }
             Due::Skip => panic!("first sighting never hard-skips"),
         }
+    }
+
+    #[test]
+    fn deliveries_render_every_transition_hook_pair() {
+        use vigil_core::config::{Hook, Notify};
+        let site = Site {
+            notify: Notify {
+                hooks: vec![Hook {
+                    url: "https://hooks.example/notify".to_owned(),
+                    method: "POST".to_owned(),
+                    mode: "json".to_owned(),
+                    text: "[$STATUS] $NAME: $REASON".to_owned(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let pending = vec![
+            ("A".to_owned(), false, "refused".to_owned()),
+            ("B".to_owned(), true, "recovered".to_owned()),
+        ];
+        let deliveries = plan_deliveries(&site, &pending, 1_000);
+        assert_eq!(deliveries.len(), 2);
+        assert_eq!(deliveries[0].1, "[DOWN] A: refused");
+        assert_eq!(deliveries[1].1, "[UP] B: recovered");
+        assert!(deliveries
+            .iter()
+            .all(|(hook, _)| hook.url == "https://hooks.example/notify"));
+    }
+
+    #[test]
+    fn no_hooks_no_deliveries() {
+        let site = Site::default();
+        let pending = vec![("A".to_owned(), false, "refused".to_owned())];
+        assert!(plan_deliveries(&site, &pending, 1_000).is_empty());
+        assert!(plan_deliveries(&site, &[], 1_000).is_empty());
     }
 
     #[test]
@@ -734,16 +770,40 @@ fn plan_alert(prev_fails: i64, was_up: bool, verdict_up: bool, grace: i64) -> Al
     }
 }
 
-/// Fire all configured webhooks for a transition. Best-effort by design:
-/// delivery never fails the tick, and the alert marker is already in the
-/// write batch before this runs, so a failed tick can't double-page.
-async fn notify(site: &Site, name: &str, up: bool, why: &str, now: i64) -> Result<()> {
-    let stamp = vigil_core::time_label(now);
-    for hook in &site.notify.hooks {
-        let body = views::fill(&hook.text, name, up, why, &stamp);
-        fire_hook(hook, &body).await?;
+/// Fire all configured webhooks for every pending transition.
+/// Best-effort by design: delivery never fails the tick, and the alert
+/// markers are already in the write batch before this runs, so a failed
+/// tick can't double-page. Deliveries run concurrently in small waves so
+/// a fleet-wide flap doesn't serialize into minutes of wall time (each
+/// hook still races its own [`HOOK_TIMEOUT_MS`] deadline).
+async fn notify_all(site: &Site, pending: &[(String, bool, String)], now: i64) {
+    for wave in plan_deliveries(site, pending, now).chunks(HOOK_WAVE) {
+        let sends = wave.iter().map(|(hook, body)| async move {
+            let _ = with_timeout(fire_hook(hook, body), HOOK_TIMEOUT_MS).await;
+        });
+        join_all(sends).await;
     }
-    Ok(())
+}
+
+/// Max concurrent webhook deliveries per wave: bounds subrequest bursts
+/// on fleet-wide flaps without serializing the common single-page case.
+pub const HOOK_WAVE: usize = 5;
+
+/// Render every (transition × hook) delivery up front (pure): the send
+/// phase is just concurrent I/O over this list.
+fn plan_deliveries<'a>(
+    site: &'a Site,
+    pending: &[(String, bool, String)],
+    now: i64,
+) -> Vec<(&'a Hook, String)> {
+    let stamp = vigil_core::time_label(now);
+    let mut out = Vec::with_capacity(pending.len().saturating_mul(site.notify.hooks.len()));
+    for (name, up, why) in pending {
+        for hook in &site.notify.hooks {
+            out.push((hook, views::fill(&hook.text, name, *up, why, &stamp)));
+        }
+    }
+    out
 }
 
 /// Webhook delivery deadline: a hung receiver must not stall the tick.
