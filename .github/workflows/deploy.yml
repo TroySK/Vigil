@@ -77,6 +77,46 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      # Optional: seeds the site config from the SITE_YAML secret.
+      # Skipped unless the secret is set (then the EDITOR=true editor flow
+      # is the alternative). When set, this is the source of truth: it
+      # overwrites the D1 value on every deploy, so editor edits made
+      # between deploys get replaced. The YAML is syntax-checked here;
+      # full validation (Site::check) happens in the worker at load.
+      - name: Seed site config from SITE_YAML secret
+        run: |
+          cd worker
+          if [ -z "$SITE_YAML" ]; then
+            echo "SITE_YAML not set, skipping (seed via the EDITOR=true editor flow instead)."
+            exit 0
+          fi
+          printf '%s' "$SITE_YAML" > /tmp/site.yaml
+          python3 - <<'EOF'
+          import sys
+          raw = open('/tmp/site.yaml', encoding='utf-8').read()
+          if not raw.strip():
+              sys.exit('SITE_YAML is blank, refusing to overwrite the saved config')
+          try:
+              import yaml
+          except ImportError:
+              print('pyyaml not available, skipping syntax check')
+          else:
+              yaml.safe_load(raw)
+              print('site YAML syntax ok')
+          escaped = raw.replace("'", "''")
+          open('/tmp/seed_site.sql', 'w', encoding='utf-8').write(
+              "INSERT INTO kv (k, v) VALUES ('site_yaml', '"
+              + escaped
+              + "') ON CONFLICT(k) DO UPDATE SET v = excluded.v;\n"
+          )
+          EOF
+          npx -y wrangler@4 d1 execute DB --remote --file=/tmp/seed_site.sql
+          rm -f /tmp/site.yaml /tmp/seed_site.sql
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SITE_YAML: ${{ secrets.SITE_YAML }}
+
       # Optional: enables Basic auth on the status page (Gate + STATUS_PASSWORD).
       # Skipped unless the STATUS_PASSWORD secret is set.
       - name: Set STATUS_PASSWORD secret
