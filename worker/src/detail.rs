@@ -14,7 +14,7 @@ use crate::db::Db;
 use crate::page::{default_counts, links_html, shell, time_html};
 use crate::range::{bars_for, Range};
 use crate::reads::{
-    first_sample_at, recent_gaps, region_latest, series_ranged, SampleOut,
+    recent_gaps, region_latest, series_ranged, SampleOut,
 };
 use vigil_core::config::Site;
 use vigil_core::rollup::{bar_color, latency_chart, percentile_pair, sparkline_points};
@@ -50,13 +50,17 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     // instead of awaiting them one by one. The global status comes from
     // the newest per-region sample, so no separate latest-sample query.
     // The gap fetch stays capped (GAP_SCAN_ROWS newest): an uncapped window
-    // scan would let one flapping monitor blow up rows-read here.
-    let (regions, gaps, since, lat) = futures_util::try_join!(
+    // scan would let one flapping monitor blow up rows-read here. The
+    // history cutoff is the tick-maintained `first:` stamp, not a MIN(at)
+    // scan over the retention window.
+    let first_key = format!("first:{id}");
+    let (regions, gaps, first_raw, lat) = futures_util::try_join!(
         region_latest(db, id),
         recent_gaps(db, id, crate::api::GAP_SCAN_ROWS),
-        first_sample_at(db, id),
+        db.get(&first_key),
         series_ranged(db, id, cutoff, DETAIL_LATENCY_POINTS),
     )?;
+    let since = crate::reads::effective_since(first_raw.and_then(|s| s.parse().ok()), now);
     let current = regions.first();
     let is_up = current.map_or(true, |r| r.up == 1);
     let core: Vec<Gap> = gaps

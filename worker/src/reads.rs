@@ -44,19 +44,6 @@ pub async fn recent_gaps(db: &Db, id: &str, limit: i64) -> Result<Vec<GapOut>> {
         .results()
 }
 
-/// Earliest recorded sample for a monitor, if any.
-pub async fn first_sample_at(db: &Db, id: &str) -> Result<Option<i64>> {
-    // `MIN` over zero rows yields one `NULL` row, so read an optional
-    // integer and flatten: missing monitor and empty history both map
-    // to `None` instead of erroring on `NULL`.
-    let row: Option<Option<i64>> = db
-        .q("SELECT MIN(at) AS m FROM samples WHERE id = ?1")
-        .bind(&[id.into()])?
-        .first(Some("m"))
-        .await?;
-    Ok(row.flatten())
-}
-
 /// Latest sample for a monitor, if any.
 pub async fn latest(db: &Db, id: &str) -> Result<Option<SampleOut>> {
     let rows: Vec<SampleOut> = db
@@ -91,36 +78,14 @@ fn bind_ids(ids: &[&str]) -> Vec<wasm_bindgen::JsValue> {
     ids.iter().map(|id| (*id).into()).collect()
 }
 
-/// Newest sample per monitor, keyed by monitor id, from one round trip.
+/// Newest sample per monitor, keyed by monitor id, from batched round
+/// trips (one query per [`MAX_PARAMS`](crate::db::MAX_PARAMS)-id chunk).
 /// SQLite resolves the bare `ms`/`up`/`place` columns to the `MAX(at)` row
 /// within each group (documented bare-column behavior with a single
-/// min/max aggregate).
+/// min/max aggregate). Deliberately no `MIN(at)`: the earliest sample
+/// comes from the `first:` kv stamps (see [`effective_since`]), so this
+/// query never scans the full retention window.
 pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, SampleOut>> {
-    let (latest, _) = latest_and_first_by_monitor(db, ids).await?;
-    Ok(latest)
-}
-
-/// Exact query behind [`latest_and_first_by_monitor`], exposed so tests
-/// execute the shipped text against bundled SQLite. `?1..?N` monitor ids.
-fn latest_first_sql(n: usize) -> String {
-    format!(
-        "SELECT id, MAX(at) AS at, ms, up, place, MIN(at) AS first FROM samples WHERE id IN ({}) GROUP BY id",
-        placeholders(n)
-    )
-}
-
-/// Newest sample plus earliest sample per monitor from batched round
-/// trips (one query per [`MAX_PARAMS`](crate::db::MAX_PARAMS)-id chunk —
-/// a single `IN (N)` query would exceed D1's 100-param budget on large
-/// fleets).
-///
-/// The homepage needs both (status rows + `has_data` bars) and paid two
-/// `GROUP BY` scans for them. One grouped query returns both: `MIN(at)`
-/// for the bar cutoff plus the `MAX(at)` row's bare columns for status.
-pub async fn latest_and_first_by_monitor(
-    db: &Db,
-    ids: &[&str],
-) -> Result<(BTreeMap<String, SampleOut>, BTreeMap<String, i64>)> {
     #[derive(Debug, Deserialize)]
     struct Row {
         id: String,
@@ -128,19 +93,16 @@ pub async fn latest_and_first_by_monitor(
         ms: i64,
         up: i64,
         place: String,
-        first: i64,
     }
     let mut latest = BTreeMap::new();
-    let mut first = BTreeMap::new();
     for chunk in ids.chunks(crate::db::MAX_PARAMS) {
         let rows: Vec<Row> = db
-            .q(&latest_first_sql(chunk.len()))
+            .q(&latest_sql(chunk.len()))
             .bind(&bind_ids(chunk))?
             .all()
             .await?
             .results()?;
         for row in rows {
-            first.insert(row.id.clone(), row.first);
             latest.insert(
                 row.id.clone(),
                 SampleOut {
@@ -152,7 +114,16 @@ pub async fn latest_and_first_by_monitor(
             );
         }
     }
-    Ok((latest, first))
+    Ok(latest)
+}
+
+/// Exact query behind [`latest_by_monitor`], exposed so tests execute the
+/// shipped text against bundled SQLite. `?1..?N` monitor ids.
+fn latest_sql(n: usize) -> String {
+    format!(
+        "SELECT id, MAX(at) AS at, ms, up, place FROM samples WHERE id IN ({}) GROUP BY id",
+        placeholders(n)
+    )
 }
 
 /// Exact query behind [`gaps_window_by_monitor`], exposed so tests execute
@@ -206,10 +177,10 @@ pub async fn gaps_window_by_monitor(
     Ok(out)
 }
 
-/// Earliest sample per monitor, keyed by id (superseded by
-/// [`latest_and_first_by_monitor`], kept for single-purpose callers): days
-/// before it render as "no data", never as 100% uptime.
-#[allow(dead_code)]
+/// Earliest retained sample per monitor, keyed by id: the tick's one-time
+/// backfill for `first:` kv stamps on pre-existing fleets (see
+/// [`effective_since`]). Days before it render as "no data", never as
+/// 100% uptime.
 pub async fn first_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, i64>> {
     #[derive(Debug, Deserialize)]
     struct Row {
@@ -217,20 +188,19 @@ pub async fn first_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, 
         m: i64,
     }
     let mut out = BTreeMap::new();
-    if ids.is_empty() {
-        return Ok(out);
-    }
-    let rows: Vec<Row> = db
-        .q(&format!(
-            "SELECT id, MIN(at) AS m FROM samples WHERE id IN ({}) GROUP BY id",
-            placeholders(ids.len())
-        ))
-        .bind(&bind_ids(ids))?
-        .all()
-        .await?
-        .results()?;
-    for row in rows {
-        out.insert(row.id, row.m);
+    for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+        let rows: Vec<Row> = db
+            .q(&format!(
+                "SELECT id, MIN(at) AS m FROM samples WHERE id IN ({}) GROUP BY id",
+                placeholders(chunk.len())
+            ))
+            .bind(&bind_ids(chunk))?
+            .all()
+            .await?
+            .results()?;
+        for row in rows {
+            out.insert(row.id, row.m);
+        }
     }
     Ok(out)
 }
@@ -355,6 +325,15 @@ pub fn data_at_of(stored: Option<String>, at: i64) -> i64 {
     stored.and_then(|s| s.parse().ok()).unwrap_or(at)
 }
 
+/// Bar-history cutoff from a `first:` kv stamp: days before the first
+/// sample render as "no data", never as 100% uptime. Stamps older than
+/// retention are clamped to the retention edge — samples there are pruned,
+/// so an unclamped stamp would paint pre-retention days as perfect.
+#[must_use]
+pub fn effective_since(first: Option<i64>, now: i64) -> Option<i64> {
+    first.map(|at| at.max(now.saturating_sub(crate::db::RETENTION_SECS)))
+}
+
 /// `(tick clock, counts, probe clock)` for pages and APIs from one
 /// batched `kv` read (was: three sequential round trips). `counts` is
 /// `None` before the first tick; callers fall back to `default_counts`.
@@ -420,8 +399,8 @@ pub async fn region_latest(db: &Db, id: &str) -> Result<Vec<SampleOut>> {
 mod tests {
     #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
     use super::{
-        data_at_of, gaps_window_sql, latest_first_sql, recent_gaps_window_sql, series_ranged_sql,
-        series_window_sql,
+        data_at_of, effective_since, gaps_window_sql, latest_sql, recent_gaps_window_sql,
+        series_ranged_sql, series_window_sql,
     };
     use rusqlite::types::Value;
     use rusqlite::{params, params_from_iter};
@@ -434,24 +413,19 @@ mod tests {
     }
 
     #[test]
-    fn latest_first_sql_covers_exactly_its_ids() {
-        assert!(latest_first_sql(2).contains("FROM samples WHERE id IN (?1,?2)"));
-        assert!(latest_first_sql(2).contains("GROUP BY id"));
-    }
-
-    /// Bind `ids` plus trailing float params the way the batched readers
-    /// do (D1 sees every integer as a float via [`crate::db::num`]).
-    fn id_binds(ids: &[String], extra: &[f64]) -> Vec<Value> {
-        ids.iter()
-            .map(|id| Value::Text(id.clone()))
-            .chain(extra.iter().map(|f| Value::Real(*f)))
-            .collect()
+    fn latest_sql_covers_exactly_its_ids_without_first() {
+        // Health needs only the newest sample: no MIN(at) scan over the
+        // full retention window.
+        let sql = latest_sql(2);
+        assert!(sql.contains("FROM samples WHERE id IN (?1,?2)"));
+        assert!(sql.contains("GROUP BY id"));
+        assert!(!sql.contains("MIN("));
     }
 
     #[test]
-    fn latest_first_reads_chunk_within_param_budget() {
+    fn latest_only_reads_chunk_within_param_budget() {
         // 150 ids exceed one query's param budget: split into chunks and
-        // merge, exactly like `latest_and_first_by_monitor` must.
+        // merge, exactly like `latest_by_monitor` must.
         let ids: Vec<String> = (0..150).map(|i| format!("m{i}")).collect();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -466,15 +440,41 @@ mod tests {
             .unwrap();
         }
         let mut found = 0_usize;
+        let mut newest = 0_i64;
         for chunk in ids.chunks(crate::db::MAX_PARAMS) {
             assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
-            let mut stmt = conn.prepare(&latest_first_sql(chunk.len())).unwrap();
+            let mut stmt = conn.prepare(&latest_sql(chunk.len())).unwrap();
             let mut rows = stmt.query(params_from_iter(id_binds(chunk, &[]))).unwrap();
-            while rows.next().unwrap().is_some() {
+            while let Some(row) = rows.next().unwrap() {
                 found += 1;
+                newest = newest.max(row.get::<_, i64>(1).unwrap());
             }
         }
         assert_eq!(found, 150);
+        assert_eq!(newest, 1_149);
+    }
+
+    #[test]
+    fn effective_since_clamps_to_retention() {
+        let now = 10_000_000_i64;
+        // Fresh monitor: no clamp.
+        assert_eq!(effective_since(Some(now - 100), now), Some(now - 100));
+        // Older than retention: clamp to the retention edge so
+        // pre-retention days render as data, never as phantom history.
+        assert_eq!(
+            effective_since(Some(1), now),
+            Some(now - crate::db::RETENTION_SECS)
+        );
+        assert_eq!(effective_since(None, now), None);
+    }
+
+    /// Bind `ids` plus trailing float params the way the batched readers
+    /// do (D1 sees every integer as a float via [`crate::db::num`]).
+    fn id_binds(ids: &[String], extra: &[f64]) -> Vec<Value> {
+        ids.iter()
+            .map(|id| Value::Text(id.clone()))
+            .chain(extra.iter().map(|f| Value::Real(*f)))
+            .collect()
     }
 
     #[test]

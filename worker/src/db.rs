@@ -14,6 +14,11 @@ pub const DB_BINDING: &str = "DB";
 /// the fleet grows (see `kv_map` / `open_gaps` / `reads`).
 pub const MAX_PARAMS: usize = 90;
 
+/// How long samples and closed gaps are kept (see the tick's prune pass):
+/// readers clamp "first seen" stamps to this edge so pre-retention days
+/// render as data instead of phantom history.
+pub const RETENTION_SECS: i64 = 90 * 86_400;
+
 /// Bind an integer to D1 as a JS `Number`.
 ///
 /// D1 rejects `BigInt` values, and `wasm-bindgen` converts Rust
