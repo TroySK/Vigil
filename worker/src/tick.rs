@@ -356,13 +356,93 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, first_value, is_due, open_gaps_sql, plan_alert, plan_deliveries, plan_due,
-        probe_wave, prune_due, prune_gaps_sql, prune_samples_sql, stagger_offset, state_keys,
-        wave_bounds, Due,
+        alert_for, close_gap_sql, first_value, gap_why_update, is_due, open_gaps_sql, plan_alert,
+        plan_deliveries, plan_due, probe_wave, prune_due, prune_gaps_sql, prune_samples_sql,
+        stagger_offset, state_keys, wave_bounds, why_gap_sql, Due,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
     use vigil_core::config::Site;
+    use vigil_core::state::Gap;
+
+    #[test]
+    fn gap_why_update_skips_identical_text() {
+        // Steady failure with a fresh reason appends once...
+        let fresh = Gap {
+            at: 1,
+            to: None,
+            why: "refused".to_owned(),
+        };
+        assert_eq!(
+            gap_why_update(&fresh, "timeout"),
+            Some("refused | timeout".to_owned())
+        );
+        // ...but a capped reason that truncates back to the stored text
+        // issues no write at all.
+        let capped = Gap {
+            at: 1,
+            to: None,
+            why: "x".repeat(500),
+        };
+        assert_eq!(gap_why_update(&capped, "timeout"), None);
+    }
+
+    #[test]
+    fn gap_updates_touch_only_newest_open() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);",
+        )
+        .unwrap();
+        // Legacy duplicate opens for m1 plus an unrelated monitor.
+        for at in [100.0, 300.0] {
+            conn.execute(
+                "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params!["m1", at, Option::<f64>::None, "old"],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["m2", 200.0, Option::<f64>::None, "old"],
+        )
+        .unwrap();
+        conn.execute(why_gap_sql(), rusqlite::params!["new", "m1"])
+            .unwrap();
+        let whys: Vec<(f64, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT at, why FROM gaps WHERE id = 'm1' ORDER BY at")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        // Newest open took the text; the older duplicate is untouched.
+        assert_eq!(
+            whys,
+            vec![(100.0, "old".to_owned()), (300.0, "new".to_owned()),]
+        );
+        conn.execute(close_gap_sql(), rusqlite::params![999.0, "m1"])
+            .unwrap();
+        let open: Vec<f64> = {
+            let mut stmt = conn
+                .prepare("SELECT at FROM gaps WHERE id = 'm1' AND upto IS NULL ORDER BY at")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        // Only the newest closed; the older duplicate stays open for the
+        // next tick's pass instead of being rewritten blind.
+        assert_eq!(open, vec![100.0]);
+        // m2 untouched throughout.
+        let m2: String = conn
+            .query_row("SELECT why FROM gaps WHERE id = 'm2'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(m2, "old");
+    }
 
     #[test]
     fn open_gaps_reads_chunk_within_param_budget() {
@@ -707,19 +787,16 @@ fn record_stmts(
     }
     if verdict.up {
         if track.note_up(now) {
-            out.push(
-                db.q("UPDATE gaps SET upto = ?1 WHERE id = ?2 AND upto IS NULL")
-                    .bind(&[num(now), id.into()])?,
-            );
+            out.push(db.q(close_gap_sql()).bind(&[num(now), id.into()])?);
         }
     } else if track.note_down(now, &verdict.why) {
         if let Some(gap) = open {
-            let joined = format!("{} | {}", gap.why, verdict.why);
-            let why = cap_why(&joined).to_owned();
-            out.push(
-                db.q("UPDATE gaps SET why = ?1 WHERE id = ?2 AND upto IS NULL")
-                    .bind(&[why.into(), id.into()])?,
-            );
+            // Steady failures with an unchanged (possibly capped) reason
+            // skip the rewrite: an identical UPDATE every tick costs a D1
+            // write per failing monitor for no state change.
+            if let Some(why) = gap_why_update(gap, &verdict.why) {
+                out.push(db.q(why_gap_sql()).bind(&[why.into(), id.into()])?);
+            }
         } else {
             out.push(
                 db.q("INSERT INTO gaps (id, at, upto, why) VALUES (?1, ?2, NULL, ?3)")
@@ -728,6 +805,27 @@ fn record_stmts(
         }
     }
     Ok(out)
+}
+
+/// Close one monitor's open gap: the newest unterminated row only, so a
+/// legacy duplicate never gets rewritten blind — the next tick's pass
+/// converges on the remainder instead.
+fn close_gap_sql() -> &'static str {
+    "UPDATE gaps SET upto = ?1 WHERE rowid = (SELECT rowid FROM gaps WHERE id = ?2 AND upto IS NULL ORDER BY at DESC LIMIT 1)"
+}
+
+/// Append a failure reason to one monitor's open gap: same newest-only
+/// targeting as [`close_gap_sql`].
+fn why_gap_sql() -> &'static str {
+    "UPDATE gaps SET why = ?1 WHERE rowid = (SELECT rowid FROM gaps WHERE id = ?2 AND upto IS NULL ORDER BY at DESC LIMIT 1)"
+}
+
+/// Appended gap text for another failing tick, or `None` when the capped
+/// text equals the stored text (steady failure at the cap: no write).
+fn gap_why_update(open: &Gap, verdict_why: &str) -> Option<String> {
+    let joined = format!("{} | {}", open.why, verdict_why);
+    let capped = cap_why(&joined);
+    (capped != open.why).then(|| capped.to_owned())
 }
 
 /// Webhook plan for one verdict: the `fails:` value to persist, the
