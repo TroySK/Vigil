@@ -215,8 +215,9 @@ fn plan_due(id: &str, last: Option<i64>, every_min: u64, now: i64) -> Due {
 }
 
 /// Every `kv` key one tick needs: cadence stamps plus alert counters for
-/// all monitors, so the whole tick reads `kv` exactly once. (Counter rows
-/// for monitors that never failed simply come back absent.)
+/// all monitors, so the whole tick reads `kv` in as few queries as the
+/// param budget allows. (Counter rows for monitors that never failed
+/// simply come back absent.)
 fn state_keys(ids: &[&str]) -> Vec<String> {
     let mut keys = Vec::with_capacity(ids.len() * 3);
     for id in ids {
@@ -246,27 +247,35 @@ struct KvRow {
     v: String,
 }
 
-/// Read many `kv` entries in one D1 round trip (empty input: no query).
+/// Exact query behind [`kv_map`], exposed so tests execute the shipped
+/// text against bundled SQLite.
+fn kv_select_sql(n: usize) -> String {
+    format!(
+        "SELECT k, v FROM kv WHERE k IN ({})",
+        (0..n)
+            .map(|i| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+/// Read many `kv` entries in as few D1 round trips as possible: one query
+/// per [`MAX_PARAMS`](crate::db::MAX_PARAMS)-key chunk (empty input: no
+/// query). A single `IN (3N)` query would exceed D1's 100-param budget
+/// past ~33 monitors and abort the whole tick.
 async fn kv_map(db: &Db, keys: &[String]) -> Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
-    if keys.is_empty() {
-        return Ok(out);
-    }
-    let placeholders: Vec<String> = (0..keys.len()).map(|i| format!("?{}", i + 1)).collect();
-    let stmt = db
-        .q(&format!(
-            "SELECT k, v FROM kv WHERE k IN ({})",
-            placeholders.join(",")
-        ))
-        .bind(
-            &keys
+    for chunk in keys.chunks(crate::db::MAX_PARAMS) {
+        let stmt = db.q(&kv_select_sql(chunk.len())).bind(
+            &chunk
                 .iter()
                 .map(|key| key.clone().into())
                 .collect::<Vec<wasm_bindgen::JsValue>>(),
         )?;
-    let rows: Vec<KvRow> = stmt.all().await?.results()?;
-    for row in rows {
-        out.insert(row.k, row.v);
+        let rows: Vec<KvRow> = stmt.all().await?.results()?;
+        for row in rows {
+            out.insert(row.k, row.v);
+        }
     }
     Ok(out)
 }
@@ -282,8 +291,10 @@ fn open_gaps_sql(n: usize) -> String {
     )
 }
 
-/// Open (unterminated) gap per monitor id, from one batched query over the
-/// due monitors. Monitors without an open gap are absent from the map.
+/// Open (unterminated) gap per monitor id, from batched queries over the
+/// due monitors (one query per [`MAX_PARAMS`](crate::db::MAX_PARAMS)-id
+/// chunk — a single `IN (D)` query would exceed D1's 100-param budget on
+/// large fleets). Monitors without an open gap are absent from the map.
 async fn open_gaps(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, Gap>> {
     #[derive(Debug, Deserialize)]
     struct GapIdRow {
@@ -294,23 +305,23 @@ async fn open_gaps(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, Gap>> {
         why: String,
     }
     let mut out = BTreeMap::new();
-    if ids.is_empty() {
-        return Ok(out);
-    }
-    let stmt = db.q(&open_gaps_sql(ids.len())).bind(
-        &ids.iter()
-            .map(|id| (*id).into())
-            .collect::<Vec<wasm_bindgen::JsValue>>(),
-    )?;
-    let rows: Vec<GapIdRow> = stmt.all().await?.results()?;
-    for row in rows {
-        // Newest first per id: the first row decides; older rows are history.
-        // (The query only returns open gaps, so no closed-row filtering.)
-        out.entry(row.id.clone()).or_insert_with(|| Gap {
-            at: row.at,
-            to: row.to,
-            why: row.why.clone(),
-        });
+    for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+        let stmt = db.q(&open_gaps_sql(chunk.len())).bind(
+            &chunk
+                .iter()
+                .map(|id| (*id).into())
+                .collect::<Vec<wasm_bindgen::JsValue>>(),
+        )?;
+        let rows: Vec<GapIdRow> = stmt.all().await?.results()?;
+        for row in rows {
+            // Newest first per id: the first row decides; older rows are history.
+            // (The query only returns open gaps, so no closed-row filtering.)
+            out.entry(row.id.clone()).or_insert_with(|| Gap {
+                at: row.at,
+                to: row.to,
+                why: row.why.clone(),
+            });
+        }
     }
     Ok(out)
 }
@@ -364,10 +375,80 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, is_due, open_gaps_sql, plan_alert, plan_due, probe_wave, prune_due,
-        prune_gaps_sql, prune_samples_sql, stagger_offset, state_keys, wave_bounds, Due,
+        alert_for, is_due, kv_select_sql, open_gaps_sql, plan_alert, plan_due, probe_wave,
+        prune_due, prune_gaps_sql, prune_samples_sql, stagger_offset, state_keys, wave_bounds, Due,
     };
+    use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn kv_select_covers_exactly_its_keys() {
+        let sql = kv_select_sql(3);
+        assert!(sql.contains("FROM kv WHERE k IN (?1,?2,?3)"));
+    }
+
+    #[test]
+    fn kv_reads_chunk_within_param_budget() {
+        // 102 keys exceed one query's param budget: split into chunks and
+        // merge, exactly like `kv_map` must. Every chunk stays within
+        // `MAX_PARAMS` and the merged map is complete.
+        let keys: Vec<String> = (0..102).map(|i| format!("k:{i}")).collect();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);")
+            .unwrap();
+        for key in &keys {
+            conn.execute(
+                "INSERT INTO kv VALUES (?1, ?2)",
+                rusqlite::params![key, "v"],
+            )
+            .unwrap();
+        }
+        let mut merged = BTreeMap::new();
+        for chunk in keys.chunks(crate::db::MAX_PARAMS) {
+            assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
+            let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            let mut stmt = conn.prepare(&kv_select_sql(chunk.len())).unwrap();
+            let mut rows = stmt.query(params_from_iter(refs)).unwrap();
+            while let Some(row) = rows.next().unwrap() {
+                merged.insert(
+                    row.get::<_, String>(0).unwrap(),
+                    row.get::<_, String>(1).unwrap(),
+                );
+            }
+        }
+        assert_eq!(merged.len(), 102);
+    }
+
+    #[test]
+    fn open_gaps_reads_chunk_within_param_budget() {
+        // 150 ids exceed one query's param budget: split into chunks,
+        // exactly like `open_gaps` must. Every chunk stays within
+        // `MAX_PARAMS` and every open gap is found.
+        let ids: Vec<String> = (0..150).map(|i| format!("m{i}")).collect();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);",
+        )
+        .unwrap();
+        for id in &ids {
+            conn.execute(
+                "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![id, 100.0, Option::<f64>::None, "x"],
+            )
+            .unwrap();
+        }
+        let mut found = 0_usize;
+        for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+            assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
+            let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            let mut stmt = conn.prepare(&open_gaps_sql(chunk.len())).unwrap();
+            let mut rows = stmt.query(params_from_iter(refs)).unwrap();
+            while rows.next().unwrap().is_some() {
+                found += 1;
+            }
+        }
+        assert_eq!(found, 150);
+    }
 
     #[test]
     fn waves_partition_the_fleet() {
