@@ -9,8 +9,10 @@ use worker::{Env, Request, Response, Result};
 /// cache-tag the response on the single exit path.
 pub async fn handle(req: Request, env: Env) -> Result<Response> {
     let url = req.url()?;
-    // `site()` is a clone of the OnceLock-cached config: no I/O, no parse.
-    let gated = vigil::site().auth.is_some();
+    // Borrow-only gate check: `site()` clones the whole config per call,
+    // pure allocation overhead for a boolean (and brand assets below never
+    // load the config at all — `route` returns before `site()`).
+    let gated = vigil::gated();
     let mut resp = route(req, env, &url).await?;
     for (name, value) in security_headers() {
         resp.headers_mut().set(name, value)?;
