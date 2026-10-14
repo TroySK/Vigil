@@ -40,19 +40,26 @@ per-monitor detail pages, alongside a small JSON API and SVG badges.
 ## Configure monitors
 
 The site config (title, links, monitors, cadence, hooks, upkeep, auth
-gate) is stored in the D1 database — not in git. To change it, deploy
-once with the config editor enabled:
+gate) is stored in the D1 database — not in git. To change it, enable
+the config editor. Two ways to set `EDITOR=true` on the worker:
+
+- **From GitHub** (recommended): set the `EDITOR` repo secret
+  (Settings → Secrets and variables → Actions) to exactly `true`, then
+  push or run the workflow manually. The workflow syncs it into the
+  worker secret before deploying.
+- **From your machine**: `npx wrangler secret put EDITOR` (value
+  `true`) from `worker/`, then deploy.
+
+Then:
 
 ```sh
-cd worker
-# 1. Uncomment `EDITOR = "true"` in wrangler.toml (or set the var
-#    another way) and deploy:
-npx wrangler deploy
-# 2. Open https://<your-worker>/editor and paste your YAML
+# 1. Open https://<your-worker>/editor and paste your YAML
 #    (full field reference with examples lives in
 #    `config/site.example.yaml`; your previous `config/site.yaml`
 #    contents work verbatim). Saving validates before persisting.
-# 3. IMPORTANT: remove `EDITOR = "true"` again and redeploy.
+# 2. IMPORTANT: disable editor mode again and re-deploy — via GitHub,
+#    delete (or empty) the EDITOR repo secret and re-run the workflow;
+#    locally, `npx wrangler secret delete EDITOR` then redeploy.
 ```
 
 **The app does not work while `EDITOR=true` is set** — and that is
@@ -174,7 +181,10 @@ push to `main` and on manual dispatch. What it does:
    the `EDITOR=true` editor flow owns the config).
 6. Sets the `STATUS_PASSWORD` worker secret when that repo secret exists
    (skipped otherwise — the site stays public).
-7. Runs `wrangler deploy` from `worker/`.
+7. Syncs the `EDITOR` worker secret from the `EDITOR` repo secret
+   (`true` enables editor mode; unset deletes the worker secret so a
+   stale flag can't keep the site offline).
+8. Runs `wrangler deploy` from `worker/`.
 
 ### Required secrets
 
@@ -188,6 +198,7 @@ if you want required reviewers before a deploy):
 | `CLOUDFLARE_ACCOUNT_ID` | Yes | Pins the deploy target (find it in the Cloudflare dashboard URL or **Workers & Pages → Overview**). The workflow fails fast when it is missing. |
 | `STATUS_PASSWORD` | No | Value for the `STATUS_PASSWORD` worker secret (Basic-auth password when `pass_env = "STATUS_PASSWORD"` is configured). Omit to keep the status page public. |
 | `SITE_YAML` | No | Full site-config YAML, seeded into D1 (`kv.site_yaml`) on every deploy. When set, it overwrites editor edits each deploy. Omit to manage config purely through the `EDITOR=true` editor flow. |
+| `EDITOR` | No | Set to exactly `true` to sync the `EDITOR` worker secret on deploy, taking the live site offline into the config editor. Delete or empty it and re-run the workflow to restore the site. |
 
 > Forks note: secrets are not available to pull-request runs from forks,
 > so the workflow will fail closed there rather than leak credentials.
