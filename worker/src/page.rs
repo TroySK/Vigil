@@ -289,7 +289,7 @@ fn one_row(
             "<s>No samples yet</s>".to_owned()
         } else {
             format!(
-                "<span role=img aria-label=\"Latency over last {} samples: p50 {}ms, p95 {}ms.\">{spark}</span>",
+                "<span role=img aria-label=\"Latency over last {} samples: P50 {}ms, P95 {}ms.\">{spark}</span>",
                 vals.len(),
                 p50,
                 p95
@@ -297,7 +297,7 @@ fn one_row(
         };
         let _ = write!(
             extra,
-            "<div class=lat>{chart} <s>p50 {p50}ms &middot; p95 {p95}ms</s></div>",
+            "<div class=lat>{chart} <s>P50 {p50}ms &middot; P95 {p95}ms</s></div>",
         );
     }
     let tip = monitor
@@ -898,6 +898,17 @@ mod tests {
             up,
             place: "BOM".into(),
         }
+    }
+
+    #[test]
+    fn row_latency_uses_uppercase_percentile_labels() {
+        let m = http_monitor("https://example.com");
+        let lat = [tried(9_900, 54, 1), tried(9_800, 60, 1)];
+        let html = one_row(&m, RANGE_24H, 10_000, Some(&tried(9_900, 54, 1)), &[], None, &lat);
+        assert!(html.contains("P50"), "labels read P50, not p50");
+        assert!(html.contains("P95"), "labels read P95, not p95");
+        assert!(!html.contains("p50"), "no lowercase percentile labels");
+        assert!(!html.contains("p95"), "no lowercase percentile labels");
     }
 
     #[test]

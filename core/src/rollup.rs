@@ -131,7 +131,7 @@ pub fn percentile(values: &[i64], p: f64) -> i64 {
 
 /// Two nearest-rank percentiles with a single sort.
 ///
-/// Hot pages need p50 + p95 per monitor; two [`percentile`] calls sort the
+/// Hot pages need P50 + P95 per monitor; two [`percentile`] calls sort the
 /// same samples twice. Returns `(0, 0)` when empty.
 #[must_use]
 #[allow(
