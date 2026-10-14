@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 
 use vigil_core::rollup::{hour_bars, month_bars, DayBar};
-use vigil_core::state::Gap;
+use vigil_core::state::GapSpan;
 
 /// Page time range: every ranged section covers exactly this window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,8 +84,9 @@ pub(crate) struct Bars {
 
 /// History cells for one range: 24 hourly cells for the 24-hour view, one
 /// cell per day otherwise. Both share the `DayBar` shape, so one loop paints
-/// them on either page.
-pub(crate) fn bars_for(core: &[Gap], now: i64, range: Range, since: Option<i64>) -> Bars {
+/// them on either page. Generic over gap spans so reason-less rows (API
+/// shapes without cloned reason strings) paint directly.
+pub(crate) fn bars_for<G: GapSpan>(core: &[G], now: i64, range: Range, since: Option<i64>) -> Bars {
     if range.hourly() {
         Bars {
             cells: hour_bars(core, now, 24, since),

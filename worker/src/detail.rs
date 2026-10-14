@@ -13,12 +13,9 @@ use crate::auth::esc;
 use crate::db::Db;
 use crate::page::{default_counts, links_html, shell, time_html};
 use crate::range::{bars_for, Range};
-use crate::reads::{
-    recent_gaps, region_latest, series_ranged, SampleOut,
-};
+use crate::reads::{recent_gaps, region_latest, series_ranged, SampleOut};
 use vigil_core::config::Site;
 use vigil_core::rollup::{bar_color, latency_chart, percentile_pair, sparkline_points};
-use vigil_core::state::Gap;
 use worker::{Response, Result};
 
 /// Whether a downtime window touches `[cutoff, now]`: ongoing gaps always
@@ -63,18 +60,12 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     let since = crate::reads::effective_since(first_raw.and_then(|s| s.parse().ok()), now);
     let current = regions.first();
     let is_up = current.map_or(true, |r| r.up == 1);
-    let core: Vec<Gap> = gaps
-        .iter()
-        .map(|g| Gap {
-            at: g.at,
-            to: g.to,
-            why: g.why.clone(),
-        })
-        .collect();
     // The 24-hour view renders 24 hourly cells; day ranges render one
     // cell per day (see range::bars_for). Both share the DayBar shape,
     // so one loop paints them.
-    let strip = bars_for(&core, now, range, since);
+    // `bars_for` only reads gap bounds, so the API rows paint directly —
+    // no reason-string clones into a throwaway vector.
+    let strip = bars_for(&gaps, now, range, since);
     let mut cells = String::new();
     let mut covered = 0_usize;
     let mut sum = 0.0_f64;

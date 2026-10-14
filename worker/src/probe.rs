@@ -3,12 +3,12 @@
 //! Every probe races against a `Delay` deadline so one hung endpoint
 //! cannot stall the whole cron tick.
 
+use futures_util::StreamExt as _;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::OnceLock;
 use std::time::Duration;
-use futures_util::StreamExt as _;
 use vigil_core::checks::{Seen, What};
 use vigil_core::config::{Monitor, Probe};
 use worker::{console_log, Date, Delay, Error, Fetch, Headers, Method, Request, RequestInit, Socket};
@@ -251,9 +251,7 @@ pub async fn probe(monitor: &Monitor) -> Seen {
                 }
                 Err(e) => Seen {
                     ms: now_ms().saturating_sub(start),
-                    what: What::Dead {
-                        why: e.to_string(),
-                    },
+                    what: What::Dead { why: e.to_string() },
                 },
             }
         }

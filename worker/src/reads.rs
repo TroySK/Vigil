@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use worker::Result;
 
 use crate::db::{num, Db};
-use vigil_core::state::Gap;
+use vigil_core::state::{Gap, GapSpan};
 
 /// One downtime window row for API responses and rollups.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -20,6 +20,15 @@ pub struct GapOut {
     pub to: Option<i64>,
     /// Human-readable cause.
     pub why: String,
+}
+
+impl GapSpan for GapOut {
+    fn at(&self) -> i64 {
+        self.at
+    }
+    fn to(&self) -> Option<i64> {
+        self.to
+    }
 }
 
 /// One probe sample row for API responses and charts.
