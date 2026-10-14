@@ -132,6 +132,26 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           STATUS_PASSWORD: ${{ secrets.STATUS_PASSWORD }}
 
+      # GitHub secrets never reach the worker on their own: sync the
+      # EDITOR repo secret into the EDITOR worker secret so editor mode
+      # can be driven from GitHub. Set the repo secret to exactly `true`
+      # to take the site offline into the editor; delete (or empty) the
+      # repo secret and re-run to remove the worker secret and restore
+      # the site. A stale EDITOR=true would keep the live site offline,
+      # so the unset path deletes rather than skips.
+      - name: Sync EDITOR flag from GitHub secret
+        run: |
+          cd worker
+          if [ -n "$EDITOR" ]; then
+            printf '%s' "$EDITOR" | npx -y wrangler@4 secret put EDITOR
+          else
+            npx -y wrangler@4 secret delete EDITOR || true
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EDITOR: ${{ secrets.EDITOR }}
+
       - name: Deploy worker
         run: |
           cd worker
