@@ -106,6 +106,29 @@ impl Db {
 mod tests {
     use super::schema_due;
 
+    /// Every index `Db::init` creates must also exist in the shipped
+    /// migrations: prod databases migrate via CI, and the hourly self-heal
+    /// only closes the gap one hour at a time. A missing index means weeks
+    /// of full-table scans on the request path (P99 tail).
+    #[test]
+    fn migrations_cover_every_init_index() {
+        const INIT: &str = include_str!("../migrations/0001_init.sql");
+        const IDX: &str = include_str!("../migrations/0002_indexes.sql");
+        let shipped = format!("{INIT}\n{IDX}");
+        for index in [
+            "idx_samples",
+            "idx_samples_at",
+            "idx_gaps",
+            "idx_gaps_upto",
+            "idx_gaps_open",
+        ] {
+            assert!(
+                shipped.contains(index),
+                "migrations must create {index} (see Db::init)"
+            );
+        }
+    }
+
     #[test]
     fn schema_init_runs_once_per_clock_hour() {
         assert!(schema_due(0));
