@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use vigil_core::checks::{place, Seen, What};
 use vigil_core::config::{Monitor, Probe};
-use worker::{Date, Delay, Error, Fetch, Headers, Method, Request, RequestInit, Socket};
+use worker::{console_log, Date, Delay, Error, Fetch, Headers, Method, Request, RequestInit, Socket};
 
 /// Maximum body bytes kept for keyword matching (bounds memory + D1 rows).
 pub const MAX_BODY_SAMPLE: usize = 8_192;
@@ -41,6 +41,9 @@ pub async fn colo() -> Option<String> {
         COLO_TIMEOUT_MS,
     )
     .await
+    .map_err(|_| {
+        console_log!("colo trace timed out after {COLO_TIMEOUT_MS}ms");
+    })
     .ok()
     .flatten();
     memo_colo(&COLO_CACHE, fresh)
@@ -56,6 +59,17 @@ fn memo_colo(cache: &OnceLock<String>, fresh: Option<String>) -> Option<String> 
     Some(cache.get_or_init(|| found).clone())
 }
 
+/// Human-readable note for a failed colo lookup. Every `None` becomes a
+/// `"CRON"` sample, so each failure mode logs distinctly — `wrangler tail`
+/// is the only way to see why an isolate can't resolve its colo.
+fn colo_failure_note(status: Option<u16>) -> &'static str {
+    match status {
+        None => "colo trace request failed",
+        Some(s) if (200..300).contains(&s) => "colo trace had no colo= line",
+        Some(_) => "colo trace returned an error status",
+    }
+}
+
 /// One fast edge subrequest per uncached tick.
 ///
 /// Scheduled handlers receive no `Request`, so there is no `cf.colo` to
@@ -64,9 +78,21 @@ fn memo_colo(cache: &OnceLock<String>, fresh: Option<String>) -> Option<String> 
 /// via [`place`](vigil_core::checks::place).
 async fn fetch_colo() -> Option<String> {
     let url = url::Url::parse("https://www.cloudflare.com/cdn-cgi/trace").ok()?;
-    let mut resp = Fetch::Url(url).send().await.ok()?;
-    let body = resp.text().await.ok()?;
-    parse_colo(&body)
+    let mut resp = Fetch::Url(url)
+        .send()
+        .await
+        .map_err(|e| console_log!("{}: {e}", colo_failure_note(None)))
+        .ok()?;
+    let status = resp.status_code();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| console_log!("colo trace body unreadable (status {status}): {e}"))
+        .ok()?;
+    parse_colo(&body).or_else(|| {
+        console_log!("{}", colo_failure_note(Some(status)));
+        None
+    })
 }
 
 /// Extract the `colo=` line from a `cdn-cgi/trace` response body.
@@ -80,8 +106,24 @@ fn parse_colo(body: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{memo_colo, parse_colo};
+    use super::{colo_failure_note, memo_colo, parse_colo};
     use std::sync::OnceLock;
+
+    #[test]
+    fn colo_failures_explain_themselves() {
+        // Every `None` from the trace lookup becomes a "CRON" sample, so
+        // each failure mode needs a distinct log line (`wrangler tail` is
+        // the only way to see why an isolate can't resolve its colo).
+        assert_eq!(colo_failure_note(None), "colo trace request failed");
+        assert_eq!(
+            colo_failure_note(Some(200)),
+            "colo trace had no colo= line"
+        );
+        assert_eq!(
+            colo_failure_note(Some(403)),
+            "colo trace returned an error status"
+        );
+    }
 
     #[test]
     fn parses_colo_line() {
