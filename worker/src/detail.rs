@@ -35,7 +35,7 @@ pub const DETAIL_LATENCY_POINTS: i64 = 300;
 pub const DETAIL_INCIDENTS: usize = 50;
 
 /// Per-monitor detail for one [`Range`]: status, range bars, latency
-/// p50/p95 + sparkline, regional table, incident table, upkeep scoped to
+/// P50/P95 + sparkline, regional table, incident table, upkeep scoped to
 /// this monitor.
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Response> {
@@ -128,7 +128,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
             .to_owned()
     } else {
         format!(
-            "<span role=img aria-label=\"Latency over {} samples: p50 {}ms, p95 {}ms.\">{spark}</span>",
+            "<span role=img aria-label=\"Latency over {} samples: P50 {}ms, P95 {}ms.\">{spark}</span>",
             vals.len(),
             p50,
             p95
@@ -167,7 +167,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
         <p class=status-line role=status><span class=status-word data-up=\"{flag}\">{word}</span> \
         <span class=tnum>{ms}</span></p>{notes}</section>\
         <h3 class=sect>Last {range_label}</h3><div class={bars_class} role=img aria-label=\"{bars_label}\" tabindex=0>{cells}</div>\
-        <h3 class=sect>Latency</h3><p class=tnum>p50 {p50}ms &middot; p95 {p95}ms &middot; {n} samples</p>{spark} \
+        <h3 class=sect>Latency</h3><p class=tnum>P50 {p50}ms &middot; P95 {p95}ms &middot; {n} samples</p>{spark} \
         <h3 class=sect>Latency by region &middot; last {range_label}</h3><p class=tnum>Per-region latency over the last {range_label}, grouped by probe origin.</p>{geo_table} \
         <h3 class=sect>Incidents &middot; last {range_label}</h3><table class=inc><caption class=sr-only>Downtime windows for {name} over the last {range_label}</caption><thead><tr><th scope=col>From</th><th scope=col>To</th><th scope=col>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
         esc(&monitor.name),
