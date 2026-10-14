@@ -16,3 +16,8 @@ database_id = "00000000-0000-0000-0000-000000000000"
 [vars]
 # Optional: set via `wrangler secret put` instead for real passwords.
 # STATUS_PASS_ENV = "STATUS_PASSWORD"
+# Config editor: set EDITOR = "true" (and redeploy) to replace the status
+# site with a copy-paste YAML editor that stores the config in D1.
+# The site, APIs, and cron probes stay offline until EDITOR is REMOVED
+# and the worker is redeployed — never leave it on.
+# EDITOR = "true"

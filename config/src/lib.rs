@@ -1,40 +1,25 @@
-//! Vigil site config, loaded from [`site.yaml`](crate::SITE_YAML) at build time.
+//! Vigil site config parsing (runtime, D1-backed).
 //!
-//! Edit `config/site.yaml` to define monitors; keep ids stable — D1 history
-//! keys off them. Secrets don't belong in the file: reference worker env
-//! vars by name instead (see `pass_env`).
+//! The YAML lives in the D1 `kv` table (key `site_yaml`), edited through
+//! the worker's config editor (deployed with `EDITOR=true`). It is parsed
+//! here on every request/tick — no config is compiled into the Worker.
+//! Keep monitor `id`s stable: D1 history keys off them. Secrets don't
+//! belong in the YAML: reference worker env vars by name (`pass_env`).
 
-use std::sync::OnceLock;
 use vigil_core::config::Site;
 
-/// Raw `site.yaml` source, embedded at compile time.
-pub const SITE_YAML: &str = include_str!("../site.yaml");
+/// D1 `kv` key holding the raw site YAML.
+pub const SITE_KV_KEY: &str = "site_yaml";
 
-/// Parsed site config, cached after the first call.
-static SITE: OnceLock<Site> = OnceLock::new();
-
-/// Site config parsed from `site.yaml`.
-///
-/// Panics at first use when the embedded YAML is invalid — that is a
-/// build-time authoring error, so failing fast beats serving half a config.
-#[must_use]
-pub fn site() -> Site {
-    get().clone()
+/// Parse raw YAML into a [`Site`], returning a human-readable error.
+pub fn parse(yaml: &str) -> Result<Site, String> {
+    serde_yaml::from_str(yaml).map_err(|e| e.to_string())
 }
 
-/// Whether the auth gate is configured, borrowing the cached config.
-///
-/// Hot paths (every `fetch`, including brand assets) check this without
-/// cloning the whole `Site`: `site()` clones monitors, links, and upkeep
-/// on each call, which is pure allocation overhead for a boolean answer.
-#[must_use]
-pub fn gated() -> bool {
-    get().auth.is_some()
-}
-
-/// Parsed site config, shared by [`site`] and [`gated`].
-fn get() -> &'static Site {
-    SITE.get_or_init(|| {
-        serde_yaml::from_str(SITE_YAML).expect("config/site.yaml must parse as a Site")
-    })
+/// Parse and validate: YAML syntax plus [`Site::check`].
+pub fn parse_checked(yaml: &str) -> Result<Site, Vec<String>> {
+    let site = parse(yaml).map_err(|e| vec![e])?;
+    site.check()
+        .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>())?;
+    Ok(site)
 }

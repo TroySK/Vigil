@@ -43,6 +43,17 @@ jobs:
             exit 1
           fi
 
+      # The config editor (EDITOR=true) takes the status site offline by
+      # design: every route renders the editor and cron probes pause. It
+      # must never reach production via a committed wrangler.toml — the
+      # commented template (`# EDITOR = "true"`) does not trip this.
+      - name: Refuse editor mode in production deploys
+        run: |
+          if grep -qE '^[[:space:]]*EDITOR[[:space:]]*=' worker/wrangler.toml; then
+            echo "EDITOR is set in worker/wrangler.toml — remove it before deploying (editor mode disables the site)."
+            exit 1
+          fi
+
       # The repo ships wrangler.toml with a placeholder database_id.
       # Create the D1 database on first run, then pin its id so that
       # migrations and deploy target the same database.

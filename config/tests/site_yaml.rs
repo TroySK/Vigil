@@ -1,8 +1,8 @@
-//! `site.yaml` parsing: fixture mechanics plus live-file validation.
+//! `site.yaml` parsing: fixture mechanics plus parse-helper validation.
 //!
-//! The live `config/site.yaml` is user-owned config, so tests pin only an
-//! inline fixture — never the live file's title or monitor list. The live
-//! file gets a parse + `check()` gate so CI still catches authoring errors.
+//! The live `config/site.yaml` is operator-owned, git-ignored config, so
+//! tests pin only inline fixtures plus the `vigil::parse` helpers — never
+//! the live file's title or monitor list.
 
 use vigil_core::config::{Probe, Site};
 
@@ -79,15 +79,26 @@ fn example_yaml_matches_documented_site() {
 
 #[test]
 fn gated_matches_site_auth_without_cloning() {
-    // `gated()` must agree with the parsed config: it is the hot-path
-    // gate check, so it borrows the cached config instead of cloning it.
-    assert_eq!(vigil::gated(), vigil::site().auth.is_some());
+    // The worker derives its gate from the DB-loaded config; the `auth`
+    // flag must survive a parse round trip.
+    let site: Site = serde_yaml::from_str(EXAMPLE_YAML).expect("fixture parses");
+    assert!(site.auth.is_none());
+    let gated: Site = serde_yaml::from_str(
+        "auth:\n  user: admin\n  pass_env: STATUS_PASSWORD\nmonitors:\n  - id: m\n    name: M\n    check:\n      via: tcp\n      host: example.com\n      port: 80\n",
+    )
+    .expect("gated parses");
+    assert!(gated.auth.is_some());
 }
 
 #[test]
-fn live_site_yaml_parses_and_validates() {
-    let site: Site = serde_yaml::from_str(vigil::SITE_YAML).expect("site.yaml parses");
-    assert!(site.check().is_ok(), "site.yaml must pass validation");
+fn parse_helpers_accept_and_reject_yaml() {
+    assert!(vigil::parse(EXAMPLE_YAML).is_ok());
+    assert!(vigil::parse_checked(EXAMPLE_YAML).is_ok());
+    assert!(vigil::parse("title: [unclosed").is_err());
+    // Parses but has no monitors: `parse` ok, `parse_checked` rejects.
+    let empty = "title: Empty\nmonitors: []\n";
+    assert!(vigil::parse(empty).is_ok());
+    assert!(vigil::parse_checked(empty).is_err());
 }
 
 #[test]
