@@ -27,12 +27,23 @@ fn now_ms() -> u64 {
 /// handles; later ticks reuse the memoized value with no subrequest.
 static COLO_CACHE: OnceLock<String> = OnceLock::new();
 
+/// Deadline for the colo trace lookup: a hung `cdn-cgi/trace` must not
+/// stall the whole tick behind one subrequest (tail risk on cold isolates).
+pub const COLO_TIMEOUT_MS: u64 = 2_000;
+
 /// Resolve the tick's colo, using the memoized isolate colo when present.
 pub async fn colo() -> Option<String> {
     if let Some(hit) = COLO_CACHE.get() {
         return Some(hit.clone());
     }
-    memo_colo(&COLO_CACHE, fetch_colo().await)
+    let fresh = with_timeout(
+        async { Ok::<Option<String>, Error>(fetch_colo().await) },
+        COLO_TIMEOUT_MS,
+    )
+    .await
+    .ok()
+    .flatten();
+    memo_colo(&COLO_CACHE, fresh)
 }
 
 /// Memoize one successful colo lookup in `cache`: the cached value wins on
