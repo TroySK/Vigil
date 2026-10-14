@@ -1,6 +1,6 @@
 //! Rollups for history bars, latency percentiles, and sparklines.
 
-use crate::state::Gap;
+use crate::state::GapSpan;
 use std::fmt::Write as _;
 
 /// Seconds in one day.
@@ -33,32 +33,22 @@ pub struct DayBar {
 /// when the monitor has no samples at all. Days ending before `since`
 /// are marked [`DayBar::has_data`] `= false`; time not covered by a
 /// recorded gap still counts as up, but only within days that have data.
+///
+/// Linear in gaps + cells via a difference array (was: a full gap scan
+/// per cell): each gap contributes to its overlapped cells arithmetically,
+/// with bit-identical overlap math including double-counted overlaps.
 #[must_use]
-pub fn month_bars(gaps: &[Gap], now: i64, days: usize, since: Option<i64>) -> Vec<DayBar> {
+pub fn month_bars<G: GapSpan>(
+    gaps: &[G],
+    now: i64,
+    days: usize,
+    since: Option<i64>,
+) -> Vec<DayBar> {
     let today = now - now.rem_euclid(SECS_PER_DAY);
-    let mut out = Vec::with_capacity(days);
-    for back in (0..days).rev() {
-        #[allow(clippy::cast_possible_wrap)]
-        let start = today - (back as i64).saturating_mul(SECS_PER_DAY);
-        let end = start.saturating_add(SECS_PER_DAY);
-        let has_data = since.is_some_and(|s| end > s);
-        let mut down = 0_i64;
-        for g in gaps {
-            let s = g.at.max(start);
-            let e = g.to.unwrap_or(now).min(end);
-            if e > s {
-                down = down.saturating_add(e - s);
-            }
-        }
-        #[allow(clippy::cast_precision_loss)]
-        let up = (SECS_PER_DAY - down).max(0) as f64 / SECS_PER_DAY as f64 * 100.0;
-        out.push(DayBar {
-            day: start,
-            pct: (up * 10.0).round() / 10.0,
-            has_data,
-        });
-    }
-    out
+    #[allow(clippy::cast_possible_wrap)]
+    let span = (days as i64).saturating_sub(1);
+    let t0 = today.saturating_sub(span.saturating_mul(SECS_PER_DAY));
+    bars_sweep(gaps, now, days, SECS_PER_DAY, t0, since)
 }
 
 /// Build `hours` hourly cells ending now from gap records.
@@ -66,25 +56,73 @@ pub fn month_bars(gaps: &[Gap], now: i64, days: usize, since: Option<i64>) -> Ve
 /// Same contract as [`month_bars`], but each cell covers one hour — used
 /// for the last-24-hours strip where daily cells would hide intraday
 /// outages. `since` marks the earliest recorded sample; earlier cells
-/// report [`DayBar::has_data`] `= false`.
+/// report [`DayBar::has_data`] `= false`. Linear via [`bars_sweep`].
 #[must_use]
-pub fn hour_bars(gaps: &[Gap], now: i64, hours: usize, since: Option<i64>) -> Vec<DayBar> {
-    let mut out = Vec::with_capacity(hours);
-    for back in (0..hours).rev() {
-        #[allow(clippy::cast_possible_wrap)]
-        let start = now.saturating_sub((back as i64).saturating_mul(SECS_PER_HOUR));
-        let end = start.saturating_add(SECS_PER_HOUR);
-        let has_data = since.is_some_and(|s| end > s);
-        let mut down = 0_i64;
-        for g in gaps {
-            let s = g.at.max(start);
-            let e = g.to.unwrap_or(now).min(end);
-            if e > s {
-                down = down.saturating_add(e - s);
-            }
+pub fn hour_bars<G: GapSpan>(
+    gaps: &[G],
+    now: i64,
+    hours: usize,
+    since: Option<i64>,
+) -> Vec<DayBar> {
+    #[allow(clippy::cast_possible_wrap)]
+    let t0 = now.saturating_sub(
+        (hours as i64)
+            .saturating_sub(1)
+            .saturating_mul(SECS_PER_HOUR),
+    );
+    bars_sweep(gaps, now, hours, SECS_PER_HOUR, t0, since)
+}
+
+/// Shared engine behind [`month_bars`] / [`hour_bars`]: `cells` uniform
+/// windows of `width` seconds starting at `t0`, oldest first. Gaps clip
+/// to the window, then each contributes to its overlapped cells through a
+/// difference array (full middle cells in O(1) each, partial edges
+/// directly) — O(gaps + cells) with the same overlap sums, saturation,
+/// and rounding as the naive per-cell scan, including double-counted
+/// overlaps.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn bars_sweep<G: GapSpan>(
+    gaps: &[G],
+    now: i64,
+    cells: usize,
+    width: i64,
+    t0: i64,
+    since: Option<i64>,
+) -> Vec<DayBar> {
+    let t1 = t0.saturating_add((cells as i64).saturating_mul(width));
+    let mut full = vec![0_i64; cells.saturating_add(1)];
+    let mut edge = vec![0_i64; cells];
+    for gap in gaps {
+        let s = gap.at().max(t0);
+        let e = gap.to().unwrap_or(now).min(t1);
+        if e <= s {
+            continue;
         }
+        let first = ((s - t0) / width) as usize;
+        let last = ((e - 1 - t0) / width) as usize;
+        if first == last {
+            edge[first] = edge[first].saturating_add(e - s);
+        } else {
+            edge[first] = edge[first].saturating_add(t0 + (first as i64 + 1) * width - s);
+            edge[last] = edge[last].saturating_add(e - (t0 + last as i64 * width));
+            full[first.saturating_add(1)] = full[first.saturating_add(1)].saturating_add(width);
+            full[last] = full[last].saturating_sub(width);
+        }
+    }
+    let mut out = Vec::with_capacity(cells);
+    let mut running = 0_i64;
+    for i in 0..cells {
+        running = running.saturating_add(full[i]);
+        let down = edge[i].saturating_add(running);
+        let start = t0.saturating_add((i as i64).saturating_mul(width));
+        let end = start.saturating_add(width);
+        let has_data = since.is_some_and(|s| end > s);
         #[allow(clippy::cast_precision_loss)]
-        let up = (SECS_PER_HOUR - down).max(0) as f64 / SECS_PER_HOUR as f64 * 100.0;
+        let up = (width - down).max(0) as f64 / width as f64 * 100.0;
         out.push(DayBar {
             day: start,
             pct: (up * 10.0).round() / 10.0,

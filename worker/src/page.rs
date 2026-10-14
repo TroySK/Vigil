@@ -153,7 +153,9 @@ pub async fn sections(
     )?;
     let since = |id: &str| {
         crate::reads::effective_since(
-            firsts.get(&format!("first:{id}")).and_then(|s| s.parse().ok()),
+            firsts
+                .get(&format!("first:{id}"))
+                .and_then(|s| s.parse().ok()),
             now,
         )
     };

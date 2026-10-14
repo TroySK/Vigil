@@ -18,6 +18,25 @@ pub struct Gap {
     pub why: String,
 }
 
+/// Borrowed downtime window for bar rollups: [`month_bars`](crate::rollup::month_bars)
+/// and [`hour_bars`](crate::rollup::hour_bars) only read bounds, never
+/// reasons, so callers pass reason-less views without cloning strings.
+pub trait GapSpan {
+    /// Window start (unix seconds).
+    fn at(&self) -> i64;
+    /// Window end, or `None` while ongoing.
+    fn to(&self) -> Option<i64>;
+}
+
+impl GapSpan for Gap {
+    fn at(&self) -> i64 {
+        self.at
+    }
+    fn to(&self) -> Option<i64> {
+        self.to
+    }
+}
+
 /// In-memory view of a monitor's gaps with open/close/trim helpers.
 #[derive(Debug, Clone, Default)]
 pub struct Track {
