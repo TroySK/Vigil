@@ -15,7 +15,7 @@ use vigil_core::views;
 use worker::d1::D1PreparedStatement;
 use worker::{console_log, Date, Env, Fetch, Headers, Method, Request, RequestInit, Result};
 
-use crate::db::{num, schema_due, Db};
+use crate::db::{num, Db};
 use crate::probe::{colo, probe, with_timeout};
 use crate::reads::first_by_monitor;
 
@@ -52,21 +52,26 @@ pub async fn tick(env: Env) -> Result<()> {
         }
     };
     let now = sec_now();
-    // Schema setup runs hourly (see schema_due): CI migrations own it.
-    if schema_due(now) {
-        db.init().await?;
-    }
-    // One D1 round trip for every `kv` key the tick needs: cadence stamps
-    // plus alert counters for all monitors (was: one query per monitor for
-    // cadence, then two more per due monitor for alerts). First sightings
-    // with a phase offset queue their marker write into the end-of-tick
-    // batch instead of issuing it here.
+    // One D1 round trip for every `kv` key the tick needs: cadence stamps,
+    // alert counters, first-seen stamps, plus the schema marker (was: one
+    // query per monitor for cadence, then two more per due monitor for
+    // alerts). First sightings with a phase offset queue their marker
+    // write into the end-of-tick batch instead of issuing it here.
     let ids: Vec<&str> = site
         .monitors
         .iter()
         .map(|monitor| monitor.id.as_str())
         .collect();
-    let kv = db.kv_map(&state_keys(&ids)).await?;
+    let mut state_query = state_keys(&ids);
+    state_query.push("schema".to_owned());
+    let kv = db.kv_map(&state_query).await?;
+    // Schema self-heal, once ever: CI migrations own DDL; the tick only
+    // covers fresh/manual databases, records its marker in the same write
+    // batch below, and never pays the DDL round trip again.
+    let schema_ok = schema_current(kv.get("schema"));
+    if !schema_ok {
+        db.init().await?;
+    }
     let mut writes: Vec<D1PreparedStatement> = Vec::new();
     let mut due_set = BTreeSet::new();
     for monitor in &site.monitors {
@@ -180,6 +185,9 @@ pub async fn tick(env: Env) -> Result<()> {
         writes.push(db.put_stmt("data_at", &now.to_string())?);
     }
     writes.push(db.put_stmt("at", &now.to_string())?);
+    if !schema_ok {
+        writes.push(db.put_stmt("schema", crate::db::SCHEMA_VERSION)?);
+    }
     // Retention sweeping runs once a day inside the off-peak window (see
     // prune_due): the DELETEs scan 90 days of rows, and running them at
     // midnight contended with peak fetch traffic. Chunked statements fold
@@ -190,6 +198,13 @@ pub async fn tick(env: Env) -> Result<()> {
     db.batch(writes).await?;
     notify_all(&site, &pending_hooks, now).await;
     Ok(())
+}
+
+/// Whether the tick's schema self-heal already ran (marker present and
+/// current): fresh/manual databases run DDL once, every later tick skips
+/// it with no extra round trip (the marker rides the existing `kv` read).
+fn schema_current(stored: Option<&String>) -> bool {
+    stored.is_some_and(|version| version == crate::db::SCHEMA_VERSION)
 }
 
 /// Cadence decision for one monitor: probe now, skip this tick, or record
@@ -358,7 +373,7 @@ mod tests {
     use super::{
         alert_for, close_gap_sql, first_value, gap_why_update, is_due, open_gaps_sql, plan_alert,
         plan_deliveries, plan_due, probe_wave, prune_due, prune_gaps_sql, prune_samples_sql,
-        stagger_offset, state_keys, wave_bounds, why_gap_sql, Due,
+        schema_current, stagger_offset, state_keys, wave_bounds, why_gap_sql, Due,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
@@ -555,6 +570,59 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(kept, vec!["open".to_owned(), "fresh".to_owned()]);
+    }
+
+    #[test]
+    fn schema_marker_short_circuits_init() {
+        assert!(!schema_current(None));
+        assert!(!schema_current(Some(&"1".to_owned())));
+        assert!(schema_current(Some(&crate::db::SCHEMA_VERSION.to_owned())));
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn prune_deletes_oldest_first() {
+        // Deterministic sweep: one LIMIT-5 chunk over 7 expired rows must
+        // remove the 5 oldest, not an arbitrary 5.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);
+             CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);",
+        )
+        .unwrap();
+        for at in [1_i64, 2, 3, 4, 5, 6, 7, 1_000] {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params!["m", at as f64, 10.0, 1.0, "SIN"],
+            )
+            .unwrap();
+        }
+        conn.execute(prune_samples_sql(), rusqlite::params![100.0, 5.0])
+            .unwrap();
+        let mut stmt = conn.prepare("SELECT at FROM samples ORDER BY at").unwrap();
+        let ats: Vec<i64> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(ats, vec![6, 7, 1_000]);
+        // Gaps: oldest expired closures go first; open + fresh survive.
+        for upto in [Some(10.0), Some(20.0), Some(500.0), None] {
+            conn.execute(
+                "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params!["m", 5.0, upto, "x"],
+            )
+            .unwrap();
+        }
+        conn.execute(prune_gaps_sql(), rusqlite::params![100.0, 2.0])
+            .unwrap();
+        let mut stmt = conn.prepare("SELECT upto FROM gaps ORDER BY upto").unwrap();
+        let uptos: Vec<Option<f64>> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(uptos, vec![None, Some(500.0)]);
     }
 
     #[test]
@@ -972,13 +1040,15 @@ fn prune_stmts(db: &Db, now: i64) -> Result<Vec<D1PreparedStatement>> {
 }
 
 /// Exact prune text, exposed so tests execute the shipped statements
-/// against bundled SQLite.
+/// against bundled SQLite. Oldest rows go first (`ORDER BY`): without it
+/// each `LIMIT` chunk removes an arbitrary set and the sweep may never
+/// converge on the oldest rows.
 fn prune_samples_sql() -> &'static str {
-    "DELETE FROM samples WHERE rowid IN (SELECT rowid FROM samples WHERE at < ?1 LIMIT ?2)"
+    "DELETE FROM samples WHERE rowid IN (SELECT rowid FROM samples WHERE at < ?1 ORDER BY at ASC, rowid ASC LIMIT ?2)"
 }
 
 /// Exact prune text, exposed so tests execute the shipped statements
 /// against bundled SQLite.
 fn prune_gaps_sql() -> &'static str {
-    "DELETE FROM gaps WHERE rowid IN (SELECT rowid FROM gaps WHERE upto IS NOT NULL AND upto < ?1 LIMIT ?2)"
+    "DELETE FROM gaps WHERE rowid IN (SELECT rowid FROM gaps WHERE upto IS NOT NULL AND upto < ?1 ORDER BY upto ASC, rowid ASC LIMIT ?2)"
 }
