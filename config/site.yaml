@@ -86,6 +86,7 @@ refresh_secs: 300
 
 links:
   Home: https://www.troysk.com
+  Source: https://github.com/TroySK/Vigil
   Blog: https://blog.troysk.com
   Pulse: https://pulse.troysk.com
   Sentinel: https://sentinel.troysk.com
