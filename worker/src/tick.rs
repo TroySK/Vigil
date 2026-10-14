@@ -94,7 +94,7 @@ pub async fn tick(env: Env) -> Result<()> {
     let colo_here = colo().await;
     let colo_ref = colo_here.as_deref();
     let mut probed = Vec::with_capacity(due_monitors.len());
-    for (start, end) in wave_bounds(due_monitors.len(), PROBE_WAVE) {
+    for (start, end) in wave_bounds(due_monitors.len(), probe_wave(site.notify.hooks.len())) {
         // `probe` never throws: failures come back as `Seen::Dead`.
         let mut wave = join_all(due_monitors[start..end].iter().map(|monitor| async move {
             let (seen, location) = probe(monitor, colo_ref).await;
@@ -162,10 +162,11 @@ pub async fn tick(env: Env) -> Result<()> {
         writes.push(db.put_stmt("data_at", &now.to_string())?);
     }
     writes.push(db.put_stmt("at", &now.to_string())?);
-    // Retention sweeping runs on the first tick of each clock day: the
-    // DELETEs cost round trips every tick otherwise, for data that only
-    // ages daily. Folded into the same batch — no extra round trip.
-    if now % (60 * 60 * 24) < 60 {
+    // Retention sweeping runs once a day inside the off-peak window (see
+    // prune_due): the DELETEs scan 90 days of rows, and running them at
+    // midnight contended with peak fetch traffic. Chunked statements fold
+    // into the same batch — no extra round trip, no giant statement.
+    if prune_due(now) {
         writes.extend(prune_stmts(&db, now)?);
     }
     db.batch(writes).await?;
@@ -324,10 +325,14 @@ pub fn is_due(last: Option<i64>, every_min: u64, now: i64) -> bool {
     }
 }
 
-/// Max concurrent probe subrequests per wave. A full-transition tick fires
-/// probes plus one webhook each; waves of 10 keep that comfortably under
-/// the 50-subrequest ceiling.
-pub const PROBE_WAVE: usize = 10;
+/// Concurrent probes per wave, fitted to the 50-subrequest ceiling: one
+/// colo lookup plus one request per webhook hook plus headroom, clamped so
+/// small fleets still parallelize (25) and huge ones still progress (5).
+/// A fixed wave of 10 serialized large fleets for no reason; the tail was
+/// the sum of the slowest probe per wave.
+fn probe_wave(hooks: usize) -> usize {
+    50usize.saturating_sub(hooks.saturating_add(3)).clamp(5, 25)
+}
 
 /// `[start, end)` index ranges partitioning `total` items into waves of at
 /// most `wave` — so one burst never exhausts the subrequest budget.
@@ -355,8 +360,8 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, is_due, open_gaps_sql, plan_alert, plan_due, stagger_offset, state_keys,
-        wave_bounds, Due,
+        alert_for, is_due, open_gaps_sql, plan_alert, plan_due, probe_wave, prune_due,
+        prune_gaps_sql, prune_samples_sql, stagger_offset, state_keys, wave_bounds, Due,
     };
     use std::collections::BTreeMap;
 
@@ -366,6 +371,80 @@ mod tests {
         assert_eq!(wave_bounds(25, 10), vec![(0, 10), (10, 20), (20, 25)]);
         assert_eq!(wave_bounds(0, 10), vec![]);
         assert_eq!(wave_bounds(3, 10), vec![(0, 3)]);
+    }
+
+    #[test]
+    fn probe_waves_fit_the_subrequest_budget() {
+        // 50-subrequest ceiling minus colo + webhooks + headroom, clamped
+        // so small fleets still parallelize and huge ones still progress.
+        assert_eq!(probe_wave(0), 25);
+        assert_eq!(probe_wave(5), 25);
+        assert_eq!(probe_wave(22), 25);
+        assert_eq!(probe_wave(23), 24);
+        assert_eq!(probe_wave(40), 7);
+        assert_eq!(probe_wave(100), 5);
+    }
+
+    #[test]
+    fn prune_runs_in_the_off_peak_window() {
+        // 03:00–03:05 UTC, not midnight: the DELETEs scan 90 days of rows
+        // and must not contend with peak fetch traffic (P90 spikes).
+        assert!(prune_due(3 * 3_600));
+        assert!(prune_due(3 * 3_600 + 299));
+        assert!(!prune_due(3 * 3_600 + 300));
+        assert!(!prune_due(0));
+        assert!(!prune_due(12 * 3_600));
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn prune_chunks_delete_only_expired_rows() {
+        // The shipped DELETE text against bundled SQLite: one chunk with
+        // LIMIT 5 removes 5 of 7 expired rows and keeps fresh ones.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);
+             CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);",
+        )
+        .unwrap();
+        for at in [1_i64, 2, 3, 4, 5, 6, 7, 1_000] {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params!["m", at as f64, 10.0, 1.0, "SIN"],
+            )
+            .unwrap();
+        }
+        conn.execute(prune_samples_sql(), rusqlite::params![100.0, 5.0])
+            .unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM samples", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 3);
+        // Gaps: open rows and fresh closures survive; expired closures go.
+        conn.execute(
+            "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["m", 10.0, Option::<f64>::None, "open"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["m", 10.0, Some(50.0), "old"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["m", 10.0, Some(500.0), "fresh"],
+        )
+        .unwrap();
+        conn.execute(prune_gaps_sql(), rusqlite::params![100.0, 10.0])
+            .unwrap();
+        let mut stmt = conn.prepare("SELECT why FROM gaps").unwrap();
+        let kept: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(kept, vec!["open".to_owned(), "fresh".to_owned()]);
     }
 
 
@@ -659,14 +738,52 @@ async fn fire_hook(hook: &Hook, body: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether retention sweeping runs on a tick landing at `now_secs`: the
+/// first five minutes after 03:00 UTC, when fetch traffic is lowest.
+fn prune_due(now_secs: i64) -> bool {
+    const START: i64 = 3 * 3_600;
+    const LEN: i64 = 300;
+    (START..START + LEN).contains(&now_secs.rem_euclid(SECS_PER_DAY))
+}
+
+/// Rows removed per prune statement: the daily sweep pushes [`PRUNE_CHUNKS`]
+/// bounded statements per table into the same write batch, draining a full
+/// day of worst-case volume (~72k rows at 50 monitors) without one giant
+/// DELETE stalling D1 mid-tick.
+pub const PRUNE_CHUNK: i64 = 20_000;
+/// Prune statements per table per daily sweep (see [`PRUNE_CHUNK`]).
+pub const PRUNE_CHUNKS: usize = 5;
+
 /// Retention-window DELETEs as prepared statements, folded into the
 /// end-of-tick write batch so sweeping costs no extra round trip.
+///
+/// Each statement deletes at most [`PRUNE_CHUNK`] rows via an inner
+/// `SELECT rowid ... LIMIT`: portable across SQLite/D1 (a bare
+/// `DELETE ... LIMIT` is a dialect risk) and bounded per statement.
 fn prune_stmts(db: &Db, now: i64) -> Result<Vec<D1PreparedStatement>> {
     let cutoff = now.saturating_sub(RETENTION_DAYS.saturating_mul(SECS_PER_DAY));
-    Ok(vec![
-        db.q("DELETE FROM samples WHERE at < ?1")
-            .bind(&[num(cutoff)])?,
-        db.q("DELETE FROM gaps WHERE upto IS NOT NULL AND upto < ?1")
-            .bind(&[num(cutoff)])?,
-    ])
+    let mut out = Vec::with_capacity(2 * PRUNE_CHUNKS);
+    for _ in 0..PRUNE_CHUNKS {
+        out.push(
+            db.q(prune_samples_sql())
+                .bind(&[num(cutoff), num(PRUNE_CHUNK)])?,
+        );
+        out.push(
+            db.q(prune_gaps_sql())
+                .bind(&[num(cutoff), num(PRUNE_CHUNK)])?,
+        );
+    }
+    Ok(out)
+}
+
+/// Exact prune text, exposed so tests execute the shipped statements
+/// against bundled SQLite.
+fn prune_samples_sql() -> &'static str {
+    "DELETE FROM samples WHERE rowid IN (SELECT rowid FROM samples WHERE at < ?1 LIMIT ?2)"
+}
+
+/// Exact prune text, exposed so tests execute the shipped statements
+/// against bundled SQLite.
+fn prune_gaps_sql() -> &'static str {
+    "DELETE FROM gaps WHERE rowid IN (SELECT rowid FROM gaps WHERE upto IS NOT NULL AND upto < ?1 LIMIT ?2)"
 }
