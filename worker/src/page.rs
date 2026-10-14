@@ -402,15 +402,16 @@ pub fn time_html(at: i64, kind: &str, text: &str) -> String {
 }
 
 /// Speculation-rules tag prerendering same-origin navigations matching
-/// `pattern` on hover intent (`moderate` eagerness): Chromium turns likely
-/// next-page hovers into instant navigations; other browsers ignore the
-/// tag. Targets are display-only GETs, so a wasted prerender costs a few
-/// cached reads — and prerendered pages stay hidden, where the pollers and
-/// rel-time interval already stand down.
+/// `pattern` on conservative intent (field visit, not hover): Chromium turns
+/// likely next-page navigations into instant ones; other browsers ignore the
+/// tag. Moderate eagerness prerendered on hover and doubled D1 load for
+/// navigations that never happened. Targets are display-only GETs, so a
+/// wasted prerender costs a few cached reads — and prerendered pages stay
+/// hidden, where the pollers and rel-time interval already stand down.
 #[must_use]
 pub(crate) fn speculation_rule(pattern: &str) -> String {
     format!(
-        "<script type=\"speculationrules\">{{\"prerender\":[{{\"source\":\"document\",\"where\":{{\"href_matches\":\"{pattern}\"}},\"eagerness\":\"moderate\"}}]}}</script>"
+        "<script type=\"speculationrules\">{{\"prerender\":[{{\"source\":\"document\",\"where\":{{\"href_matches\":\"{pattern}\"}},\"eagerness\":\"conservative\"}}]}}</script>"
     )
 }
 
@@ -456,7 +457,7 @@ pub fn shell(
         <link rel=icon href=\"/favicon.ico\" sizes=\"16x16 32x32 48x48\">\
         <link rel=preconnect href=\"https://fonts.googleapis.com\">\
         <link rel=preconnect href=\"https://fonts.gstatic.com\" crossorigin>\
-        <link rel=stylesheet href=\"https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap\">\
+        <link rel=stylesheet href=\"https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap\" media=print onload=\"this.media='all'\">\
         <script>(function(){{var t=null;try{{t=localStorage.getItem('vigil-theme');}}catch(e){{}}\
         if(!t)t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';\
         document.documentElement.setAttribute('data-theme',t);}})();</script>\
@@ -844,7 +845,7 @@ pub fn shell(
 
 #[cfg(test)]
 mod tests {
-    use super::{favicon_origin, links_html, one_row, parse_counts, speculation_rule, time_html};
+    use super::{favicon_origin, links_html, one_row, parse_counts, shell, speculation_rule, time_html};
     use crate::range::{RANGE_24H, RANGE_7D};
     use crate::reads::SampleOut;
     use std::collections::BTreeMap;
@@ -988,7 +989,22 @@ mod tests {
     }
 
     #[test]
-    fn speculation_rule_prerenders_on_hover_intent() {
+    fn shell_loads_fonts_without_blocking_render() {
+        // The JetBrains Mono stylesheet is render-blocking by default: every
+        // first paint waits on Google Fonts (client-side P90). media=print
+        // + onload swap keeps the font without blocking first paint.
+        let html = shell("T", "B", "", "1/1", 1_000, 30_000, "", "", "", 1_000, "");
+        assert!(html.contains("fonts.googleapis.com"));
+        assert!(
+            html.contains("media=print"),
+            "font stylesheet must not render-block first paint"
+        );
+    }
+
+    #[test]
+    fn speculation_rule_prerenders_conservatively() {
+        // Conservative eagerness: moderate prerendered detail pages on mere
+        // hover, doubling D1 load for navigations that never happen (P90).
         let tag = speculation_rule("/monitor*");
         assert!(tag.starts_with("<script type=\"speculationrules\">"));
         let json: serde_json::Value =
@@ -996,7 +1012,7 @@ mod tests {
                 .unwrap();
         assert_eq!(json["prerender"][0]["source"], "document");
         assert_eq!(json["prerender"][0]["where"]["href_matches"], "/monitor*");
-        assert_eq!(json["prerender"][0]["eagerness"], "moderate");
+        assert_eq!(json["prerender"][0]["eagerness"], "conservative");
     }
 
     fn http_monitor(url: &str) -> Monitor {
