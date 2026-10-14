@@ -19,6 +19,11 @@ pub const MAX_PARAMS: usize = 90;
 /// render as data instead of phantom history.
 pub const RETENTION_SECS: i64 = 90 * 86_400;
 
+/// Schema generation marker stored in `kv` once the tick's self-heal has
+/// run: later ticks skip the DDL round trip entirely (CI migrations own
+/// DDL; the tick only covers fresh/manual databases).
+pub const SCHEMA_VERSION: &str = "2";
+
 /// Bind an integer to D1 as a JS `Number`.
 ///
 /// D1 rejects `BigInt` values, and `wasm-bindgen` converts Rust
@@ -30,16 +35,6 @@ pub const RETENTION_SECS: i64 = 90 * 86_400;
 #[allow(clippy::cast_precision_loss)] // all bound values are < 2^53, exactly representable
 pub fn num(value: i64) -> wasm_bindgen::JsValue {
     wasm_bindgen::JsValue::from_f64(value as f64)
-}
-
-/// Whether the schema setup should run on a tick/request landing at
-/// `now_secs`: the first two minutes of each clock hour. CI applies
-/// migrations on deploy, so this is only a self-heal net (fresh databases,
-/// manual setups) rather than the primary mechanism — no need to pay an
-/// idempotent DDL round trip on every request.
-#[must_use]
-pub fn schema_due(now_secs: i64) -> bool {
-    now_secs % 3_600 < 120
 }
 
 /// Thin wrapper around the D1 database with query helpers.
@@ -164,7 +159,7 @@ struct KvRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{clock_keys, kv_select_sql, schema_due, MAX_PARAMS};
+    use super::{clock_keys, kv_select_sql, MAX_PARAMS};
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
 
@@ -212,9 +207,9 @@ mod tests {
     }
 
     /// Every index `Db::init` creates must also exist in the shipped
-    /// migrations: prod databases migrate via CI, and the hourly self-heal
-    /// only closes the gap one hour at a time. A missing index means weeks
-    /// of full-table scans on the request path (P99 tail).
+    /// migrations: prod databases migrate via CI, and the tick self-heal
+    /// only closes the gap until its marker lands. A missing index means
+    /// weeks of full-table scans on the request path (P99 tail).
     #[test]
     fn migrations_cover_every_init_index() {
         const INIT: &str = include_str!("../migrations/0001_init.sql");
@@ -232,16 +227,5 @@ mod tests {
                 "migrations must create {index} (see Db::init)"
             );
         }
-    }
-
-    #[test]
-    fn schema_init_runs_once_per_clock_hour() {
-        assert!(schema_due(0));
-        assert!(schema_due(119));
-        assert!(!schema_due(120));
-        assert!(!schema_due(3_599));
-        assert!(schema_due(3_600));
-        assert!(!schema_due(7_199));
-        assert!(schema_due(7_200));
     }
 }
