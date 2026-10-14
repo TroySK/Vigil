@@ -339,29 +339,24 @@ pub fn data_at_of(stored: Option<String>, at: i64) -> i64 {
     stored.and_then(|s| s.parse().ok()).unwrap_or(at)
 }
 
-/// Row stride spreading a window of `count` samples over at most
-/// `max_points` chart points: full fidelity while the window fits, every
-/// Nth row by recency rank beyond that.
-#[must_use]
-pub fn stride_for(count: i64, max_points: i64) -> i64 {
-    let max_points = max_points.max(1);
-    ((count.max(0) + max_points - 1) / max_points).max(1)
-}
-
 /// Exact query behind [`series_ranged`], exposed so tests execute the
-/// shipped text against bundled SQLite (`?1` id, `?2` cutoff, `?3` stride,
-/// `?4` limit). Rows are 1-based recency ranks: `(rn - 1) % stride = 0`
-/// keeps the newest sample plus every stride-th one after it. (A bare
+/// shipped text against bundled SQLite (`?1` id, `?2` cutoff,
+/// `?3` `max_points - 1`, `?4` `max_points`). The stride derives from
+/// `COUNT(*) OVER ()` inline, so one round trip covers the window: a
+/// separate `COUNT(*)` doubled D1 tail latency on every detail load.
+/// Rows are 1-based recency ranks: `(rn - 1) % stride = 0` keeps the
+/// newest sample plus every stride-th one after it. (A bare
 /// `rn % stride = 1` matches nothing when stride is 1 and once emptied
 /// every short-range chart in production.)
 fn series_ranged_sql() -> &'static str {
-    "SELECT at, ms, up, place FROM (SELECT at, ms, up, place, ROW_NUMBER() OVER (ORDER BY at DESC) AS rn FROM samples WHERE id = ?1 AND at >= ?2) WHERE (rn - 1) % ?3 = 0 ORDER BY at DESC LIMIT ?4"
+    "SELECT at, ms, up, place FROM (SELECT at, ms, up, place, ROW_NUMBER() OVER (ORDER BY at DESC) AS rn, COUNT(*) OVER () AS cnt FROM samples WHERE id = ?1 AND at >= ?2) WHERE (rn - 1) % ((cnt + ?3) / ?4) = 0 ORDER BY at DESC LIMIT ?4"
 }
 
 /// Samples inside `[cutoff, +inf)` spread over at most `max_points` chart
-/// points, newest first. Short ranges keep every sample; long ranges (where
-/// cadence × span reaches tens of thousands of rows) take every Nth row by
-/// recency rank, so the chart always spans the full window honestly.
+/// points, newest first, from a single D1 round trip. Short ranges keep
+/// every sample; long ranges (where cadence × span reaches tens of
+/// thousands of rows) take every Nth row by recency rank, so the chart
+/// always spans the full window honestly.
 pub async fn series_ranged(
     db: &Db,
     id: &str,
@@ -369,14 +364,8 @@ pub async fn series_ranged(
     max_points: i64,
 ) -> Result<Vec<SampleOut>> {
     let max_points = max_points.max(1);
-    let count: Option<i64> = db
-        .q("SELECT COUNT(*) AS n FROM samples WHERE id = ?1 AND at >= ?2")
-        .bind(&[id.into(), num(cutoff)])?
-        .first(Some("n"))
-        .await?;
-    let stride = stride_for(count.unwrap_or(0), max_points).max(1);
     db.q(series_ranged_sql())
-        .bind(&[id.into(), num(cutoff), num(stride), num(max_points)])?
+        .bind(&[id.into(), num(cutoff), num(max_points - 1), num(max_points)])?
         .all()
         .await?
         .results()
@@ -398,29 +387,15 @@ pub async fn region_latest(db: &Db, id: &str) -> Result<Vec<SampleOut>> {
 mod tests {
     #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
     use super::{
-        data_at_of, recent_gaps_window_sql, series_ranged_sql, series_window_sql, stride_for,
+        data_at_of, recent_gaps_window_sql, series_ranged_sql, series_window_sql,
     };
     use rusqlite::params;
-
-    #[test]
-    fn stride_keeps_short_ranges_at_full_fidelity() {
-        assert_eq!(stride_for(0, 300), 1);
-        assert_eq!(stride_for(288, 300), 1);
-        assert_eq!(stride_for(300, 300), 1);
-    }
 
     #[test]
     fn probed_clock_falls_back_to_tick_clock() {
         assert_eq!(data_at_of(Some("bogus".to_owned()), 2_000), 2_000);
         assert_eq!(data_at_of(Some("1500".to_owned()), 2_000), 1_500);
         assert_eq!(data_at_of(None, 2_000), 2_000);
-    }
-
-    #[test]
-    fn stride_spreads_long_ranges_evenly() {
-        assert_eq!(stride_for(301, 300), 2);
-        assert_eq!(stride_for(2_016, 300), 7);
-        assert_eq!(stride_for(25_920, 300), 87);
     }
 
     /// Seeded SQLite mirror of the D1 schema (D1 is SQLite; unit tests
@@ -501,7 +476,7 @@ mod tests {
             &[
                 &"m1",
                 &((1_800_000_000_i64 - 90 * 86_400) as f64),
-                &1.0,
+                &299.0,
                 &300.0,
             ],
         );
@@ -510,10 +485,13 @@ mod tests {
     }
 
     #[test]
-    fn ranged_series_spreads_evenly_at_stride_seven() {
+    fn ranged_series_derives_stride_in_single_round_trip() {
+        // P99 fix: the stride must come from COUNT(*) OVER () inside one
+        // query, not a separate COUNT(*) round trip. Binds are
+        // (?1 id, ?2 cutoff, ?3 max_points - 1, ?4 max_points), mirroring
+        // series_window_sql; 2,016 rows over max 300 → stride 7 → 288 pts.
         let conn = seed_db();
-        let ats = col0(&conn, series_ranged_sql(), &[&"m3", &0.0, &7.0, &300.0]);
-        // 2,016 rows at stride 7 → ranks 1, 8, …, 2011 → 288 points.
+        let ats = col0(&conn, series_ranged_sql(), &[&"m3", &0.0, &299.0, &300.0]);
         assert_eq!(ats.len(), 288);
         assert_eq!(ats[0], 1_800_000_000);
         let steps: std::collections::BTreeSet<i64> = ats.windows(2).map(|w| w[0] - w[1]).collect();
