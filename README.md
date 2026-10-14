@@ -61,6 +61,14 @@ instead, and the cron tick skips probing. The editor page says so too.
 The editor is also unauthenticated (there may be no valid config to gate
 against yet), so keep the window short: save, remove the var, redeploy.
 
+Alternative: set the `SITE_YAML` repo secret (Settings → Secrets and
+variables → Actions) to the full YAML contents. The deploy workflow
+then seeds D1 from the secret on every deploy — no editor round-trip
+needed. When the secret is set it is the source of truth: each deploy
+overwrites the D1 value, so editor edits made between deploys get
+replaced. Leave the secret unset to manage the config purely through
+the editor.
+
 Config rules (same YAML shape as before):
 
 - Each monitor needs a stable unique `id` — history in D1 is keyed off it,
@@ -161,9 +169,12 @@ push to `main` and on manual dispatch. What it does:
 4. Ensures the `vigil` D1 database exists (creates it on first run), pins
    its id into `worker/wrangler.toml`, and runs
    `wrangler d1 migrations apply DB --remote`.
-5. Sets the `STATUS_PASSWORD` worker secret when that repo secret exists
+5. Seeds the site config into D1 from the `SITE_YAML` repo secret when
+   that secret exists (syntax-checked first; skipped otherwise — then
+   the `EDITOR=true` editor flow owns the config).
+6. Sets the `STATUS_PASSWORD` worker secret when that repo secret exists
    (skipped otherwise — the site stays public).
-6. Runs `wrangler deploy` from `worker/`.
+7. Runs `wrangler deploy` from `worker/`.
 
 ### Required secrets
 
@@ -176,6 +187,7 @@ if you want required reviewers before a deploy):
 | `CLOUDFLARE_API_TOKEN` | Yes | API token with **Workers Scripts: Edit** and **D1: Edit** permissions ([create one here](https://dash.cloudflare.com/profile/api-tokens)). |
 | `CLOUDFLARE_ACCOUNT_ID` | Yes | Pins the deploy target (find it in the Cloudflare dashboard URL or **Workers & Pages → Overview**). The workflow fails fast when it is missing. |
 | `STATUS_PASSWORD` | No | Value for the `STATUS_PASSWORD` worker secret (Basic-auth password when `pass_env = "STATUS_PASSWORD"` is configured). Omit to keep the status page public. |
+| `SITE_YAML` | No | Full site-config YAML, seeded into D1 (`kv.site_yaml`) on every deploy. When set, it overwrites editor edits each deploy. Omit to manage config purely through the `EDITOR=true` editor flow. |
 
 > Forks note: secrets are not available to pull-request runs from forks,
 > so the workflow will fail closed there rather than leak credentials.
