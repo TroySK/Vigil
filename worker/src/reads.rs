@@ -147,12 +147,26 @@ pub async fn latest_and_first_by_monitor(
     Ok((latest, first))
 }
 
+/// Exact query behind [`gaps_window_by_monitor`], exposed so tests execute
+/// the shipped text against bundled SQLite. `?1..?N` monitor ids, then
+/// cutoff, then now: only gaps touching `[cutoff, now]` leave D1, so a
+/// future-dated row (clock skew, bad write) never burns rows-read quota
+/// or paints phantom downtime on the highest-traffic page.
+fn gaps_window_sql(n: usize) -> String {
+    format!(
+        "SELECT id, at, upto, why FROM gaps WHERE id IN ({}) AND at <= ?{} AND (upto IS NULL OR upto >= ?{})",
+        placeholders(n),
+        n + 2,
+        n + 1,
+    )
+}
 /// Gaps overlapping `[cutoff, now]` per monitor, keyed by id. Older closed
 /// gaps cannot affect history cells, so they never leave D1.
 pub async fn gaps_window_by_monitor(
     db: &Db,
     ids: &[&str],
     cutoff: i64,
+    now: i64,
 ) -> Result<BTreeMap<String, Vec<Gap>>> {
     #[derive(Debug, Deserialize)]
     struct Row {
@@ -168,12 +182,9 @@ pub async fn gaps_window_by_monitor(
     }
     let mut binds = bind_ids(ids);
     binds.push(num(cutoff));
+    binds.push(num(now));
     let rows: Vec<Row> = db
-        .q(&format!(
-            "SELECT id, at, upto, why FROM gaps WHERE id IN ({}) AND (upto IS NULL OR upto >= ?{})",
-            placeholders(ids.len()),
-            ids.len() + 1
-        ))
+        .q(&gaps_window_sql(ids.len()))
         .bind(&binds)?
         .all()
         .await?
@@ -387,7 +398,7 @@ pub async fn region_latest(db: &Db, id: &str) -> Result<Vec<SampleOut>> {
 mod tests {
     #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
     use super::{
-        data_at_of, recent_gaps_window_sql, series_ranged_sql, series_window_sql,
+        data_at_of, gaps_window_sql, recent_gaps_window_sql, series_ranged_sql, series_window_sql,
     };
     use rusqlite::params;
 
@@ -496,6 +507,27 @@ mod tests {
         assert_eq!(ats[0], 1_800_000_000);
         let steps: std::collections::BTreeSet<i64> = ats.windows(2).map(|w| w[0] - w[1]).collect();
         assert_eq!(steps.into_iter().collect::<Vec<_>>(), vec![2_100]);
+    }
+
+    #[test]
+    fn gaps_window_excludes_predated_and_future_rows() {
+        // Homepage query: ongoing + straddling gaps pass; predated closures
+        // and future-dated rows do not. Binds are (?1 id, ?2 cutoff, ?3 now).
+        let conn = seed_db();
+        conn.execute(
+            "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+            params!["m1", 5_000.0, Option::<f64>::None, "future"],
+        )
+        .unwrap();
+        let mut stmt = conn.prepare(&gaps_window_sql(1)).unwrap();
+        let mut ats: Vec<i64> = stmt
+            .query_map(params!["m1", 350.0, 1_000.0], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        ats.sort_unstable();
+        // (200, 250) predates the window; (5000, NULL) starts after now.
+        assert_eq!(ats, vec![100, 300, 400, 500]);
     }
 
     #[test]
