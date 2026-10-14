@@ -6,6 +6,11 @@ use worker::{Env, Result};
 /// D1 binding name in `wrangler.toml`.
 pub const DB_BINDING: &str = "DB";
 
+/// Max bound params per D1 query chunk. The platform limit is 100 params
+/// per query; chunks stay below it so `IN (...)` reads keep working as
+/// the fleet grows (see `kv_map` / `open_gaps` / `reads`).
+pub const MAX_PARAMS: usize = 90;
+
 /// Bind an integer to D1 as a JS `Number`.
 ///
 /// D1 rejects `BigInt` values, and `wasm-bindgen` converts Rust
