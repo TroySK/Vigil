@@ -2,12 +2,14 @@ mod api;
 mod auth;
 mod db;
 mod detail;
+mod editor;
 mod http;
 mod icons;
 mod page;
 mod probe;
 mod range;
 mod reads;
+mod site_store;
 mod tick;
 
 use worker::{event, Context, Env, Request, Response, Result, ScheduledEvent};

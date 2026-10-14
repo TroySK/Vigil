@@ -16,15 +16,17 @@ per-monitor detail pages, alongside a small JSON API and SVG badges.
 ```text
 .
   core/     # pure monitoring logic: verdicts, incidents, rollups, views
-  config/   # site.yaml: monitors, cadence, hooks, upkeep (compiled in)
+  config/   # site config parsing helpers + site.example.yaml template
   worker/   # Worker entry points: fetch + scheduled handlers, D1, probes
 ```
 
 - `core` has no I/O or platform dependencies and is fully unit-tested on
   the host.
-- `config` defines the title, links, monitors, probe cadence,
-  notification hooks, upkeep windows, and optional access gate in
-  `config/site.yaml` (embedded at build time — deploy after editing).
+- `config` offers YAML parsing/validation helpers. The live config is
+  NOT in git: `config/site.yaml` is git-ignored and lives only in the
+  D1 `kv` table (key `site_yaml`), edited through the worker's config
+  editor (see [Configure monitors](#configure-monitors)).
+  `config/site.example.yaml` is the committed template + field reference.
 - `worker` owns fetching, storage, scheduling, and HTML/JSON rendering. It
   calls into `core` for all pure computation.
 
@@ -37,8 +39,29 @@ per-monitor detail pages, alongside a small JSON API and SVG badges.
 
 ## Configure monitors
 
-Edit `config/site.yaml` (full field reference with examples lives in the
-comment header at the top of that file):
+The site config (title, links, monitors, cadence, hooks, upkeep, auth
+gate) is stored in the D1 database — not in git. To change it, deploy
+once with the config editor enabled:
+
+```sh
+cd worker
+# 1. Uncomment `EDITOR = "true"` in wrangler.toml (or set the var
+#    another way) and deploy:
+npx wrangler deploy
+# 2. Open https://<your-worker>/editor and paste your YAML
+#    (full field reference with examples lives in
+#    `config/site.example.yaml`; your previous `config/site.yaml`
+#    contents work verbatim). Saving validates before persisting.
+# 3. IMPORTANT: remove `EDITOR = "true"` again and redeploy.
+```
+
+**The app does not work while `EDITOR=true` is set** — and that is
+deliberate. In editor mode every route (pages, APIs) renders the editor
+instead, and the cron tick skips probing. The editor page says so too.
+The editor is also unauthenticated (there may be no valid config to gate
+against yet), so keep the window short: save, remove the var, redeploy.
+
+Config rules (same YAML shape as before):
 
 - Each monitor needs a stable unique `id` — history in D1 is keyed off it,
   so never rename an id casually.
@@ -98,6 +121,12 @@ placeholder value. Then apply the schema:
 npx wrangler d1 migrations apply DB
 ```
 
+On a fresh database there is no site config yet, so the pages show a
+"config missing" notice. Seed it via the editor flow
+([Configure monitors](#configure-monitors)): deploy once with
+`EDITOR = "true"`, paste your YAML at `/editor`, save, then **remove
+the var and redeploy**.
+
 For local development with simulated scheduled events:
 
 ```sh
@@ -126,12 +155,15 @@ push to `main` and on manual dispatch. What it does:
    `cargo check -p vigil-worker --target wasm32-unknown-unknown`.
 2. Requires the `CLOUDFLARE_ACCOUNT_ID` secret to be set and fails fast
    otherwise.
-3. Ensures the `vigil` D1 database exists (creates it on first run), pins
+3. Refuses to deploy when `EDITOR = ...` is uncommented in
+   `worker/wrangler.toml` — editor mode takes the live site offline, so
+   it must never reach production through git.
+4. Ensures the `vigil` D1 database exists (creates it on first run), pins
    its id into `worker/wrangler.toml`, and runs
    `wrangler d1 migrations apply DB --remote`.
-4. Sets the `STATUS_PASSWORD` worker secret when that repo secret exists
+5. Sets the `STATUS_PASSWORD` worker secret when that repo secret exists
    (skipped otherwise — the site stays public).
-5. Runs `wrangler deploy` from `worker/`.
+6. Runs `wrangler deploy` from `worker/`.
 
 ### Required secrets
 
@@ -150,7 +182,8 @@ if you want required reviewers before a deploy):
 
 ### Trigger a deploy
 
-- Push to `main` (a `site.yaml` edit redeploys monitors).
+- Push to `main` (code changes redeploy the worker; config changes go
+  through the [`EDITOR=true` flow](#configure-monitors), not git).
 - Or run it manually: **Actions → Deploy to Cloudflare → Run workflow**.
 - To deploy from your machine instead, follow
   [Set up the database and deploy](#set-up-the-database-and-deploy) above.
@@ -170,6 +203,10 @@ if you want required reviewers before a deploy):
 - `/api/latency?id=<id>` — latency percentiles plus raw samples.
 - `/favicon.ico` — tab icon generated from `worker/assets/vigil.svg` (public, long-cached).
 - `/logo.svg` — header brand mark (same artwork as `worker/assets/vigil.svg`).
+- `/editor` — copy-paste YAML config editor. Served **only** when the
+  `EDITOR=true` worker var is set (otherwise 404); while it is set, all
+  other routes render the editor and cron probes pause. Remove the var
+  and redeploy to restore the site.
 
 ## Behavior notes
 

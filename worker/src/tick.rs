@@ -13,7 +13,7 @@ use vigil_core::config::{Hook, Monitor, Site};
 use vigil_core::state::{Gap, Track};
 use vigil_core::views;
 use worker::d1::D1PreparedStatement;
-use worker::{console_log, Date, Env, Error, Fetch, Headers, Method, Request, RequestInit, Result};
+use worker::{console_log, Date, Env, Fetch, Headers, Method, Request, RequestInit, Result};
 
 use crate::db::{num, schema_due, Db};
 use crate::probe::{colo, probe, with_timeout};
@@ -38,17 +38,20 @@ fn sec_now() -> i64 {
 /// CPU ceiling (`exceededCpu`) before the tick finished.
 #[allow(clippy::too_many_lines)]
 pub async fn tick(env: Env) -> Result<()> {
-    let site = vigil::site();
-    site.check().map_err(|errors| {
-        Error::from(
-            errors
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
-    })?;
+    // Editor mode pauses probing: the saved YAML may be half-edited, and
+    // the status site is offline until `EDITOR=true` is removed.
+    if crate::site_store::is_editor(&env) {
+        console_log!("editor mode: skipping tick until EDITOR=true is removed");
+        return Ok(());
+    }
     let db = Db::of(&env)?;
+    let site = match crate::site_store::load(&db).await? {
+        Ok(site) => site,
+        Err(e) => {
+            console_log!("no valid site config in D1 ({e}): skipping tick");
+            return Ok(());
+        }
+    };
     let now = sec_now();
     // Schema setup runs hourly (see schema_due): CI migrations own it.
     if schema_due(now) {
@@ -319,9 +322,7 @@ pub fn is_due(last: Option<i64>, every_min: u64, now: i64) -> bool {
     let every_secs = every_min.saturating_mul(60);
     match last {
         None => true,
-        Some(stamp) => {
-            u64::try_from(now.saturating_sub(stamp)).unwrap_or(0) >= every_secs
-        }
+        Some(stamp) => u64::try_from(now.saturating_sub(stamp)).unwrap_or(0) >= every_secs,
     }
 }
 
@@ -338,7 +339,10 @@ fn probe_wave(hooks: usize) -> usize {
 /// most `wave` — so one burst never exhausts the subrequest budget.
 fn wave_bounds(total: usize, wave: usize) -> Vec<(usize, usize)> {
     let wave = wave.max(1);
-    (0..total).step_by(wave).map(|s| (s, (s + wave).min(total))).collect()
+    (0..total)
+        .step_by(wave)
+        .map(|s| (s, (s + wave).min(total)))
+        .collect()
 }
 
 /// FNV-1a hash for staggering first-probe phases across monitors.
@@ -446,7 +450,6 @@ mod tests {
             .unwrap();
         assert_eq!(kept, vec!["open".to_owned(), "fresh".to_owned()]);
     }
-
 
     #[test]
     fn due_without_history() {

@@ -1,0 +1,108 @@
+# =====================================================================
+# Vigil site config template
+# ---------------------------------------------------------------------
+# This file is NOT read by the Worker. Copy its contents into the
+# config editor (deployed with EDITOR=true), which stores the YAML in
+# the D1 database. `config/site.yaml` (your live config) is git-ignored
+# and must never be committed.
+#
+# Lines starting with `#` are comments. Delete or uncomment the
+# examples below to suit your site.
+#
+# Rules that bite:
+# - `id` is a stable D1 history key. Never rename one casually or its
+#   uptime history starts over.
+# - SECRETS DO NOT BELONG HERE. The editor stores this YAML in D1 and
+#   the status page is public: anything you write in it is visible to
+#   everyone with DB access (and request headers below are sent
+#   verbatim). Passwords go in worker env / `wrangler secret` and are
+#   referenced by name (`pass_env`). There is deliberately no env-var
+#   indirection for headers: if a monitor needs a real secret, say so and
+#   it will be built; do not paste it here meanwhile.
+#
+# Top-level keys (all optional; shown with defaults):
+#   title   dashboard title                    (default: "Status")
+#   links   footer label -> url map, rendered in file order (default: {})
+#   groups  group name -> [monitor ids]        (default: {}; unlisted ids
+#           render under "Other")
+#   check_every_min  default probe cadence in minutes for monitors
+#           without their own `every_min`      (default: 1 = every tick;
+#           the cron itself still fires every minute and skips
+#           monitors that aren't due)
+#   refresh_secs  page auto-refresh interval in seconds (default: 30;
+#           0 disables polling entirely). Pages poll on this interval but
+#           reload only when a tick probed new data, so idle ticks cost a
+#           cheap health check instead of a full render.
+#   monitors  list of monitors (see below)
+#   notify  { hooks, grace_min, mute }
+#   upkeep  list of maintenance windows
+#   auth    Basic-auth gate for the whole site
+#
+# A monitor with every feature (commented out so it doesn't probe):
+#   - id: api-search          # required, unique, stable
+#     name: Search API        # required, display name
+#     expect: [200, 429]      # accepted HTTP codes (default: [] = any 2xx)
+#     timeout_ms: 8000        # per-probe timeout, 1..60000 (default: 10000)
+#     every_min: 5            # probe every 5m instead of every tick
+#                             # (default: unset = global check_every_min)
+#     has: "results"          # body must contain this (default: unset)
+#     lacks: "maintenance"    # body must NOT contain this (default: unset)
+#     tip: "Backed by us-e1"  # hover tooltip on the status page
+#     href: https://status.example.com/search  # link on the monitor name
+#     quiet_chart: true       # hide the latency sparkline (default: false)
+#     check:
+#       via: http             # "http" or "tcp"
+#       url: https://api.example.com/search?q=ping
+#       method: POST          # default: GET
+#       headers:              # sent verbatim; STATIC values only. A real
+#         Client: vigil/0.1   # secret pasted here ends up in D1 — don't.
+#       body: '{"q":"ping"}'  # optional request body
+#     # ...or a TCP check instead of `check:` above:
+#     # check:
+#     #   via: tcp
+#     #   host: "1.1.1.1"
+#     #   port: 53
+#
+# notify:
+#   grace_min: 2    # consecutive failing ticks before paging (min 1 at use)
+#   mute: [dns-tcp] # ids that never page
+#   hooks:          # fired on down-after-grace, and on every recovery
+#     - url: https://hooks.example/notify
+#       method: POST          # default: POST
+#       mode: json            # "json" -> {"text": ...}, else form text=...
+#       text: "[$STATUS] $NAME: $REASON ($TIME)"  # template vars
+#
+# upkeep (maintenance windows mute the red without paging):
+#   - title: DB upgrade
+#     body: Writes may be slow.
+#     from: "2030-01-01T00:00:00Z"   # RFC-3339 or unix seconds
+#     until: "2030-01-01T01:00:00Z"  # omit for open-ended
+#     only: [site]                   # omit or empty for site-wide
+#
+# auth (whole-site Basic auth):
+#   user: admin
+#   pass_env: STATUS_PASSWORD  # env var name; prefer over cleartext `pass`
+# =====================================================================
+
+title: Vigil Status
+check_every_min: 5
+refresh_secs: 300
+
+links:
+  Home: https://example.com
+  Source: https://github.com/TroySK/Vigil
+
+monitors:
+  - id: site
+    name: Example Site
+    expect: [200]
+    tip: Homepage
+    href: https://example.com
+    check:
+      via: http
+      url: https://example.com
+
+notify:
+  grace_min: 2
+
+upkeep: []

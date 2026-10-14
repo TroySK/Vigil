@@ -5,64 +5,119 @@ use crate::auth::{authed, deny};
 use crate::db::Db;
 use worker::{Env, Request, Response, Result};
 
-/// Handle every incoming `fetch`: gate, migrate, route, then harden and
-/// cache-tag the response on the single exit path.
+/// Handle every incoming `fetch`: editor mode, auth gate, migrate, route,
+/// then harden and cache-tag the response on the single exit path.
 pub async fn handle(req: Request, env: Env) -> Result<Response> {
     let url = req.url()?;
-    // Borrow-only gate check: `site()` clones the whole config per call,
-    // pure allocation overhead for a boolean (and brand assets below never
-    // load the config at all — `route` returns before `site()`).
-    let gated = vigil::gated();
-    let mut resp = route(req, env, &url).await?;
+    let editor = crate::site_store::is_editor(&env);
+    // Editor mode short-circuits everything (except brand assets): the
+    // status site is offline until `EDITOR=true` is removed + redeployed.
+    let (mut resp, gated) = route(req, env, &url, editor).await?;
     for (name, value) in security_headers() {
         resp.headers_mut().set(name, value)?;
+    }
+    if editor {
+        // Never cache the unauthenticated editor pages.
+        resp.headers_mut().set("cache-control", "no-store")?;
+        return Ok(resp);
     }
     if gated {
         resp.headers_mut().set("vary", "Authorization")?;
     }
-    if let Some(policy) = cache_control(url.path(), gated) {
+    // Error pages (notably the missing-config 500) must never sit in a
+    // shared cache: the next deploy or save may resolve them.
+    if resp.status_code() >= 500 {
+        resp.headers_mut().set("cache-control", "no-store")?;
+    } else if let Some(policy) = cache_control(url.path(), gated) {
         resp.headers_mut().set("cache-control", policy)?;
     }
     Ok(resp)
 }
 
-/// Gate, migrate, then route by path.
-async fn route(req: Request, env: Env, url: &url::Url) -> Result<Response> {
+/// Gate, migrate, then route by path. Returns the response plus whether
+/// the auth gate is on (for `Vary` / private-cache handling in [`handle`]).
+async fn route(
+    mut req: Request,
+    env: Env,
+    url: &url::Url,
+    editor: bool,
+) -> Result<(Response, bool)> {
     // Brand assets stay public so browsers can fetch the tab icon and the
     // header logo without credentials.
     match url.path() {
-        "/favicon.ico" => return crate::icons::favicon(),
-        "/logo.svg" => return crate::icons::logo(),
+        "/favicon.ico" => return Ok((crate::icons::favicon()?, false)),
+        "/logo.svg" => return Ok((crate::icons::logo()?, false)),
         _ => {}
     }
-    let site = vigil::site();
-    if !authed(&req, &site, &env) {
-        return deny();
-    }
     let db = Db::of(&env)?;
+    if editor {
+        // Editor mode: the status site is offline. Every route renders the
+        // editor; saving validates before persisting. No auth gate here —
+        // there may be no valid config to gate against yet — so keep this
+        // window short (the page and README say so).
+        if req.method() == worker::Method::Post {
+            return Ok((crate::editor::save(&mut req, &db).await?, false));
+        }
+        return Ok((crate::editor::render(&db, None, &[], false).await?, false));
+    }
+    if url.path() == "/editor" {
+        // The editor exists only in editor mode.
+        return Ok((Response::error("not found", 404)?, false));
+    }
+    let site = match crate::site_store::load(&db).await? {
+        Ok(site) => site,
+        Err(crate::site_store::SiteError::Missing) => {
+            return Ok((
+                crate::editor::missing_config_page(
+                    "No config has been saved yet. Fresh database.",
+                )?,
+                false,
+            ));
+        }
+        Err(crate::site_store::SiteError::Parse(error)) => {
+            return Ok((
+                crate::editor::missing_config_page(&format!("Saved YAML fails to parse: {error}"))?,
+                false,
+            ));
+        }
+        Err(crate::site_store::SiteError::Invalid(errors)) => {
+            return Ok((
+                crate::editor::missing_config_page(&format!(
+                    "Saved config is invalid: {}",
+                    errors.join("; ")
+                ))?,
+                false,
+            ));
+        }
+    };
+    if !authed(&req, &site, &env) {
+        return Ok((deny()?, site.auth.is_some()));
+    }
     // No schema setup here: DDL on the request path fired an idempotent
     // migration on every request landing in the hourly window (a thundering
     // herd under traffic). CI migrations plus the cron tick's self-heal own
     // schema; requests just read.
-    match url.path() {
+    let gated = site.auth.is_some();
+    let resp = match url.path() {
         "/" | "/index.html" => {
             let range = crate::range::parse_range(range_param(url).as_deref());
-            crate::page::render(&db, &site, range).await
+            crate::page::render(&db, &site, range).await?
         }
         "/monitor" => match detail_id(url) {
             Some(id) => {
                 let range = crate::range::parse_range(range_param(url).as_deref());
-                crate::detail::render(&db, &site, &id, range).await
+                crate::detail::render(&db, &site, &id, range).await?
             }
-            None => Response::error("missing id", 400),
+            None => Response::error("missing id", 400)?,
         },
-        "/api/health" => api::health(&db, &site).await,
-        "/api/badge" => api::badge(&db, &site, url).await,
-        "/api/history" => api::history(&db, url).await,
-        "/api/incidents" => api::incidents(&db, url).await,
-        "/api/latency" => api::latency(&db, url).await,
-        _ => Response::error("not found", 404),
-    }
+        "/api/health" => api::health(&db, &site).await?,
+        "/api/badge" => api::badge(&db, &site, url).await?,
+        "/api/history" => api::history(&db, url).await?,
+        "/api/incidents" => api::incidents(&db, url).await?,
+        "/api/latency" => api::latency(&db, url).await?,
+        _ => Response::error("not found", 404)?,
+    };
+    Ok((resp, gated))
 }
 
 /// Extract `?id=` from a detail/API URL.
@@ -90,8 +145,8 @@ fn range_param(url: &url::Url) -> Option<String> {
 fn cache_control(path: &str, gated: bool) -> Option<&'static str> {
     if gated {
         return match path {
-            "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history" | "/api/incidents"
-            | "/api/latency" => Some("private, max-age=30"),
+            "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history"
+            | "/api/incidents" | "/api/latency" => Some("private, max-age=30"),
             "/api/badge" => Some("private, max-age=60"),
             _ => None,
         };
@@ -130,7 +185,6 @@ mod tests {
         // Status pages embed as data, never as framed documents.
         assert_eq!(get("x-frame-options"), Some("DENY"));
     }
-
 
     #[test]
     fn tick_granular_routes_share_short_cache() {
