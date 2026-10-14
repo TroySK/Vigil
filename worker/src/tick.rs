@@ -67,7 +67,7 @@ pub async fn tick(env: Env) -> Result<()> {
         .iter()
         .map(|monitor| monitor.id.as_str())
         .collect();
-    let kv = kv_map(&db, &state_keys(&ids)).await?;
+    let kv = db.kv_map(&state_keys(&ids)).await?;
     let mut writes: Vec<D1PreparedStatement> = Vec::new();
     let mut due_set = BTreeSet::new();
     for monitor in &site.monitors {
@@ -240,46 +240,6 @@ fn alert_for(map: &BTreeMap<String, String>, id: &str) -> (i64, bool) {
     (fails, was_up)
 }
 
-/// One `kv` row for batched reads.
-#[derive(Debug, Deserialize)]
-struct KvRow {
-    k: String,
-    v: String,
-}
-
-/// Exact query behind [`kv_map`], exposed so tests execute the shipped
-/// text against bundled SQLite.
-fn kv_select_sql(n: usize) -> String {
-    format!(
-        "SELECT k, v FROM kv WHERE k IN ({})",
-        (0..n)
-            .map(|i| format!("?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
-}
-
-/// Read many `kv` entries in as few D1 round trips as possible: one query
-/// per [`MAX_PARAMS`](crate::db::MAX_PARAMS)-key chunk (empty input: no
-/// query). A single `IN (3N)` query would exceed D1's 100-param budget
-/// past ~33 monitors and abort the whole tick.
-async fn kv_map(db: &Db, keys: &[String]) -> Result<BTreeMap<String, String>> {
-    let mut out = BTreeMap::new();
-    for chunk in keys.chunks(crate::db::MAX_PARAMS) {
-        let stmt = db.q(&kv_select_sql(chunk.len())).bind(
-            &chunk
-                .iter()
-                .map(|key| key.clone().into())
-                .collect::<Vec<wasm_bindgen::JsValue>>(),
-        )?;
-        let rows: Vec<KvRow> = stmt.all().await?.results()?;
-        for row in rows {
-            out.insert(row.k, row.v);
-        }
-    }
-    Ok(out)
-}
-
 /// Exact query behind [`open_gaps`], exposed so tests execute the shipped
 /// text against bundled SQLite. Only unterminated gaps leave D1 — the
 /// record pass discards closed ones, so fetching 90 days of closed history
@@ -375,49 +335,11 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, is_due, kv_select_sql, open_gaps_sql, plan_alert, plan_due, probe_wave,
-        prune_due, prune_gaps_sql, prune_samples_sql, stagger_offset, state_keys, wave_bounds, Due,
+        alert_for, is_due, open_gaps_sql, plan_alert, plan_due, probe_wave, prune_due,
+        prune_gaps_sql, prune_samples_sql, stagger_offset, state_keys, wave_bounds, Due,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
-
-    #[test]
-    fn kv_select_covers_exactly_its_keys() {
-        let sql = kv_select_sql(3);
-        assert!(sql.contains("FROM kv WHERE k IN (?1,?2,?3)"));
-    }
-
-    #[test]
-    fn kv_reads_chunk_within_param_budget() {
-        // 102 keys exceed one query's param budget: split into chunks and
-        // merge, exactly like `kv_map` must. Every chunk stays within
-        // `MAX_PARAMS` and the merged map is complete.
-        let keys: Vec<String> = (0..102).map(|i| format!("k:{i}")).collect();
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);")
-            .unwrap();
-        for key in &keys {
-            conn.execute(
-                "INSERT INTO kv VALUES (?1, ?2)",
-                rusqlite::params![key, "v"],
-            )
-            .unwrap();
-        }
-        let mut merged = BTreeMap::new();
-        for chunk in keys.chunks(crate::db::MAX_PARAMS) {
-            assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
-            let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
-            let mut stmt = conn.prepare(&kv_select_sql(chunk.len())).unwrap();
-            let mut rows = stmt.query(params_from_iter(refs)).unwrap();
-            while let Some(row) = rows.next().unwrap() {
-                merged.insert(
-                    row.get::<_, String>(0).unwrap(),
-                    row.get::<_, String>(1).unwrap(),
-                );
-            }
-        }
-        assert_eq!(merged.len(), 102);
-    }
 
     #[test]
     fn open_gaps_reads_chunk_within_param_budget() {
