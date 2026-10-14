@@ -100,7 +100,19 @@ pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String,
     Ok(latest)
 }
 
-/// Newest sample plus earliest sample per monitor from one round trip.
+/// Exact query behind [`latest_and_first_by_monitor`], exposed so tests
+/// execute the shipped text against bundled SQLite. `?1..?N` monitor ids.
+fn latest_first_sql(n: usize) -> String {
+    format!(
+        "SELECT id, MAX(at) AS at, ms, up, place, MIN(at) AS first FROM samples WHERE id IN ({}) GROUP BY id",
+        placeholders(n)
+    )
+}
+
+/// Newest sample plus earliest sample per monitor from batched round
+/// trips (one query per [`MAX_PARAMS`](crate::db::MAX_PARAMS)-id chunk —
+/// a single `IN (N)` query would exceed D1's 100-param budget on large
+/// fleets).
 ///
 /// The homepage needs both (status rows + `has_data` bars) and paid two
 /// `GROUP BY` scans for them. One grouped query returns both: `MIN(at)`
@@ -120,29 +132,25 @@ pub async fn latest_and_first_by_monitor(
     }
     let mut latest = BTreeMap::new();
     let mut first = BTreeMap::new();
-    if ids.is_empty() {
-        return Ok((latest, first));
-    }
-    let rows: Vec<Row> = db
-        .q(&format!(
-            "SELECT id, MAX(at) AS at, ms, up, place, MIN(at) AS first FROM samples WHERE id IN ({}) GROUP BY id",
-            placeholders(ids.len())
-        ))
-        .bind(&bind_ids(ids))?
-        .all()
-        .await?
-        .results()?;
-    for row in rows {
-        first.insert(row.id.clone(), row.first);
-        latest.insert(
-            row.id.clone(),
-            SampleOut {
-                at: row.at,
-                ms: row.ms,
-                up: row.up,
-                place: row.place.clone(),
-            },
-        );
+    for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+        let rows: Vec<Row> = db
+            .q(&latest_first_sql(chunk.len()))
+            .bind(&bind_ids(chunk))?
+            .all()
+            .await?
+            .results()?;
+        for row in rows {
+            first.insert(row.id.clone(), row.first);
+            latest.insert(
+                row.id.clone(),
+                SampleOut {
+                    at: row.at,
+                    ms: row.ms,
+                    up: row.up,
+                    place: row.place.clone(),
+                },
+            );
+        }
     }
     Ok((latest, first))
 }
@@ -177,24 +185,23 @@ pub async fn gaps_window_by_monitor(
         why: String,
     }
     let mut out: BTreeMap<String, Vec<Gap>> = BTreeMap::new();
-    if ids.is_empty() {
-        return Ok(out);
-    }
-    let mut binds = bind_ids(ids);
-    binds.push(num(cutoff));
-    binds.push(num(now));
-    let rows: Vec<Row> = db
-        .q(&gaps_window_sql(ids.len()))
-        .bind(&binds)?
-        .all()
-        .await?
-        .results()?;
-    for row in rows {
-        out.entry(row.id.clone()).or_default().push(Gap {
-            at: row.at,
-            to: row.to,
-            why: row.why.clone(),
-        });
+    for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+        let mut binds = bind_ids(chunk);
+        binds.push(num(cutoff));
+        binds.push(num(now));
+        let rows: Vec<Row> = db
+            .q(&gaps_window_sql(chunk.len()))
+            .bind(&binds)?
+            .all()
+            .await?
+            .results()?;
+        for row in rows {
+            out.entry(row.id.clone()).or_default().push(Gap {
+                at: row.at,
+                to: row.to,
+                why: row.why.clone(),
+            });
+        }
     }
     Ok(out)
 }
@@ -259,26 +266,25 @@ pub async fn recent_gaps_by_monitor(
         why: String,
     }
     let mut out: BTreeMap<String, Vec<Gap>> = BTreeMap::new();
-    if ids.is_empty() {
-        return Ok(out);
-    }
-    let rows: Vec<Row> = db
-        .q(&recent_gaps_window_sql(ids.len()))
-        .bind(
-            &bind_ids(ids)
-                .into_iter()
-                .chain([num(cutoff), num(limit.max(1))])
-                .collect::<Vec<_>>(),
-        )?
-        .all()
-        .await?
-        .results()?;
-    for row in rows {
-        out.entry(row.id.clone()).or_default().push(Gap {
-            at: row.at,
-            to: row.to,
-            why: row.why.clone(),
-        });
+    for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+        let rows: Vec<Row> = db
+            .q(&recent_gaps_window_sql(chunk.len()))
+            .bind(
+                &bind_ids(chunk)
+                    .into_iter()
+                    .chain([num(cutoff), num(limit.max(1))])
+                    .collect::<Vec<_>>(),
+            )?
+            .all()
+            .await?
+            .results()?;
+        for row in rows {
+            out.entry(row.id.clone()).or_default().push(Gap {
+                at: row.at,
+                to: row.to,
+                why: row.why.clone(),
+            });
+        }
     }
     Ok(out)
 }
@@ -316,28 +322,27 @@ pub async fn series_by_monitor(
         place: String,
     }
     let mut out: BTreeMap<String, Vec<SampleOut>> = BTreeMap::new();
-    if ids.is_empty() {
-        return Ok(out);
-    }
     let max_points = max_points.max(1);
-    let rows: Vec<Row> = db
-        .q(&series_window_sql(ids.len()))
-        .bind(
-            &bind_ids(ids)
-                .into_iter()
-                .chain([num(cutoff), num(max_points - 1), num(max_points)])
-                .collect::<Vec<_>>(),
-        )?
-        .all()
-        .await?
-        .results()?;
-    for row in rows {
-        out.entry(row.id.clone()).or_default().push(SampleOut {
-            at: row.at,
-            ms: row.ms,
-            up: row.up,
-            place: row.place.clone(),
-        });
+    for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+        let rows: Vec<Row> = db
+            .q(&series_window_sql(chunk.len()))
+            .bind(
+                &bind_ids(chunk)
+                    .into_iter()
+                    .chain([num(cutoff), num(max_points - 1), num(max_points)])
+                    .collect::<Vec<_>>(),
+            )?
+            .all()
+            .await?
+            .results()?;
+        for row in rows {
+            out.entry(row.id.clone()).or_default().push(SampleOut {
+                at: row.at,
+                ms: row.ms,
+                up: row.up,
+                place: row.place.clone(),
+            });
+        }
     }
     Ok(out)
 }
@@ -398,15 +403,154 @@ pub async fn region_latest(db: &Db, id: &str) -> Result<Vec<SampleOut>> {
 mod tests {
     #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
     use super::{
-        data_at_of, gaps_window_sql, recent_gaps_window_sql, series_ranged_sql, series_window_sql,
+        data_at_of, gaps_window_sql, latest_first_sql, recent_gaps_window_sql, series_ranged_sql,
+        series_window_sql,
     };
-    use rusqlite::params;
+    use rusqlite::types::Value;
+    use rusqlite::{params, params_from_iter};
 
     #[test]
     fn probed_clock_falls_back_to_tick_clock() {
         assert_eq!(data_at_of(Some("bogus".to_owned()), 2_000), 2_000);
         assert_eq!(data_at_of(Some("1500".to_owned()), 2_000), 1_500);
         assert_eq!(data_at_of(None, 2_000), 2_000);
+    }
+
+    #[test]
+    fn latest_first_sql_covers_exactly_its_ids() {
+        assert!(latest_first_sql(2).contains("FROM samples WHERE id IN (?1,?2)"));
+        assert!(latest_first_sql(2).contains("GROUP BY id"));
+    }
+
+    /// Bind `ids` plus trailing float params the way the batched readers
+    /// do (D1 sees every integer as a float via [`crate::db::num`]).
+    fn id_binds(ids: &[String], extra: &[f64]) -> Vec<Value> {
+        ids.iter()
+            .map(|id| Value::Text(id.clone()))
+            .chain(extra.iter().map(|f| Value::Real(*f)))
+            .collect()
+    }
+
+    #[test]
+    fn latest_first_reads_chunk_within_param_budget() {
+        // 150 ids exceed one query's param budget: split into chunks and
+        // merge, exactly like `latest_and_first_by_monitor` must.
+        let ids: Vec<String> = (0..150).map(|i| format!("m{i}")).collect();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);",
+        )
+        .unwrap();
+        for (i, id) in ids.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, 1_000.0 + i as f64, 50.0, 1.0, "SIN"],
+            )
+            .unwrap();
+        }
+        let mut found = 0_usize;
+        for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+            assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
+            let mut stmt = conn.prepare(&latest_first_sql(chunk.len())).unwrap();
+            let mut rows = stmt.query(params_from_iter(id_binds(chunk, &[]))).unwrap();
+            while rows.next().unwrap().is_some() {
+                found += 1;
+            }
+        }
+        assert_eq!(found, 150);
+    }
+
+    #[test]
+    fn gaps_window_reads_chunk_within_param_budget() {
+        let ids: Vec<String> = (0..150).map(|i| format!("m{i}")).collect();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);",
+        )
+        .unwrap();
+        for id in &ids {
+            conn.execute(
+                "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+                params![id, 500.0, Option::<f64>::None, "x"],
+            )
+            .unwrap();
+        }
+        let mut found = 0_usize;
+        for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+            assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
+            let mut stmt = conn.prepare(&gaps_window_sql(chunk.len())).unwrap();
+            // Binds are ids, then cutoff, then now (see `gaps_window_sql`).
+            let mut rows = stmt
+                .query(params_from_iter(id_binds(chunk, &[100.0, 1_000.0])))
+                .unwrap();
+            while rows.next().unwrap().is_some() {
+                found += 1;
+            }
+        }
+        assert_eq!(found, 150);
+    }
+
+    #[test]
+    fn recent_gaps_window_reads_chunk_within_param_budget() {
+        let ids: Vec<String> = (0..150).map(|i| format!("m{i}")).collect();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);",
+        )
+        .unwrap();
+        for id in &ids {
+            conn.execute(
+                "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+                params![id, 500.0, Option::<f64>::None, "x"],
+            )
+            .unwrap();
+        }
+        let mut found = 0_usize;
+        for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+            assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
+            let mut stmt = conn.prepare(&recent_gaps_window_sql(chunk.len())).unwrap();
+            // Binds are ids, then cutoff, then limit.
+            let mut rows = stmt
+                .query(params_from_iter(id_binds(chunk, &[100.0, 500.0])))
+                .unwrap();
+            while rows.next().unwrap().is_some() {
+                found += 1;
+            }
+        }
+        assert_eq!(found, 150);
+    }
+
+    #[test]
+    fn windowed_series_reads_chunk_within_param_budget() {
+        let ids: Vec<String> = (0..150).map(|i| format!("m{i}")).collect();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);",
+        )
+        .unwrap();
+        for id in &ids {
+            for at in [1_000.0, 2_000.0, 3_000.0] {
+                conn.execute(
+                    "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![id, at, 50.0, 1.0, "SIN"],
+                )
+                .unwrap();
+            }
+        }
+        let mut found = 0_usize;
+        for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+            assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
+            let mut stmt = conn.prepare(&series_window_sql(chunk.len())).unwrap();
+            // Binds are ids, then cutoff, max_points - 1, max_points:
+            // 3 rows over max 30 keep every row (stride 1).
+            let mut rows = stmt
+                .query(params_from_iter(id_binds(chunk, &[0.0, 29.0, 30.0])))
+                .unwrap();
+            while rows.next().unwrap().is_some() {
+                found += 1;
+            }
+        }
+        assert_eq!(found, 450);
     }
 
     /// Seeded SQLite mirror of the D1 schema (D1 is SQLite; unit tests
