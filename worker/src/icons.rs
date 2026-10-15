@@ -82,5 +82,12 @@ mod tests {
         // derives data-tip on load.
         assert!(APP_JS.contains("i[data-ts],circle[data-ts]"));
         assert!(!APP_JS.contains("[data-tip][data-ts]"));
+        // Transition-direction tagging lives in the shell's blocking head
+        // script (pagereveal must run before first render): types set in the
+        // old document's pageswap never reach the new document, so a
+        // deferred duplicate here would both miss pagereveal and split
+        // ownership.
+        assert!(!APP_JS.contains("pageswap"));
+        assert!(!APP_JS.contains("pagereveal"));
     }
 }

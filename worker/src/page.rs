@@ -518,6 +518,19 @@ pub fn shell(
         <script>(function(){{var t=null;try{{t=localStorage.getItem('vigil-theme');}}catch(e){{}}\
         if(!t)t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';\
         document.documentElement.setAttribute('data-theme',t);}})();</script>\
+        <script>try{{(function(){{function vtDir(from,to){{if(!from||!to||from===to)return null;\
+        if(to.indexOf('/monitor')===0)return'forward';\
+        if(to==='/')return'back';return null;}}\
+        window.addEventListener('pageswap',function(e){{try{{var vt=e.viewTransition;if(!vt)return;\
+        var act=e.activation;if(act&&act.navigationType==='reload')return;\
+        var to=act&&act.entry&&act.entry.url?new URL(act.entry.url).pathname:null;\
+        var t=vtDir(new URL(window.location.href).pathname,to);if(t)vt.types.add(t);}}catch(err){{}}}});\
+        window.addEventListener('pagereveal',function(e){{try{{var vt=e.viewTransition;if(!vt)return;\
+        var nav=window.navigation&&window.navigation.activation?window.navigation.activation:null;\
+        if(nav&&nav.navigationType==='reload')return;\
+        var from=nav&&nav.from&&nav.from.url?new URL(nav.from.url).pathname:null;\
+        var t=vtDir(from,new URL(window.location.href).pathname);if(t)vt.types.add(t);}}catch(err){{}}}});\
+        }})();}}catch(err){{}}</script>\
         <title>{}</title><link rel=stylesheet href=\"/style.css\">\
         <script>window.vigilRefresh={refresh_ms}</script><script src=\"/app.js\" defer></script>\
         {spec}</head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
@@ -762,6 +775,34 @@ mod tests {
         assert_eq!(json["prerender"][0]["source"], "document");
         assert_eq!(json["prerender"][0]["where"]["href_matches"], "/monitor*");
         assert_eq!(json["prerender"][0]["eagerness"], "moderate");
+    }
+
+    #[test]
+    fn shell_tags_transition_direction_on_both_documents() {
+        // Types added in the old document's `pageswap` never reach the new
+        // document (verified: pagereveal shows empty types), so the
+        // `:active-view-transition-type(...)` slide rules never matched.
+        // The direction tagger must therefore run on both sides: `pageswap`
+        // (outgoing, from the destination URL) and `pagereveal` (incoming,
+        // from `navigation.activation.from`). `pagereveal` must fire before
+        // first render, so both listeners live in a parser-blocking head
+        // script — never in deferred /app.js.
+        let html = shell("T", "B", "", "1/1", 1_000, 30_000, "", "", "", 1_000, "");
+        assert!(html.contains("pageswap"), "outgoing side must tag the old snapshot");
+        assert!(html.contains("pagereveal"), "incoming side must tag the new snapshot");
+        assert!(
+            html.contains("navigation.activation"),
+            "incoming direction comes from navigation.activation.from"
+        );
+        assert!(html.contains(".types.add(t)"));
+        assert!(
+            !html.contains("'fade'"),
+            "only forward/back slide; same-path refreshes stay untagged (UA default)"
+        );
+        assert!(
+            !html.contains("src=\"/app.js\" defer></script><script>"),
+            "no deferred script may own pagereveal tagging"
+        );
     }
 
     fn http_monitor(url: &str) -> Monitor {
