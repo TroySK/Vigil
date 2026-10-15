@@ -71,6 +71,20 @@ mod tests {
     }
 
     #[test]
+    fn style_slides_pages_with_pure_css() {
+        // Slide in/out is unconditional root-snapshot CSS — no transition
+        // types, no JS. Type-scoped rules never matched (old-document types
+        // don't propagate; prerender activations have no `from`).
+        assert!(STYLE_CSS.contains("@view-transition{navigation:auto}"));
+        assert!(STYLE_CSS.contains("::view-transition-old(root){animation:vt-out-left"));
+        assert!(STYLE_CSS.contains("::view-transition-new(root){animation:vt-in-right"));
+        assert!(
+            !STYLE_CSS.contains("active-view-transition-type"),
+            "no type-gated rules: every navigation slides"
+        );
+    }
+
+    #[test]
     fn app_asset_is_plain_cacheable_js() {
         assert!(APP_JS.contains("applyTz"));
         assert!(APP_JS.contains("nextFavicon"));

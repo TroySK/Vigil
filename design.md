@@ -41,13 +41,13 @@ day canvas with faint blooms. Light and dark both first-class via toggle.
 ## Motion
 - Easings: `--ease-out` cubic-bezier(0.16, 1, 0.3, 1) et al.
 - One fade-in entrance + hero counter. Tooltips instant.
-- Cross-document view transitions (`@view-transition: navigation auto`):
-  drill into a monitor slides the new page in from the right (`forward`),
-  returning slides it in from the left (`back`); same-path refreshes (range
-  menu) stay untagged and keep the UA default. Direction is tagged on both
-  sides by a blocking head script (`pageswap` from the destination URL,
-  `pagereveal` from `navigation.activation.from` — types set in the old
-  document never reach the new one), reloads keep the UA default.
+- Cross-document view transitions, pure CSS (`@view-transition:
+  navigation auto` + unconditional `::view-transition-old/new(root)`
+  slide rules): every same-origin navigation slides the old page out left
+  and the new page in from the right. No transition types, no JS tagging —
+  types set in the old document never reach the new one, and prerender
+  activations carry no `navigation.activation.from`, so either JS approach
+  silently collapses to a fade.
 - Reduced-motion fallback: opacity-only, ≤ 150ms; view transitions off.
 
 ## Microinteractions stance
