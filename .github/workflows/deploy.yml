@@ -99,12 +99,14 @@ jobs:
           try:
               import yaml
           except ImportError:
-              print('pyyaml not available, skipping syntax check')
+              sys.exit('pyyaml missing: refusing to seed without a syntax check')
           else:
               yaml.safe_load(raw)
               print('site YAML syntax ok')
           escaped = raw.replace("'", "''")
           open('/tmp/seed_site.sql', 'w', encoding='utf-8').write(
+              "INSERT INTO kv (k, v) SELECT 'site_yaml_prev', v FROM kv WHERE k = 'site_yaml' "
+              "ON CONFLICT(k) DO UPDATE SET v = excluded.v;\n"
               "INSERT INTO kv (k, v) VALUES ('site_yaml', '"
               + escaped
               + "') ON CONFLICT(k) DO UPDATE SET v = excluded.v;\n"
@@ -142,10 +144,20 @@ jobs:
       - name: Sync EDITOR flag from GitHub secret
         run: |
           cd worker
-          if [ -n "$EDITOR" ]; then
+          if [ -z "$EDITOR" ]; then
+            OUT=$(npx -y wrangler@4 secret delete EDITOR 2>&1) || {
+              echo "$OUT"
+              if echo "$OUT" | grep -qiE 'not found|does not exist|not present'; then
+                echo "EDITOR already absent."
+              else
+                exit 1
+              fi
+            }
+          elif [ "$EDITOR" = "true" ]; then
             printf '%s' "$EDITOR" | npx -y wrangler@4 secret put EDITOR
           else
-            npx -y wrangler@4 secret delete EDITOR || true
+            echo "EDITOR repo secret must be exactly 'true' or empty (got something else) — refusing to sync."
+            exit 1
           fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -35,19 +35,21 @@ pub const STYLE_CSS: &str = include_str!("../assets/style.css");
 /// by [`crate::page::shell`].
 pub const APP_JS: &str = include_str!("../assets/app.js");
 
-/// Serve `/style.css` with a long immutable cache.
+/// Serve `/style.css` with a short revalidating cache (NOT immutable:
+/// the URL is unversioned, so a week-long immutable pin would keep old
+/// CSS/JS after a deploy while HTML is fresh).
 pub fn style() -> Result<Response> {
     Ok(Response::builder()
         .with_header("content-type", "text/css;charset=UTF-8")?
-        .with_header("cache-control", "public, max-age=604800, immutable")?
+        .with_header("cache-control", "public, max-age=300, must-revalidate")?
         .body(ResponseBody::Body(STYLE_CSS.as_bytes().to_vec())))
 }
 
-/// Serve `/app.js` with a long immutable cache.
+/// Serve `/app.js` with a short revalidating cache (see [`style`]).
 pub fn app_js() -> Result<Response> {
     Ok(Response::builder()
         .with_header("content-type", "text/javascript;charset=UTF-8")?
-        .with_header("cache-control", "public, max-age=604800, immutable")?
+        .with_header("cache-control", "public, max-age=300, must-revalidate")?
         .body(ResponseBody::Body(APP_JS.as_bytes().to_vec())))
 }
 

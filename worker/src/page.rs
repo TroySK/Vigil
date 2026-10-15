@@ -158,6 +158,14 @@ pub async fn sections(
         db.kv_map(&first_keys),
     )?;
     let since = |id: &str| {
+        // A `first:` stamp with zero retained samples (removed-then-readded
+        // id, or stamp older than pruned data) must not paint phantom 100%:
+        // old code passed MIN(at) of retained samples (None when empty).
+        let has_samples =
+            latest.contains_key(id) || gap_lists.get(id).is_some_and(|g| !g.is_empty());
+        if !has_samples {
+            return None;
+        }
         crate::reads::effective_since(
             firsts
                 .get(&format!("first:{id}"))
@@ -344,9 +352,24 @@ fn one_row(
         <div class=r-head><span class=d aria-hidden=true></span>\
         <b>{name}</b><div class=r-meta><s>{detail}</s><i>{word}</i><a class=det href=\"/monitor?id={}&range={}\">details &rsaquo;</a></div></div>\
         {extra}</article>",
-        monitor.id,
+        encode_monitor_id(&monitor.id),
         range.param
     )
+}
+
+/// Percent-encode a monitor id for a query string (`detail_id` decodes via
+/// `query_pairs`): unreserved chars pass through, everything else becomes
+/// `%XX` so `"`/`&`/spaces cannot break the attribute or the link.
+fn encode_monitor_id(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    for byte in id.bytes() {
+        if matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            let _ = std::fmt::Write::write_fmt(&mut out, format_args!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 /// Web origin for a monitor's site icons, if it has an origin.
@@ -675,6 +698,18 @@ mod tests {
     }
 
     #[test]
+    fn detail_link_encodes_monitor_id() {
+        use super::encode_monitor_id;
+        assert_eq!(encode_monitor_id("m"), "m");
+        assert_eq!(encode_monitor_id("a b&c"), "a%20b%26c");
+        let mut m = http_monitor("https://example.com");
+        m.id = "a\"b".into();
+        let html = one_row(&m, RANGE_24H, 10_000, None, &[], None, &[], None);
+        assert!(!html.contains("id=a\"b"), "raw quote must not break the attribute");
+        assert!(html.contains("id=a%22b"), "id must be percent-encoded");
+    }
+
+    #[test]
     fn row_uses_precomputed_favicon_origin() {
         let m = http_monitor("https://example.com/some/page?x=1");
         let row = |favicon: Option<&str>| {
@@ -703,9 +738,9 @@ mod tests {
 
     #[test]
     fn shell_links_cacheable_assets_with_inline_refresh() {
-        // App CSS/JS live in /style.css + /app.js (immutable, edge-cached)
-        // instead of ~30KB inline per page; only the per-page refresh
-        // interval stays inline for the shared poller.
+        // App CSS/JS live in /style.css + /app.js (short revalidating cache,
+        // unversioned URLs) instead of ~30KB inline per page; only the
+        // per-page refresh interval stays inline for the shared poller.
         let html = shell("T", "B", "", "1/1", 1_000, 30_000, "", "", "", 1_000, "");
         assert!(html.contains("href=\"/style.css\""));
         assert!(html.contains("src=\"/app.js\""));

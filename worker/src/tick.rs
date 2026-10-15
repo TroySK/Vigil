@@ -65,12 +65,24 @@ pub async fn tick(env: Env) -> Result<()> {
         .collect();
     let mut state_query = state_keys(&ids);
     state_query.push("schema".to_owned());
-    let kv = db.kv_map(&state_query).await?;
+    // Fresh databases have no `kv` table yet: `kv_map` fails before `init`
+    // ever runs. Retry once after idempotent DDL instead of aborting the
+    // first tick (transient D1 errors also retry once — `init` is
+    // `IF NOT EXISTS`, so the extra DDL is harmless).
+    let mut bootstrapped = false;
+    let kv = match db.kv_map(&state_query).await {
+        Ok(map) => map,
+        Err(_) => {
+            db.init().await?;
+            bootstrapped = true;
+            db.kv_map(&state_query).await?
+        }
+    };
     // Schema self-heal, once ever: CI migrations own DDL; the tick only
     // covers fresh/manual databases, records its marker in the same write
     // batch below, and never pays the DDL round trip again.
     let schema_ok = schema_current(kv.get("schema"));
-    if !schema_ok {
+    if !schema_ok && !bootstrapped {
         db.init().await?;
     }
     let mut writes: Vec<D1PreparedStatement> = Vec::new();
@@ -118,10 +130,13 @@ pub async fn tick(env: Env) -> Result<()> {
         .map(|monitor| monitor.id.as_str())
         .collect();
     let gaps = open_gaps(&db, &due_ids).await?;
-    // One batched backfill for probed monitors with samples but no
-    // `first:` stamp (pre-existing fleets, first probes): steady-state
-    // ticks have no missing stamps and skip this query entirely.
-    let missing_first: Vec<&str> = due_monitors
+    // One batched backfill for monitors with samples but no `first:`
+    // stamp (pre-existing fleets, first probes): steady-state ticks have
+    // no missing stamps and skip this query entirely. Covers all monitors,
+    // not just due ones, so a high-cadence monitor skipped this tick does
+    // not sit gray until its own due tick.
+    let missing_first: Vec<&str> = site
+        .monitors
         .iter()
         .filter(|monitor| !kv.contains_key(&format!("first:{}", monitor.id)))
         .map(|monitor| monitor.id.as_str())
@@ -379,10 +394,10 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, close_gap_sql, first_value, gap_why_update, is_due, muted_set, open_gaps_sql,
-        plan_alert, plan_deliveries, plan_due, probe_wave, prune_due, prune_gaps_sql,
-        prune_samples_sql, schema_current, stagger_offset, state_keys, wave_bounds, why_gap_sql,
-        Due,
+        alert_for, close_gap_sql, first_value, form_encode, gap_why_update, hook_host, is_due,
+        muted_set, open_gaps_sql, plan_alert, plan_deliveries, plan_due, probe_wave, prune_due,
+        prune_gaps_sql, prune_samples_sql, schema_current, stagger_offset, state_keys, wave_bounds,
+        why_gap_sql, Due,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
@@ -390,8 +405,16 @@ mod tests {
     use vigil_core::state::Gap;
 
     #[test]
-    fn gap_why_update_skips_identical_text() {
-        // Steady failure with a fresh reason appends once...
+    fn form_payload_is_url_encoded() {
+        assert_eq!(form_encode("ok"), "ok");
+        assert_eq!(form_encode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(form_encode("a b"), "a+b");
+        assert_eq!(hook_host("https://example.com/hook"), "example.com");
+        assert_eq!(hook_host("not a url"), "invalid-url");
+    }
+
+    #[test]
+    fn gap_why_update_skips_identical_text() {        // Steady failure with a fresh reason appends once...
         let fresh = Gap {
             at: 1,
             to: None,
@@ -412,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn gap_updates_touch_only_newest_open() {
+    fn gap_close_converges_dupes_at_once() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);",
@@ -458,9 +481,10 @@ mod tests {
                 .collect::<Result<_, _>>()
                 .unwrap()
         };
-        // Only the newest closed; the older duplicate stays open for the
-        // next tick's pass instead of being rewritten blind.
-        assert_eq!(open, vec![100.0]);
+        // One recovery closes every open row: legacy duplicates converge
+        // at once instead of draining one per tick while bars double-count
+        // the remainder as downtime.
+        assert_eq!(open, Vec::<f64>::new());
         // m2 untouched throughout.
         let m2: String = conn
             .query_row("SELECT why FROM gaps WHERE id = 'm2'", [], |row| row.get(0))
@@ -894,11 +918,11 @@ fn record_stmts(
     Ok(out)
 }
 
-/// Close one monitor's open gap: the newest unterminated row only, so a
-/// legacy duplicate never gets rewritten blind — the next tick's pass
-/// converges on the remainder instead.
+/// Close a monitor's open gaps: every unterminated row, so one recovery
+/// converges legacy duplicates at once (was: newest-only, needing N ticks
+/// to drain N dupes while bars double-counted the remainder as downtime).
 fn close_gap_sql() -> &'static str {
-    "UPDATE gaps SET upto = ?1 WHERE rowid = (SELECT rowid FROM gaps WHERE id = ?2 AND upto IS NULL ORDER BY at DESC LIMIT 1)"
+    "UPDATE gaps SET upto = ?1 WHERE id = ?2 AND upto IS NULL"
 }
 
 /// Append a failure reason to one monitor's open gap: same newest-only
@@ -960,11 +984,27 @@ fn plan_alert(prev_fails: i64, was_up: bool, verdict_up: bool, grace: i64) -> Al
 /// markers are already in the write batch before this runs, so a failed
 /// tick can't double-page. Deliveries run concurrently in small waves so
 /// a fleet-wide flap doesn't serialize into minutes of wall time (each
-/// hook still races its own [`HOOK_TIMEOUT_MS`] deadline).
+/// hook still races its own [`HOOK_TIMEOUT_MS`] deadline). Failures are
+/// logged (host + error, never the body) so `wrangler tail` shows drops.
 async fn notify_all(site: &Site, pending: &[(String, bool, String)], now: i64) {
-    for wave in plan_deliveries(site, pending, now).chunks(HOOK_WAVE) {
+    let deliveries = plan_deliveries(site, pending, now);
+    // Bound total subrequests: concurrency alone (`HOOK_WAVE`) still lets a
+    // fleet-wide flap (monitors × hooks) blow the 50-subrequest ceiling
+    // after the probe wave. Truncate explicitly so the drop is visible.
+    let capped: &[(&Hook, String)] = if deliveries.len() > MAX_HOOK_DELIVERIES {
+        console_log!(
+            "webhooks: truncating {} deliveries to {MAX_HOOK_DELIVERIES}",
+            deliveries.len()
+        );
+        &deliveries[..MAX_HOOK_DELIVERIES]
+    } else {
+        &deliveries
+    };
+    for wave in capped.chunks(HOOK_WAVE) {
         let sends = wave.iter().map(|(hook, body)| async move {
-            let _ = with_timeout(fire_hook(hook, body), HOOK_TIMEOUT_MS).await;
+            if let Err(e) = fire_hook(hook, body).await {
+                console_log!("hook {} failed: {e}", hook_host(&hook.url));
+            }
         });
         join_all(sends).await;
     }
@@ -973,6 +1013,32 @@ async fn notify_all(site: &Site, pending: &[(String, bool, String)], now: i64) {
 /// Max concurrent webhook deliveries per wave: bounds subrequest bursts
 /// on fleet-wide flaps without serializing the common single-page case.
 pub const HOOK_WAVE: usize = 5;
+
+/// Max total webhook deliveries per tick (see [`notify_all`]).
+pub const MAX_HOOK_DELIVERIES: usize = 40;
+
+/// Host for webhook failure logs (never the body).
+fn hook_host(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "invalid-url".to_owned())
+}
+
+/// Percent-encode a form value (`application/x-www-form-urlencoded`).
+fn form_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else if byte == b' ' {
+            out.push('+');
+        } else {
+            let _ = std::fmt::Write::write_fmt(&mut out, format_args!("%{byte:02X}"));
+        }
+    }
+    out
+}
 
 /// Render every (transition × hook) delivery up front (pure): the send
 /// phase is just concurrent I/O over this list.
@@ -994,10 +1060,22 @@ fn plan_deliveries<'a>(
 /// Webhook delivery deadline: a hung receiver must not stall the tick.
 pub const HOOK_TIMEOUT_MS: u64 = 10_000;
 
-/// Deliver one webhook (`json` mode or form-encoded fallback).
-async fn fire_hook(hook: &Hook, body: &str) -> Result<()> {
+/// Deliver one webhook (`json` mode or form-encoded fallback). Single
+/// timeout layer (the caller does not wrap again); errors propagate as
+/// strings for logging — never fails the tick.
+async fn fire_hook(hook: &Hook, body: &str) -> std::result::Result<(), String> {
+    let method = match hook.method.to_ascii_uppercase().as_str() {
+        "GET" => Method::Get,
+        "POST" => Method::Post,
+        "PUT" => Method::Put,
+        "PATCH" => Method::Patch,
+        "DELETE" => Method::Delete,
+        "HEAD" => Method::Head,
+        "OPTIONS" => Method::Options,
+        other => return Err(format!("unsupported method {other}")),
+    };
     let mut init = RequestInit::new();
-    init.with_method(Method::from(hook.method.clone()));
+    init.with_method(method);
     if hook.mode == "json" {
         let headers = Headers::new();
         // Worker `Headers::set` only fails on an invalid name/value, which
@@ -1010,13 +1088,20 @@ async fn fire_hook(hook: &Hook, body: &str) -> Result<()> {
         let payload = serde_json::json!({ "text": body }).to_string();
         init.with_body(Some(wasm_bindgen::JsValue::from_str(&payload)));
     } else {
-        let payload = format!("text={body}");
+        let headers = Headers::new();
+        if let Err(e) = headers.set("content-type", "application/x-www-form-urlencoded") {
+            console_log!("hook header failed: {e}");
+        }
+        init.with_headers(headers);
+        let payload = format!("text={}", form_encode(body));
         init.with_body(Some(wasm_bindgen::JsValue::from_str(&payload)));
     }
-    let req = Request::new_with_init(&hook.url, &init)?;
+    let req = Request::new_with_init(&hook.url, &init).map_err(|e| e.to_string())?;
     // Webhook delivery is best-effort: a failing or hanging endpoint must
     // not fail the cron tick or block other hooks.
-    let _ = with_timeout(Fetch::Request(req).send(), HOOK_TIMEOUT_MS).await;
+    with_timeout(Fetch::Request(req).send(), HOOK_TIMEOUT_MS)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

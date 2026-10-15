@@ -101,7 +101,10 @@ fn form_yaml(body: &str, req: &Request) -> String {
         .ok()
         .flatten()
         .is_some_and(|value| value.contains("application/x-www-form-urlencoded"));
-    if is_form || body.starts_with("yaml=") {
+    // Only trust the `yaml=` prefix when the content-type says form: a raw
+    // YAML paste starting with the literal bytes `yaml=` must not collapse
+    // into one decoded line.
+    if is_form {
         for pair in body.split('&') {
             if let Some(encoded) = pair.strip_prefix("yaml=") {
                 return url_decode(encoded);
@@ -112,7 +115,9 @@ fn form_yaml(body: &str, req: &Request) -> String {
 }
 
 /// Minimal `application/x-www-form-urlencoded` decoder (`+` → space,
-/// `%XX` → byte). Malformed escapes pass through literally.
+/// `%XX` → byte). Malformed escapes pass through literally. Byte-based:
+/// never slices `&str` at non-char boundaries (a `%` followed by
+/// multibyte input must not panic).
 fn url_decode(input: &str) -> String {
     let mut out = Vec::with_capacity(input.len());
     let bytes = input.as_bytes();
@@ -124,13 +129,22 @@ fn url_decode(input: &str) -> String {
                 i += 1;
             }
             b'%' if i + 2 < bytes.len() => {
-                let hex = &input[i + 1..i + 3];
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    out.push(byte);
-                    i += 3;
-                } else {
-                    out.push(b'%');
-                    i += 1;
+                match bytes.get(i + 1..i + 3) {
+                    Some(hex_bytes) if hex_bytes.iter().all(u8::is_ascii_hexdigit) => {
+                        // ASCII-hex only, so UTF-8 conversion cannot fail.
+                        let hex = std::str::from_utf8(hex_bytes).unwrap_or("");
+                        if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                            out.push(byte);
+                            i += 3;
+                        } else {
+                            out.push(b'%');
+                            i += 1;
+                        }
+                    }
+                    _ => {
+                        out.push(b'%');
+                        i += 1;
+                    }
                 }
             }
             b => {
@@ -180,6 +194,15 @@ mod tests {
         assert_eq!(url_decode("a%0Ab"), "a\nb");
         assert_eq!(url_decode("100%25"), "100%");
         assert_eq!(url_decode("a%zzb"), "a%zzb");
+    }
+
+    #[test]
+    fn url_decode_never_panics_on_multibyte_input() {
+        // `%` followed by multibyte chars must not slice a char boundary.
+        assert_eq!(url_decode("%€"), "%€");
+        assert_eq!(url_decode("a%€b"), "a%€b");
+        assert_eq!(url_decode("%"), "%");
+        assert_eq!(url_decode("%A"), "%A");
     }
 
     #[test]
