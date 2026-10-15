@@ -75,5 +75,10 @@ mod tests {
         assert!(APP_JS.contains("window.vigilRefresh"));
         assert!(!APP_JS.contains("{{"), "no format escapes may ship");
         assert!(!APP_JS.contains("</script"), "must not break out of HTML");
+        // Tooltip elements are selected by tag, not by a server-rendered
+        // data-tip: bars/circles ship title (or nothing) and the client
+        // derives data-tip on load.
+        assert!(APP_JS.contains("i[data-ts],circle[data-ts]"));
+        assert!(!APP_JS.contains("[data-tip][data-ts]"));
     }
 }

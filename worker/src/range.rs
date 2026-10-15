@@ -82,6 +82,36 @@ pub(crate) struct Bars {
     pub(crate) period: &'static str,
 }
 
+/// One history-bar `<i>` cell. The tooltip rides on `title` alone: it is
+/// the no-JS fallback, and the client script localizes it into `data-tip`
+/// on load (see `applyTz` in app.js), so the server never ships the same
+/// string twice. `content` is the visually-hidden daily percentage
+/// (hourly and no-data cells stay empty); `value` is the `data-v`
+/// percentage carried only by cells with data.
+pub(crate) fn bar_cell(
+    bar: &DayBar,
+    kind: &str,
+    label: &dyn Fn(i64) -> String,
+    content: &str,
+    value: Option<&str>,
+) -> String {
+    use vigil_core::rollup::bar_color;
+    if let Some(v) = value {
+        let tip = format!("{} UTC: {:.1}%", label(bar.day), bar.pct);
+        format!(
+            "<i aria-hidden=true title=\"{tip}\" data-ts=\"{}\" data-tk=\"{kind}\" data-v=\"{v}\" style=\"background:{}\">{content}</i>",
+            bar.day,
+            bar_color(bar.pct),
+        )
+    } else {
+        let tip = format!("{} UTC: no data", label(bar.day));
+        format!(
+            "<i class=nodata aria-hidden=true title=\"{tip}\" data-ts=\"{}\" data-tk=\"{kind}\"></i>",
+            bar.day,
+        )
+    }
+}
+
 /// History cells for one range: 24 hourly cells for the 24-hour view, one
 /// cell per day otherwise. Both share the `DayBar` shape, so one loop paints
 /// them on either page. Generic over gap spans so reason-less rows (API
@@ -161,5 +191,34 @@ mod tests {
         assert!(html.contains("href=\"/?range=24h\""));
         assert!(html.contains("href=\"/?range=90d\""));
         assert!(html.contains("aria-current=\"page\""));
+    }
+
+    #[test]
+    fn bar_cells_carry_title_without_prebaked_data_tip() {
+        use super::bar_cell;
+        use vigil_core::rollup::DayBar;
+        let label = |ts: i64| vigil_core::tip_stamp(ts);
+        // Data cell: tooltip on title alone (the client derives data-tip
+        // on load), percentage in data-v, daily content kept.
+        let data = DayBar {
+            day: 86_400,
+            pct: 50.0,
+            has_data: true,
+        };
+        let html = bar_cell(&data, "tip", &label, "50.0%", Some("50.0%"));
+        assert!(html.contains("title="));
+        assert!(!html.contains("data-tip="), "tooltip must not ship twice");
+        assert!(html.contains("data-v=\"50.0%\""));
+        assert!(html.contains(">50.0%</i>"));
+        // No-data cell: empty, dashed class, still no data-tip.
+        let nodata = DayBar {
+            day: 86_400,
+            pct: 0.0,
+            has_data: false,
+        };
+        let html = bar_cell(&nodata, "tip", &label, "", None);
+        assert!(html.contains("nodata"));
+        assert!(!html.contains("data-tip="));
+        assert!(html.ends_with("></i>"));
     }
 }
