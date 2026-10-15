@@ -91,11 +91,16 @@ async fn fetch_colo() -> Option<String> {
         .map_err(|e| console_log!("{}: {e}", colo_failure_note(None)))
         .ok()?;
     let status = resp.status_code();
-    let body = resp
-        .text()
+    // Bound even the tiny trace body: same OOM rationale as probe bodies.
+    let mut stream = Box::pin(resp.stream().map_err(|e| {
+        console_log!("colo trace body unreadable (status {status}): {e}");
+        e.to_string()
+    }).ok()?);
+    let (bytes, _) = read_capped(&mut stream, 16 * 1_024)
         .await
         .map_err(|e| console_log!("colo trace body unreadable (status {status}): {e}"))
         .ok()?;
+    let body = String::from_utf8_lossy(&bytes).into_owned();
     parse_colo(&body).or_else(|| {
         console_log!("{}", colo_failure_note(Some(status)));
         None
@@ -270,6 +275,11 @@ where
     while buf.len() < cap {
         match stream.next().await {
             Some(Ok(chunk)) => {
+                if chunk.is_empty() {
+                    // No progress: an endpoint dripping empty chunks must
+                    // not livelock the stream until the outer deadline.
+                    break;
+                }
                 let room = cap.saturating_sub(buf.len());
                 buf.extend_from_slice(&chunk[..chunk.len().min(room)]);
                 if buf.len() >= cap {
@@ -304,7 +314,7 @@ async fn probe_http(
     method: &str,
     headers: &BTreeMap<String, String>,
     body: Option<&str>,
-    timeout_ms: u64,
+    _timeout_ms: u64,
 ) -> Result<(u16, String, u64), String> {
     let start = now_ms();
     let mut init = RequestInit::new();
@@ -318,16 +328,24 @@ async fn probe_http(
         init.with_body(Some(wasm_bindgen::JsValue::from_str(payload)));
     }
     let req = Request::new_with_init(url, &init).map_err(|e| e.to_string())?;
-    let mut resp = with_timeout(Fetch::Request(req).send(), timeout_ms)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Single total deadline lives in the caller (`probe` wraps the whole
+    // fetch incl. body read): no inner send timeout here, so one
+    // `timeout_ms` budget covers headers + body instead of two stacked
+    // budgets.
+    let mut resp = Fetch::Request(req).send().await.map_err(|e| e.to_string())?;
     let code = resp.status_code();
     // Stream with a byte cap: `resp.text()` would buffer an unbounded
     // body (one huge error page × concurrent probes OOMs the isolate).
     // Lossy UTF-8 matches the old `text()` decoding; the existing
     // char-boundary truncate below still trims to `MAX_BODY_SAMPLE`.
     let mut stream = Box::pin(resp.stream().map_err(|e| e.to_string())?);
-    let (bytes, _) = read_capped(&mut stream, MAX_DOWNLOAD_BYTES).await?;
+    let (bytes, cut) = read_capped(&mut stream, MAX_DOWNLOAD_BYTES).await?;
+    if cut {
+        // Keyword matching only sees the prefix: a `has:` needle past the
+        // cap would false-DOWN. Log so a sudden DOWN on a huge page is
+        // diagnosable in `wrangler tail`.
+        console_log!("probe body truncated at {MAX_DOWNLOAD_BYTES} bytes for {url}");
+    }
     let text = String::from_utf8_lossy(&bytes).into_owned();
     Ok((code, text, now_ms().saturating_sub(start)))
 }
@@ -350,6 +368,8 @@ async fn probe_tcp(host: &str, port: u16, timeout_ms: u64) -> Result<u64, String
 
 /// Race `future` against a deadline; timeout yields a worker [`Error`].
 /// Shared with the tick path so webhook delivery honors a deadline too.
+/// Note: the loser is dropped, not aborted — a timed-out fetch's socket
+/// may linger until GC, so callers must not assume cancellation.
 pub(crate) async fn with_timeout<T>(
     future: impl Future<Output = Result<T, Error>>,
     ms: u64,

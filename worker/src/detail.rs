@@ -68,7 +68,15 @@ pub async fn render(
         db.get(&first_key),
         series_ranged(db, id, cutoff, DETAIL_LATENCY_POINTS),
     )?;
-    let since = crate::reads::effective_since(first_raw.and_then(|s| s.parse().ok()), now);
+    let has_samples =
+        !regions.is_empty() || gaps.iter().any(|g| gap_in_range(g.at, g.to, cutoff, now));
+    // A stale `first:` stamp (reused id, pruned data) with no retained
+    // samples must render "no data", not phantom 100% — mirrors MIN(at).
+    let since = if has_samples {
+        crate::reads::effective_since(first_raw.and_then(|s| s.parse().ok()), now)
+    } else {
+        None
+    };
     let current = regions.first();
     let is_up = current.map_or(true, |r| r.up == 1);
     // The 24-hour view renders 24 hourly cells; day ranges render one

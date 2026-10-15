@@ -17,8 +17,9 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
         resp.headers_mut().set(name, value)?;
     }
     if editor && !is_static_asset(url.path()) {
-        // Never cache the unauthenticated editor pages (static assets
-        // keep their handler-set immutable cache even in editor mode).
+        // Never cache the unauthenticated editor pages (favicon/logo keep
+        // their handler-set immutable cache; style.css/app.js use a short
+        // revalidating cache — see icons.rs — even in editor mode).
         resp.headers_mut().set("cache-control", "no-store")?;
         return Ok(resp);
     }
@@ -59,7 +60,10 @@ async fn route(
         // editor; saving validates before persisting. No auth gate here —
         // there may be no valid config to gate against yet — so keep this
         // window short (the page and README say so).
-        if req.method() == worker::Method::Post {
+        // Only POST /editor saves: accepting a save on every path lets a
+        // stray POST (pinger, prefetch) with a YAML-shaped body overwrite
+        // the site config.
+        if req.method() == worker::Method::Post && url.path() == "/editor" {
             return Ok((crate::editor::save(&mut req, &db).await?, false));
         }
         return Ok((crate::editor::render(&db, None, &[], false).await?, false));
@@ -125,8 +129,9 @@ async fn route(
     Ok((resp, gated))
 }
 
-/// Long-lived public assets: served with handler-set immutable caches
-/// that survive even editor-mode `no-store` (see [`handle`]).
+/// Long-lived public assets: favicon/logo served with handler-set
+/// immutable caches that survive even editor-mode `no-store` (see [`handle`]).
+/// style.css/app.js use short revalidating caches (unversioned URLs).
 fn is_static_asset(path: &str) -> bool {
     matches!(
         path,
