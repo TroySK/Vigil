@@ -16,8 +16,9 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
     for (name, value) in security_headers() {
         resp.headers_mut().set(name, value)?;
     }
-    if editor {
-        // Never cache the unauthenticated editor pages.
+    if editor && !is_static_asset(url.path()) {
+        // Never cache the unauthenticated editor pages (static assets
+        // keep their handler-set immutable cache even in editor mode).
         resp.headers_mut().set("cache-control", "no-store")?;
         return Ok(resp);
     }
@@ -42,11 +43,14 @@ async fn route(
     url: &url::Url,
     editor: bool,
 ) -> Result<(Response, bool)> {
-    // Brand assets stay public so browsers can fetch the tab icon and the
-    // header logo without credentials.
+    // Brand assets stay public so browsers can fetch the tab icon, the
+    // header logo, and the shared stylesheet/script without credentials
+    // (pages link them, including the unauthenticated editor).
     match url.path() {
         "/favicon.ico" => return Ok((crate::icons::favicon()?, false)),
         "/logo.svg" => return Ok((crate::icons::logo()?, false)),
+        "/style.css" => return Ok((crate::icons::style()?, false)),
+        "/app.js" => return Ok((crate::icons::app_js()?, false)),
         _ => {}
     }
     let db = Db::of(&env)?;
@@ -120,6 +124,15 @@ async fn route(
     Ok((resp, gated))
 }
 
+/// Long-lived public assets: served with handler-set immutable caches
+/// that survive even editor-mode `no-store` (see [`handle`]).
+fn is_static_asset(path: &str) -> bool {
+    matches!(
+        path,
+        "/favicon.ico" | "/logo.svg" | "/style.css" | "/app.js"
+    )
+}
+
 /// Extract `?id=` from a detail/API URL.
 fn detail_id(url: &url::Url) -> Option<String> {
     url.query_pairs()
@@ -172,7 +185,7 @@ fn security_headers() -> [(&'static str, &'static str); 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_control, security_headers};
+    use super::{cache_control, is_static_asset, security_headers};
 
     #[test]
     fn every_response_carries_hardening_headers() {
@@ -213,6 +226,20 @@ mod tests {
             Some("public, max-age=60, s-maxage=60, stale-while-revalidate=120")
         );
         assert_eq!(cache_control("/nope", false), None);
+    }
+
+    #[test]
+    fn static_assets_keep_handler_cache_policy() {
+        // /style.css + /app.js set their own immutable cache in icons.rs;
+        // the shared policy must stay out of the way (None = untouched).
+        // `is_static_asset` gates the editor-mode no-store override.
+        for path in ["/favicon.ico", "/logo.svg", "/style.css", "/app.js"] {
+            assert_eq!(cache_control(path, false), None);
+            assert_eq!(cache_control(path, true), None);
+            assert!(is_static_asset(path), "{path} must be static");
+        }
+        assert!(!is_static_asset("/"));
+        assert!(!is_static_asset("/editor"));
     }
 
     #[test]
