@@ -1,6 +1,6 @@
 //! Status page: grouped monitor rows, history bars, latency sparklines.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use crate::auth::esc;
@@ -10,7 +10,7 @@ use crate::reads::{
     clock, gaps_window_by_monitor, latest_by_monitor, series_by_monitor, SampleOut,
 };
 use vigil_core::config::{Monitor, Probe, Site};
-use vigil_core::rollup::{bar_color, latency_chart, percentile_pair};
+use vigil_core::rollup::{latency_chart, percentile_pair};
 use vigil_core::state::Gap;
 use worker::{Response, Result};
 
@@ -19,7 +19,12 @@ use worker::{Response, Result};
 pub const INDEX_CHART_POINTS: i64 = 30;
 
 /// Render the full status page.
-pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
+pub async fn render(
+    db: &Db,
+    site: &Site,
+    favicons: &HashMap<String, String>,
+    range: Range,
+) -> Result<Response> {
     // One batched `kv` read for the tick clock, counts, and probe clock
     // (was: three sequential round trips). The refresh poller reloads on
     // the probe clock, not the tick clock, so skip-only ticks cost a
@@ -29,7 +34,7 @@ pub async fn render(db: &Db, site: &Site, range: Range) -> Result<Response> {
     let (up, down) = parse_counts(&counts);
     let hero = hero_html(site, up, down, at);
     let mut body = hero;
-    body.push_str(&sections(db, site, at, None, range).await?);
+    body.push_str(&sections(db, site, favicons, at, None, range).await?);
     let links = links_html(&site.links);
     let menu = crate::range::menu(range, |option| format!("/?range={}", option.param));
     let home = "/";
@@ -107,6 +112,7 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
 pub async fn sections(
     db: &Db,
     site: &Site,
+    favicons: &HashMap<String, String>,
     at: i64,
     only_group: Option<&str>,
     range: Range,
@@ -160,10 +166,19 @@ pub async fn sections(
         )
     };
     // Rows assemble synchronously in file order; groups slice them below.
+    // Favicon origins come from the parse-time map (a lookup miss falls
+    // back to a live parse so config races stay correct).
     let rows: BTreeMap<String, String> = site
         .monitors
         .iter()
         .map(|monitor| {
+            let live;
+            let favicon = if let Some(origin) = favicons.get(monitor.id.as_str()) {
+                Some(origin.as_str())
+            } else {
+                live = favicon_origin(monitor);
+                live.as_deref()
+            };
             (
                 monitor.id.clone(),
                 one_row(
@@ -174,6 +189,7 @@ pub async fn sections(
                     gap_lists.get(&monitor.id).map_or(&[], Vec::as_slice),
                     since(&monitor.id),
                     series.get(&monitor.id).map_or(&[], Vec::as_slice),
+                    favicon,
                 ),
             )
         })
@@ -219,8 +235,13 @@ pub async fn sections(
 ///
 /// Pure: all reads arrive batched from [`sections`], so row rendering costs
 /// no I/O and is unit-testable. `gaps` covers the selected window, `lat`
-/// its chart samples, `since` the monitor's first sample (if any).
-#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+/// its chart samples, `since` the monitor's first sample (if any),
+/// `favicon` the parse-time origin (`None` falls back to a live parse).
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss
+)]
 fn one_row(
     monitor: &Monitor,
     range: Range,
@@ -229,6 +250,7 @@ fn one_row(
     gaps: &[Gap],
     since: Option<i64>,
     lat: &[SampleOut],
+    favicon: Option<&str>,
 ) -> String {
     let is_up = current.map_or(true, |r| r.up == 1);
     let word = if is_up { "UP" } else { "DOWN" };
@@ -254,22 +276,15 @@ fn one_row(
             covered += 1;
             sum += bar.pct;
             let v = format!("{:.1}%", bar.pct);
-            let _ = write!(
-                cells,
-                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"{kind}\" data-v=\"{v}\" style=\"background:{}\"></i>",
-                bar_color(bar.pct),
-                day = bar.day,
-                kind = strip.kind,
-                tip = format!("{} UTC: {:.1}%", label(bar.day), bar.pct),
-            );
+            cells.push_str(&crate::range::bar_cell(
+                bar,
+                strip.kind,
+                &label,
+                "",
+                Some(&v),
+            ));
         } else {
-            let _ = write!(
-                cells,
-                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"{kind}\"></i>",
-                day = bar.day,
-                kind = strip.kind,
-                tip = format!("{} UTC: no data", label(bar.day)),
-            );
+            cells.push_str(&crate::range::bar_cell(bar, strip.kind, &label, "", None));
         }
     }
     let bars_label = if covered == 0 {
@@ -291,9 +306,15 @@ fn one_row(
         esc(&bars_label)
     );
     if !monitor.quiet_chart {
-        let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
-        let points: Vec<(i64, i64, &str)> =
-            lat.iter().rev().map(|r| (r.at, r.ms, r.place.as_str())).collect();
+        // One reverse pass builds chart points; latencies derive from
+        // them (was: two reverse passes plus a third copy inside the
+        // percentile sort).
+        let points: Vec<(i64, i64, &str)> = lat
+            .iter()
+            .rev()
+            .map(|r| (r.at, r.ms, r.place.as_str()))
+            .collect();
+        let vals: Vec<i64> = points.iter().map(|&(_, ms, _)| ms).collect();
         // One sort for both percentiles (was: one sort each).
         let (p50, p95) = percentile_pair(&vals, 50.0, 95.0);
         let spark = latency_chart(&points, 560, 120, range.hourly());
@@ -317,7 +338,7 @@ fn one_row(
         .as_deref()
         .map_or_else(String::new, |t| format!(" title=\"{}\"", esc(t)));
     let flag = if is_up { "1" } else { "0" };
-    let name = monitor_name(monitor);
+    let name = monitor_name(monitor, favicon);
     format!(
         "<article class=r data-up=\"{flag}\"{tip}>\
         <div class=r-head><span class=d aria-hidden=true></span>\
@@ -346,12 +367,13 @@ pub fn favicon_origin(monitor: &Monitor) -> Option<String> {
 /// convention. Sites keep icons at different paths (`favicon.ico`,
 /// `favicon.png`, …), so the tag carries the origin and a global
 /// `nextFavicon` script walks the candidates on error, removing the
-/// image when none exists.
-pub(crate) fn favicon_img(monitor: &Monitor, size: u32) -> String {
-    favicon_origin(monitor).map_or_else(String::new, |origin| {
+/// image when none exists. The origin arrives precomputed per render
+/// (`None` falls back to a live parse).
+pub(crate) fn favicon_img(origin: Option<&str>, size: u32) -> String {
+    origin.map_or_else(String::new, |origin| {
         // `origin` is parser-constrained, but attribute context demands
         // escaping regardless of what today's parser guarantees.
-        let src = esc(&origin);
+        let src = esc(origin);
         format!(
             "<img class=mlogo src=\"{src}/favicon.ico\" data-origin=\"{src}\" data-fb=0 alt=\"\" width={size} height={size} loading=lazy onerror='nextFavicon(this)'>",
         )
@@ -359,8 +381,9 @@ pub(crate) fn favicon_img(monitor: &Monitor, size: u32) -> String {
 }
 
 /// Monitor display name with favicon, linked when `href` is set (new tab,
-/// no opener). Logo-first per favicon-before-title convention.
-fn monitor_name(monitor: &Monitor) -> String {
+/// no opener). Logo-first per favicon-before-title convention. The origin
+/// arrives precomputed per render (`None` falls back to a live parse).
+fn monitor_name(monitor: &Monitor, favicon: Option<&str>) -> String {
     let label = match &monitor.href {
         Some(href) => format!(
             "<a href=\"{}\" target=_blank rel=\"noopener noreferrer\">{}</a>",
@@ -369,7 +392,14 @@ fn monitor_name(monitor: &Monitor) -> String {
         ),
         None => esc(&monitor.name),
     };
-    format!("{}{label}", favicon_img(monitor, 16))
+    let live;
+    let origin = if let Some(origin) = favicon {
+        Some(origin)
+    } else {
+        live = favicon_origin(monitor);
+        live.as_deref()
+    };
+    format!("{}{label}", favicon_img(origin, 16))
 }
 
 /// Footer links (`label -> url`) joined with middots. External links open
@@ -543,7 +573,7 @@ mod tests {
     fn row_latency_uses_uppercase_percentile_labels() {
         let m = http_monitor("https://example.com");
         let lat = [tried(9_900, 54, 1), tried(9_800, 60, 1)];
-        let html = one_row(&m, RANGE_24H, 10_000, Some(&tried(9_900, 54, 1)), &[], None, &lat);
+        let html = one_row(&m, RANGE_24H, 10_000, Some(&tried(9_900, 54, 1)), &[], None, &lat, None);
         assert!(html.contains("P50"), "labels read P50, not p50");
         assert!(html.contains("P95"), "labels read P95, not p95");
         assert!(!html.contains("p50"), "no lowercase percentile labels");
@@ -561,6 +591,7 @@ mod tests {
             &[],
             None,
             &[],
+            None,
         );
         assert!(up.contains("data-up=\"1\""));
         assert!(up.contains("<i>UP</i>"));
@@ -577,25 +608,26 @@ mod tests {
             &[],
             None,
             &[],
+            None,
         );
         assert!(down.contains("data-up=\"0\""));
         assert!(down.contains("DOWN"));
         assert!(down.contains("Check failing"));
-        let fresh = one_row(&m, RANGE_24H, 10_000, None, &[], None, &[]);
+        let fresh = one_row(&m, RANGE_24H, 10_000, None, &[], None, &[], None);
         assert!(fresh.contains("No data yet"));
     }
 
     #[test]
     fn row_paints_24_hour_cells() {
         let m = http_monitor("https://example.com");
-        let html = one_row(&m, RANGE_24H, 200_000, None, &[], Some(1), &[]);
+        let html = one_row(&m, RANGE_24H, 200_000, None, &[], Some(1), &[], None);
         assert_eq!(html.matches("<i ").count(), 24);
     }
 
     #[test]
     fn row_paints_daily_cells_for_week_range() {
         let m = http_monitor("https://example.com");
-        let html = one_row(&m, RANGE_7D, 30 * 86_400, None, &[], Some(1), &[]);
+        let html = one_row(&m, RANGE_7D, 30 * 86_400, None, &[], Some(1), &[], None);
         assert_eq!(html.matches("<i ").count(), 7);
         assert!(html.contains("class=bars90"));
         assert!(html.contains("Last 7 days"));
@@ -613,6 +645,7 @@ mod tests {
             &[],
             None,
             &lat,
+            None,
         );
         assert!(html.contains("<svg"));
         assert!(html.contains("class=lat"));
@@ -625,6 +658,7 @@ mod tests {
             &[],
             None,
             &lat,
+            None,
         );
         assert!(!quiet.contains("class=lat"));
         assert!(!quiet.contains("<svg"));
@@ -634,8 +668,22 @@ mod tests {
     fn row_escapes_monitor_name() {
         let mut m = http_monitor("https://example.com");
         m.name = "<img src=x>".into();
-        let html = one_row(&m, RANGE_24H, 10_000, None, &[], None, &[]);
+        let html = one_row(&m, RANGE_24H, 10_000, None, &[], None, &[], None);
         assert!(!html.contains("<img src=x>"));
+    }
+
+    #[test]
+    fn row_uses_precomputed_favicon_origin() {
+        let m = http_monitor("https://example.com/some/page?x=1");
+        let row = |favicon: Option<&str>| {
+            one_row(&m, RANGE_24H, 10_000, None, &[], None, &[], favicon)
+        };
+        let precomputed = row(Some("https://example.com"));
+        assert!(precomputed.contains("https://example.com/favicon.ico"));
+        // Equivalence: a precomputed origin renders exactly like a live
+        // parse (None falls back to parsing the monitor URL).
+        assert_eq!(precomputed, row(favicon_origin(&m).as_deref()));
+        assert_eq!(precomputed, row(None));
     }
 
     #[test]
@@ -732,13 +780,14 @@ mod tests {
 
     #[test]
     fn favicon_markup_agrees_on_origin_and_fallback() {
-        use super::favicon_img;
+        use super::{favicon_img, favicon_origin};
         let m = http_monitor("https://example.com/some/page");
-        let img = favicon_img(&m, 16);
+        let img = favicon_img(favicon_origin(&m).as_deref(), 16);
         // src and data-origin derive from the same escaped origin, and the
         // client-side fallback chain is wired.
         assert!(img.contains("src=\"https://example.com/favicon.ico\""));
         assert!(img.contains("data-origin=\"https://example.com\""));
         assert!(img.contains("onerror='nextFavicon(this)'"));
+        assert!(favicon_img(None, 16).is_empty());
     }
 }

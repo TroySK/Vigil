@@ -68,8 +68,8 @@ async fn route(
         // The editor exists only in editor mode.
         return Ok((Response::error("not found", 404)?, false));
     }
-    let site = match crate::site_store::load(&db).await? {
-        Ok(site) => site,
+    let loaded = match crate::site_store::load(&db).await? {
+        Ok(loaded) => loaded,
         Err(crate::site_store::SiteError::Missing) => {
             return Ok((
                 crate::editor::missing_config_page(
@@ -94,7 +94,8 @@ async fn route(
             ));
         }
     };
-    if !authed(&req, &site, &env) {
+    let site = &loaded.site;
+    if !authed(&req, site, &env) {
         return Ok((deny()?, site.auth.is_some()));
     }
     // No schema setup here: DDL on the request path fired an idempotent
@@ -105,17 +106,17 @@ async fn route(
     let resp = match url.path() {
         "/" | "/index.html" => {
             let range = crate::range::parse_range(range_param(url).as_deref());
-            crate::page::render(&db, &site, range).await?
+            crate::page::render(&db, site, &loaded.favicons, range).await?
         }
         "/monitor" => match detail_id(url) {
             Some(id) => {
                 let range = crate::range::parse_range(range_param(url).as_deref());
-                crate::detail::render(&db, &site, &id, range).await?
+                crate::detail::render(&db, site, &loaded.favicons, &id, range).await?
             }
             None => Response::error("missing id", 400)?,
         },
-        "/api/health" => api::health(&db, &site).await?,
-        "/api/badge" => api::badge(&db, &site, url).await?,
+        "/api/health" => api::health(&db, site).await?,
+        "/api/badge" => api::badge(&db, site, url).await?,
         "/api/history" => api::history(&db, url).await?,
         "/api/incidents" => api::incidents(&db, url).await?,
         "/api/latency" => api::latency(&db, url).await?,

@@ -393,15 +393,25 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32, hourly: bool) 
     let mut pixels = Vec::with_capacity(points.len());
     let mut marks = String::with_capacity(points.len() * 48);
     let mut dots = String::with_capacity(points.len() * 96);
+    // Origins repeat across consecutive samples (single-colo monitors):
+    // escape each distinct place once, and reuse the computed pixel per
+    // point across all three writers (was: escape + x/y recomputed 3x).
+    let mut last_place = "";
+    let mut origin = String::new();
     for (i, &(at, ms, place)) in points.iter().enumerate() {
-        pixels.push((x(i), y(ms)));
-        let origin = crate::views::escape_html(place);
-        let _ = write!(marks, "<circle class=\"dot\" cx=\"{}\" cy=\"{}\" r=\"2\"/>", x(i), y(ms));
+        let (px, py) = (x(i), y(ms));
+        pixels.push((px, py));
+        if place != last_place {
+            origin = crate::views::escape_html(place);
+            last_place = place;
+        }
+        let _ = write!(
+            marks,
+            "<circle class=\"dot\" cx=\"{px}\" cy=\"{py}\" r=\"2\"/>"
+        );
         let _ = write!(
             dots,
-            "<circle class=\"hit\" cx=\"{}\" cy=\"{}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"tip\" data-place=\"{origin}\" data-ms=\"{ms}\" data-tip=\"{} UTC &middot; {origin} &middot; {ms}ms\"/>",
-            x(i),
-            y(ms),
+            "<circle class=\"hit\" cx=\"{px}\" cy=\"{py}\" r=\"7\" aria-hidden=true data-ts=\"{at}\" data-tk=\"tip\" data-place=\"{origin}\" data-ms=\"{ms}\" data-tip=\"{} UTC &middot; {origin} &middot; {ms}ms\"/>",
             crate::tip_stamp(at),
         );
     }

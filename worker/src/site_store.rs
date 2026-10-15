@@ -8,6 +8,7 @@ use crate::db::Db;
 use vigil_core::config::Site;
 use worker::{Env, Result};
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// `true` when the worker runs in config-editor mode (`EDITOR=true`).
@@ -53,18 +54,32 @@ impl std::fmt::Display for SiteError {
 /// unchanged multi-KB config every 30s poll would burn the Worker's CPU
 /// budget for no new information. Failures are memoized too — a bad save
 /// keeps reporting its error instead of serving stale config.
-pub async fn load(db: &Db) -> Result<std::result::Result<Arc<Site>, SiteError>> {
+pub async fn load(db: &Db) -> Result<std::result::Result<Loaded, SiteError>> {
     let Some(raw) = load_raw(db).await? else {
         return Ok(Err(SiteError::Missing));
     };
     Ok(global().get(&raw))
 }
 
+/// Site config plus parse-time derivatives, memoized per raw bytes by
+/// [`SiteCache`]: one D1 read yields everything a request needs without
+/// re-parsing or re-deriving per row.
+#[derive(Debug, Clone)]
+pub struct Loaded {
+    /// Validated site config.
+    pub site: Arc<Site>,
+    /// Monitor id → https favicon origin, derived once at parse time so
+    /// renders never pay `Url::parse` per row per request. Monitors
+    /// without a web origin (TCP) are absent; lookup misses fall back to
+    /// a live parse so config races stay correct.
+    pub favicons: Arc<HashMap<String, String>>,
+}
+
 /// One memoized parse: the raw bytes plus their outcome.
 #[derive(Debug)]
 struct Cached {
     raw: String,
-    result: std::result::Result<Arc<Site>, SiteError>,
+    result: std::result::Result<Loaded, SiteError>,
 }
 
 /// Byte-keyed memo for [`load`]: cheap to consult on every request, exact
@@ -83,7 +98,7 @@ impl SiteCache {
     }
 
     /// Parse `raw` unless these exact bytes were seen before.
-    pub fn get(&self, raw: &str) -> std::result::Result<Arc<Site>, SiteError> {
+    pub fn get(&self, raw: &str) -> std::result::Result<Loaded, SiteError> {
         let mut guard = self
             .inner
             .lock()
@@ -108,15 +123,25 @@ fn global() -> &'static SiteCache {
     CACHE.get_or_init(SiteCache::new)
 }
 
-/// Parse plus validate one YAML document.
-fn parse_raw(raw: &str) -> std::result::Result<Arc<Site>, SiteError> {
+/// Parse plus validate one YAML document, deriving favicon origins.
+fn parse_raw(raw: &str) -> std::result::Result<Loaded, SiteError> {
     let site: Site = serde_yaml::from_str(raw).map_err(|e| SiteError::Parse(e.to_string()))?;
     if let Err(errors) = site.check() {
         return Err(SiteError::Invalid(
             errors.iter().map(ToString::to_string).collect(),
         ));
     }
-    Ok(Arc::new(site))
+    let favicons = site
+        .monitors
+        .iter()
+        .filter_map(|monitor| {
+            crate::page::favicon_origin(monitor).map(|origin| (monitor.id.clone(), origin))
+        })
+        .collect();
+    Ok(Loaded {
+        site: Arc::new(site),
+        favicons: Arc::new(favicons),
+    })
 }
 
 #[cfg(test)]
@@ -132,8 +157,8 @@ mod tests {
         let cache = SiteCache::new();
         let first = cache.get(GOOD_YAML).expect("valid yaml parses");
         let second = cache.get(GOOD_YAML).expect("valid yaml parses");
-        assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(first.monitors.len(), 1);
+        assert!(Arc::ptr_eq(&first.site, &second.site));
+        assert_eq!(first.site.monitors.len(), 1);
     }
 
     #[test]
@@ -143,8 +168,8 @@ mod tests {
         let other = cache
             .get(GOOD_YAML.replace("title: T", "title: Other").as_str())
             .expect("valid yaml parses");
-        assert_eq!(other.title, "Other");
-        assert!(!Arc::ptr_eq(&first, &other));
+        assert_eq!(other.site.title, "Other");
+        assert!(!Arc::ptr_eq(&first.site, &other.site));
         // Invalid YAML surfaces (and is remembered) instead of serving stale.
         let bad = cache.get("title: [unclosed").expect_err("must fail");
         assert!(matches!(bad, SiteError::Parse(_)));
@@ -157,6 +182,19 @@ mod tests {
         assert!(matches!(empty, SiteError::Invalid(_)));
         // Back to valid: parses again instead of poisoned by the failure.
         let recovered = cache.get(GOOD_YAML).expect("valid yaml parses");
-        assert_eq!(recovered.title, "T");
+        assert_eq!(recovered.site.title, "T");
+    }
+
+    #[test]
+    fn cache_derives_favicon_origins_at_parse_time() {
+        let cache = SiteCache::new();
+        let yaml = "title: T\nmonitors:\n  - id: m\n    name: M\n    check:\n      via: http\n      url: https://example.com/some/page\n  - id: t\n    name: Tcp\n    check:\n      via: tcp\n      host: example.com\n      port: 80\n";
+        let loaded = cache.get(yaml).expect("valid yaml parses");
+        assert_eq!(
+            loaded.favicons.get("m").map(String::as_str),
+            Some("https://example.com")
+        );
+        assert!(!loaded.favicons.contains_key("t"));
+        assert_eq!(loaded.site.monitors.len(), 2);
     }
 }

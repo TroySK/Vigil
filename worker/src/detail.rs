@@ -6,7 +6,7 @@
 //! and incident list filter to it, and pills after the monitor name switch
 //! ranges with a page reload.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use crate::auth::esc;
@@ -15,7 +15,7 @@ use crate::page::{default_counts, links_html, shell, time_html};
 use crate::range::{bars_for, Range};
 use crate::reads::{recent_gaps, region_latest, series_ranged, SampleOut};
 use vigil_core::config::Site;
-use vigil_core::rollup::{bar_color, latency_chart, percentile_pair, sparkline_points};
+use vigil_core::rollup::{latency_chart, percentile_pair, sparkline_points};
 use worker::{Response, Result};
 
 /// Whether a downtime window touches `[cutoff, now]`: ongoing gaps always
@@ -33,9 +33,20 @@ pub const DETAIL_INCIDENTS: usize = 50;
 
 /// Per-monitor detail for one [`Range`]: status, range bars, latency
 /// P50/P95 + sparkline, regional table, incident table, upkeep scoped to
-/// this monitor.
-#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
-pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Response> {
+/// this monitor. `favicons` is the parse-time origin map (`None` entries
+/// fall back to a live parse).
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss
+)]
+pub async fn render(
+    db: &Db,
+    site: &Site,
+    favicons: &HashMap<String, String>,
+    id: &str,
+    range: Range,
+) -> Result<Response> {
     let Some(monitor) = site.get(id) else {
         return Response::error("unknown monitor", 404);
     };
@@ -72,32 +83,22 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     let label = strip.label;
     for bar in &strip.cells {
         // Daily cells keep their percentage as (visually hidden) content,
-        // matching the old 90-day markup; hourly cells stay empty.
-        let content = if range.hourly() {
-            String::new()
-        } else {
-            format!("{:.1}%", bar.pct)
-        };
+        // matching the old 90-day markup; hourly cells stay empty. The
+        // data-v percentage rides along in both cases for the tooltip.
         if bar.has_data {
             covered += 1;
             sum += bar.pct;
             let v = format!("{:.1}%", bar.pct);
-            let _ = write!(
-                cells,
-                "<i aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"{kind}\" data-v=\"{v}\" style=\"background:{}\">{content}</i>",
-                bar_color(bar.pct),
-                day = bar.day,
-                kind = strip.kind,
-                tip = format!("{} UTC: {:.1}%", label(bar.day), bar.pct),
-            );
+            let content = if range.hourly() { "" } else { &v };
+            cells.push_str(&crate::range::bar_cell(
+                bar,
+                strip.kind,
+                &label,
+                content,
+                Some(&v),
+            ));
         } else {
-            let _ = write!(
-                cells,
-                "<i class=nodata aria-hidden=true title=\"{tip}\" data-tip=\"{tip}\" data-ts=\"{day}\" data-tk=\"{kind}\"></i>",
-                day = bar.day,
-                kind = strip.kind,
-                tip = format!("{} UTC: no data", label(bar.day)),
-            );
+            cells.push_str(&crate::range::bar_cell(bar, strip.kind, &label, "", None));
         }
     }
     let bars_label = if covered == 0 {
@@ -111,9 +112,14 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
             strip.period
         )
     };
-    let vals: Vec<i64> = lat.iter().rev().map(|r| r.ms).collect();
-    let points: Vec<(i64, i64, &str)> =
-        lat.iter().rev().map(|r| (r.at, r.ms, r.place.as_str())).collect();
+    // One reverse pass builds chart points; latencies derive from them
+    // (was: two reverse passes plus a third copy inside the sort).
+    let points: Vec<(i64, i64, &str)> = lat
+        .iter()
+        .rev()
+        .map(|r| (r.at, r.ms, r.place.as_str()))
+        .collect();
+    let vals: Vec<i64> = points.iter().map(|&(_, ms, _)| ms).collect();
     // One sort for both percentiles (was: one sort each).
     let (p50, p95) = percentile_pair(&vals, 50.0, 95.0);
     let spark = latency_chart(&points, 600, 150, range.hourly());
@@ -155,6 +161,14 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
             let _ = write!(notes, "<div class=\"note {kind}\">{}</div>", esc(&text));
         }
     }
+    let live;
+    let origin = match favicons.get(id) {
+        Some(origin) => Some(origin.as_str()),
+        None => {
+            live = crate::page::favicon_origin(monitor);
+            live.as_deref()
+        }
+    };
     let body = format!(
         "<nav class=crumb aria-label=Breadcrumb><a href=\"/?range={range_param}\">&lsaquo; all monitors</a></nav>\
         <section class=detail-hero aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>\
@@ -165,7 +179,7 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
         <h3 class=sect>Latency by region &middot; last {range_label}</h3><p class=tnum>Per-region latency over the last {range_label}, grouped by probe origin.</p>{geo_table} \
         <h3 class=sect>Incidents &middot; last {range_label}</h3><table class=inc><caption class=sr-only>Downtime windows for {name} over the last {range_label}</caption><thead><tr><th scope=col>From</th><th scope=col>To</th><th scope=col>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
         esc(&monitor.name),
-        logo = crate::page::favicon_img(monitor, 24),
+        logo = crate::page::favicon_img(origin, 24),
         range_param = range.param,
         word = if is_up { "UP" } else { "DOWN" },
         flag = if is_up { "1" } else { "0" },
@@ -181,8 +195,10 @@ pub async fn render(db: &Db, site: &Site, id: &str, range: Range) -> Result<Resp
     );
 
     let links = links_html(&site.links);
+    // The id escapes once here, not once per range option below.
+    let id = esc(&monitor.id);
     let menu = crate::range::menu(range, |option| {
-        format!("/monitor?id={}&range={}", esc(&monitor.id), option.param)
+        format!("/monitor?id={id}&range={}", option.param)
     });
     let home = "/";
     let speculation = crate::page::speculation_rule("/");

@@ -44,13 +44,14 @@ pub async fn tick(env: Env) -> Result<()> {
         return Ok(());
     }
     let db = Db::of(&env)?;
-    let site = match crate::site_store::load(&db).await? {
-        Ok(site) => site,
+    let loaded = match crate::site_store::load(&db).await? {
+        Ok(loaded) => loaded,
         Err(e) => {
             console_log!("no valid site config in D1 ({e}): skipping tick");
             return Ok(());
         }
     };
+    let site = &loaded.site;
     let now = sec_now();
     // One D1 round trip for every `kv` key the tick needs: cadence stamps,
     // alert counters, first-seen stamps, plus the schema marker (was: one
