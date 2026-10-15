@@ -460,16 +460,15 @@ pub fn time_html(at: i64, kind: &str, text: &str) -> String {
 }
 
 /// Speculation-rules tag prerendering same-origin navigations matching
-/// `pattern` on conservative intent (field visit, not hover): Chromium turns
-/// likely next-page navigations into instant ones; other browsers ignore the
-/// tag. Moderate eagerness prerendered on hover and doubled D1 load for
-/// navigations that never happened. Targets are display-only GETs, so a
-/// wasted prerender costs a few cached reads — and prerendered pages stay
-/// hidden, where the pollers and rel-time interval already stand down.
+/// `pattern` on hover intent (`moderate` eagerness): Chromium turns likely
+/// next-page hovers into instant navigations; other browsers ignore the
+/// tag. Targets are display-only GETs, so a wasted prerender costs a few
+/// cached reads — and prerendered pages stay hidden, where the pollers and
+/// rel-time interval already stand down.
 #[must_use]
 pub(crate) fn speculation_rule(pattern: &str) -> String {
     format!(
-        "<script type=\"speculationrules\">{{\"prerender\":[{{\"source\":\"document\",\"where\":{{\"href_matches\":\"{pattern}\"}},\"eagerness\":\"conservative\"}}]}}</script>"
+        "<script type=\"speculationrules\">{{\"prerender\":[{{\"source\":\"document\",\"where\":{{\"href_matches\":\"{pattern}\"}},\"eagerness\":\"moderate\"}}]}}</script>"
     )
 }
 
@@ -752,9 +751,9 @@ mod tests {
     }
 
     #[test]
-    fn speculation_rule_prerenders_conservatively() {
-        // Conservative eagerness: moderate prerendered detail pages on mere
-        // hover, doubling D1 load for navigations that never happen (P90).
+    fn speculation_rule_prerenders_on_hover_intent() {
+        // Moderate eagerness fires on hover (conservative waits for
+        // mousedown/pointerdown, i.e. click start).
         let tag = speculation_rule("/monitor*");
         assert!(tag.starts_with("<script type=\"speculationrules\">"));
         let json: serde_json::Value =
@@ -762,7 +761,7 @@ mod tests {
                 .unwrap();
         assert_eq!(json["prerender"][0]["source"], "document");
         assert_eq!(json["prerender"][0]["where"]["href_matches"], "/monitor*");
-        assert_eq!(json["prerender"][0]["eagerness"], "conservative");
+        assert_eq!(json["prerender"][0]["eagerness"], "moderate");
     }
 
     fn http_monitor(url: &str) -> Monitor {
