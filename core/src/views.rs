@@ -83,13 +83,32 @@ pub fn alert(name: &str, up: bool, why: &str, at_utc: &str) -> String {
     format!("[{state}] {name}: {why} ({at_utc})")
 }
 
-/// Fill a `$NAME` / `$STATUS` / `$REASON` / `$TIME` webhook template.
+/// Fill a `$NAME` / `$STATUS` / `$REASON` / `$TIME` webhook template in
+/// one pass: values are literal (a value containing placeholder syntax
+/// is never re-expanded), unknown tokens pass through untouched, and no
+/// intermediate strings are allocated per placeholder.
 #[must_use]
 pub fn fill(template: &str, name: &str, up: bool, why: &str, at: &str) -> String {
     let status = if up { "UP" } else { "DOWN" };
-    template
-        .replace("$NAME", name)
-        .replace("$STATUS", status)
-        .replace("$REASON", why)
-        .replace("$TIME", at)
+    let pairs = [
+        ("$NAME", name),
+        ("$STATUS", status),
+        ("$REASON", why),
+        ("$TIME", at),
+    ];
+    let mut out = String::with_capacity(template.len() + 32);
+    let mut rest = template;
+    while let Some(i) = rest.find('$') {
+        out.push_str(&rest[..i]);
+        let token = &rest[i..];
+        if let Some((key, value)) = pairs.iter().find(|(key, _)| token.starts_with(key)) {
+            out.push_str(value);
+            rest = &token[key.len()..];
+        } else {
+            out.push('$');
+            rest = &token[1..];
+        }
+    }
+    out.push_str(rest);
+    out
 }

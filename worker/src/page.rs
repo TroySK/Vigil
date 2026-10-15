@@ -406,17 +406,19 @@ fn monitor_name(monitor: &Monitor, favicon: Option<&str>) -> String {
 /// in a new tab without opener access.
 #[must_use]
 pub fn links_html(links: &indexmap::IndexMap<String, String>) -> String {
-    links
-        .iter()
-        .map(|(label, url)| {
-            format!(
-                "<a href=\"{}\" target=_blank rel=\"noopener noreferrer\">{}</a>",
-                esc(url),
-                esc(label)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out = String::new();
+    for (i, (label, url)) in links.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let _ = write!(
+            out,
+            "<a href=\"{}\" target=_blank rel=\"noopener noreferrer\">{}</a>",
+            esc(url),
+            esc(label)
+        );
+    }
+    out
 }
 
 /// Default `up/down` counts string before the first tick.
