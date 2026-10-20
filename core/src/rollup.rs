@@ -357,8 +357,12 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
 
 /// Latency chart with labeled X (probe time) and Y (milliseconds) axes.
 ///
-/// X labels read `HH:MM` on the 24-hour view (`hourly`) and `DD-Month`
-/// otherwise. Points are `(sample time, milliseconds, origin colo)`; each
+/// The plot is a responsive SVG; its labels are plain HTML around it, so
+/// they keep a fixed readable size instead of scaling with the chart. The
+/// Y gutter sizes itself to the widest `ms` label, so long values never
+/// clip. X labels read `HH:MM` on the 24-hour view (`hourly`) and
+/// `DD-Month` otherwise; a middle label that repeats a neighbour is
+/// dropped. Points are `(sample time, milliseconds, origin colo)`; each
 /// sample gets an invisible hover target whose tooltip names all three,
 /// since probes in one chart can come from different colos. Empty input
 /// yields an empty string.
@@ -372,23 +376,24 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32, hourly: bool) 
     if points.is_empty() {
         return String::new();
     }
-    let pad_l = 46_u32;
-    let pad_b = 22_u32;
-    let pad_t = 8_u32;
-    let pad_r = 8_u32;
-    let plot_w = w.saturating_sub(pad_l + pad_r).max(10);
-    let plot_h = h.saturating_sub(pad_t + pad_b).max(10);
-    let max_ms = points.iter().map(|&(_, ms, _)| ms).max().unwrap_or(0).max(1);
+    let plot_w = w.max(10);
+    let plot_h = h.max(10);
+    let max_ms = points
+        .iter()
+        .map(|&(_, ms, _)| ms)
+        .max()
+        .unwrap_or(0)
+        .max(1);
     let max = max_ms as f64;
     let step = if points.len() < 2 {
         0.0
     } else {
         f64::from(plot_w) / (points.len() as f64 - 1.0)
     };
-    let x = |i: usize| pad_l + (i as f64 * step).round() as u32;
+    let x = |i: usize| (i as f64 * step).round() as u32;
     let y = |ms: i64| {
         let scaled = (ms.max(0) as f64 / max) * f64::from(plot_h);
-        pad_t + plot_h.saturating_sub(scaled.round() as u32)
+        plot_h.saturating_sub(scaled.round() as u32)
     };
     let mut pixels = Vec::with_capacity(points.len());
     let mut marks = String::with_capacity(points.len() * 48);
@@ -416,53 +421,57 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32, hourly: bool) 
         );
     }
     let mid = max_ms / 2;
-    let base = pad_t + plot_h;
+    let base = plot_h;
     let mid_i = points.len() / 2;
     let (axis_kind, axis_label): (&str, fn(i64) -> String) = if hourly {
         ("hour", crate::axis_hour)
     } else {
         ("day", crate::axis_day)
     };
+    let first_at = points[0].0;
+    let last_at = points[points.len() - 1].0;
+    let first_label = axis_label(first_at);
+    let last_label = axis_label(last_at);
+    let mid_label = axis_label(points[mid_i].0);
+    // A 24-hour window can start and end with the same clock time, and a
+    // short day window can repeat a date. Keep the middle label only when
+    // it adds a value, and never print the same label twice.
+    let mut x_labels = String::with_capacity(192);
+    let _ = write!(
+        x_labels,
+        "<span class=start data-ts=\"{first_at}\" data-tk=\"{axis_kind}\">{first_label}</span>"
+    );
+    if mid_i > 0 && mid_i + 1 < points.len() && mid_label != first_label && mid_label != last_label
+    {
+        let _ = write!(
+            x_labels,
+            "<span class=mid data-ts=\"{}\" data-tk=\"{axis_kind}\">{mid_label}</span>",
+            points[mid_i].0
+        );
+    } else {
+        // Keep the empty middle slot so the start and end labels stay
+        // pinned to the plot edges instead of drifting inward.
+        x_labels.push_str("<span class=mid></span>");
+    }
+    if last_label == first_label {
+        x_labels.push_str("<span class=end></span>");
+    } else {
+        let _ = write!(
+            x_labels,
+            "<span class=end data-ts=\"{last_at}\" data-tk=\"{axis_kind}\">{last_label}</span>"
+        );
+    }
     format!(
-        "<svg class=\"chart\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-label=\"Latency chart\">\
-<title>Latency over time</title>\
-<line class=\"grid\" x1=\"{pad_l}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"/>\
-<line class=\"grid\" x1=\"{pad_l}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"/>\
-<line class=\"axis\" x1=\"{pad_l}\" y1=\"{base}\" x2=\"{}\" y2=\"{base}\"/>\
-<text x=\"{}\" y=\"{}\" text-anchor=\"end\">{max_ms}ms</text>\
-<text x=\"{}\" y=\"{}\" text-anchor=\"end\">{mid}ms</text>\
-<text x=\"{}\" y=\"{}\" text-anchor=\"end\">0</text>\
-<text x=\"{pad_l}\" y=\"{}\" text-anchor=\"start\" data-ts=\"{}\" data-tk=\"{}\">{}</text>\
-<text x=\"{}\" y=\"{}\" text-anchor=\"middle\" data-ts=\"{}\" data-tk=\"{}\">{}</text>\
-<text x=\"{}\" y=\"{}\" text-anchor=\"end\" data-ts=\"{}\" data-tk=\"{}\">{}</text>\
-<path d=\"{}\" class=\"line\"/>{marks}{dots}</svg>",
-        y(max_ms),
-        pad_l + plot_w,
-        y(max_ms),
+        "<span class=\"chart-frame\" role=\"img\" aria-label=\"Latency chart, up to {max_ms}ms, {first_label} to {last_label}\">\
+<span class=\"chart-axis-y\" aria-hidden=true><span>{max_ms}ms</span><span>{mid}ms</span><span>0</span></span>\
+<span class=\"chart-plot\"><svg class=\"chart\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" aria-hidden=true focusable=false>\
+<line class=\"grid\" x1=\"0\" y1=\"0\" x2=\"{plot_w}\" y2=\"0\"/>\
+<line class=\"grid\" x1=\"0\" y1=\"{}\" x2=\"{plot_w}\" y2=\"{}\"/>\
+<line class=\"axis\" x1=\"0\" y1=\"{base}\" x2=\"{plot_w}\" y2=\"{base}\"/>\
+<path d=\"{}\" class=\"line\"/>{marks}{dots}</svg></span>\
+<span class=\"chart-axis-x\" aria-hidden=true>{x_labels}</span></span>",
         y(mid),
-        pad_l + plot_w,
         y(mid),
-        pad_l + plot_w,
-        pad_l - 6,
-        y(max_ms) + 4,
-        pad_l - 6,
-        y(mid) + 4,
-        pad_l - 6,
-        base + 4,
-        h - 6,
-        points[0].0,
-        axis_kind,
-        axis_label(points[0].0),
-        pad_l + plot_w / 2,
-        h - 6,
-        points[mid_i].0,
-        axis_kind,
-        axis_label(points[mid_i].0),
-        pad_l + plot_w,
-        h - 6,
-        points[points.len() - 1].0,
-        axis_kind,
-        axis_label(points[points.len() - 1].0),
         smooth_path(&pixels)
     )
 }

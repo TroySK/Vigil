@@ -125,24 +125,56 @@ fn smooth_path_interpolates_without_overshoot() {
 #[test]
 fn latency_chart_has_labeled_axes() {
     use vigil_core::rollup::latency_chart;
-    let points = &[(1_000, 10, "BOM"), (2_000, 20, "SIN"), (3_000, 15, "BOM")];
-    let svg = latency_chart(points, 600, 150, false);
-    assert!(svg.contains("20ms"));
-    assert!(svg.contains("10ms"));
-    assert!(svg.contains(">0<"));
-    assert!(svg.contains("data-tip"));
-    assert!(svg.contains("SIN"));
-    assert!(svg.contains("data-ts=\"1000\""));
-    assert!(svg.contains("data-tk=\"day\""));
+    let points = &[
+        (1_000, 10, "BOM"),
+        (90_000, 20, "SIN"),
+        (180_000, 15, "BOM"),
+    ];
+    let chart = latency_chart(points, 600, 150, false);
+    // Y labels live in the HTML gutter around the plot, not in the SVG.
+    assert!(chart.contains("chart-axis-y"));
+    assert!(chart.contains(">20ms<"));
+    assert!(chart.contains(">10ms<"));
+    assert!(chart.contains(">0<"));
+    assert!(
+        !chart.contains("<text"),
+        "axis labels must not scale with the SVG"
+    );
+    assert!(chart.contains("data-tip"));
+    assert!(chart.contains("SIN"));
+    assert!(chart.contains("data-ts=\"1000\""));
+    assert!(chart.contains("data-tk=\"day\""));
     // Day ranges label axes `DD-Month`; the 24-hour view uses `HH:MM`.
-    assert!(svg.contains("01-January"));
-    assert!(svg.contains("data-tip=\"01-January @ 00:16 UTC"));
-    assert_eq!(svg.matches("class=\"dot\"").count(), 3);
-    assert_eq!(svg.matches("class=\"hit\"").count(), 3);
+    assert!(chart.contains(">01-January<"));
+    assert!(chart.contains(">02-January<"));
+    assert!(chart.contains(">03-January<"));
+    assert!(chart.contains("data-tip=\"01-January @ 00:16 UTC"));
+    assert_eq!(chart.matches("class=\"dot\"").count(), 3);
+    assert_eq!(chart.matches("class=\"hit\"").count(), 3);
     let hourly = latency_chart(points, 600, 150, true);
     assert!(hourly.contains("data-tk=\"hour\""));
+    assert!(!hourly.contains("data-tk=\"day\""));
     assert!(hourly.contains(">00:16<"));
     assert!(latency_chart(&[], 600, 150, false).is_empty());
+}
+
+#[test]
+fn latency_chart_drops_repeated_axis_labels() {
+    use vigil_core::rollup::latency_chart;
+    // Three samples inside one day all format as `01-January`; the axis
+    // must show it once instead of printing the same date three times.
+    let same_day = &[(1_000, 10, "BOM"), (2_000, 20, "SIN"), (3_000, 15, "BOM")];
+    let chart = latency_chart(same_day, 600, 150, false);
+    assert_eq!(chart.matches("data-tk=\"day\"").count(), 1);
+    assert_eq!(chart.matches(">01-January<").count(), 1);
+
+    // The 24-hour view labels by clock time: all three labels stay because
+    // the times differ, and none of them is a date.
+    let hourly = latency_chart(same_day, 600, 150, true);
+    assert_eq!(hourly.matches("data-tk=\"hour\"").count(), 3);
+    assert!(hourly.contains(">00:16<"));
+    assert!(hourly.contains(">00:33<"));
+    assert!(hourly.contains(">00:50<"));
 }
 
 /// Reason-less downtime window: bar rollups only read bounds, so callers
