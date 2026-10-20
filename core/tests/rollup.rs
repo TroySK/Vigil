@@ -159,46 +159,27 @@ fn latency_chart_has_labeled_axes() {
 }
 
 #[test]
-fn latency_line_gradient_uses_green_yellow_red_bands() {
+fn latency_line_gradient_is_smooth_value_ramp() {
     use vigil_core::rollup::{latency_chart, sparkline_points};
 
-    // A series through 200ms stays entirely in the green band.
+    // A series below the standard stays entirely green.
     let low = latency_chart(&[(1_000, 120, "BOM"), (2_000, 180, "BOM")], 600, 150, false);
     assert!(low.contains("<linearGradient"));
     assert!(low.contains("--line:url(#latency-line-"));
     assert!(low.contains("stop-color=\"var(--color-ok)\""));
     assert!(!low.contains("var(--color-bad)"));
     assert!(!low.contains("#e3b341"));
-    assert!(!low.contains("#d4a72c"));
 
-    // A series inside the 200-600ms range is green and yellow, with no red.
-    let yellow = latency_chart(&[(1_000, 100, "BOM"), (2_000, 400, "BOM")], 600, 150, false);
-    assert!(yellow.contains("stop-color=\"#e3b341\""));
-    assert!(yellow.contains("stop-color=\"#d4a72c\""));
-    assert!(!yellow.contains("var(--color-bad)"));
-
-    // 600ms is still yellow; 601ms starts the red band.
-    let at_end = latency_chart(&[(1_000, 100, "BOM"), (2_000, 600, "BOM")], 600, 150, false);
-    assert!(!at_end.contains("var(--color-bad)"));
-    let above_end = latency_chart(&[(1_000, 100, "BOM"), (2_000, 601, "BOM")], 600, 150, false);
-    assert!(above_end.contains("var(--color-bad)"));
-
-    // A high sample pulls in all three bands. On a 1,000ms, 150px plot
-    // the 20ms boundary blends land at 0.38/0.42 and 0.78/0.82.
+    // A high sample creates the green -> amber -> red ramp. On a 1,000ms,
+    // 150px plot the 200ms stop sits at 0.8.
     let mixed = latency_chart(&[(1_000, 100, "BOM"), (2_000, 1_000, "BOM")], 600, 150, false);
     assert!(mixed.contains("stop-color=\"var(--color-bad)\""));
-    assert!(mixed.contains("stop-color=\"#ff7b72\""));
-    assert!(mixed.contains("stop-color=\"#d4a72c\""));
     assert!(mixed.contains("stop-color=\"#e3b341\""));
-    assert!(mixed.contains("stop-color=\"#3fb950\""));
     assert!(mixed.contains("stop-color=\"var(--color-ok)\""));
-    assert_eq!(mixed.matches("<stop ").count(), 6);
-    assert!(mixed.contains("offset=\"0.3800\""));
-    assert!(mixed.contains("offset=\"0.4200\""));
-    assert!(mixed.contains("offset=\"0.7800\""));
-    assert!(mixed.contains("offset=\"0.8200\""));
+    assert_eq!(mixed.matches("<stop ").count(), 3);
+    assert!(mixed.contains("offset=\"0.8000\""));
 
-    // Sparklines use the same value mapping.
+    // Sparklines use the same value ramp.
     let spark = sparkline_points(&[(1_000, 100), (2_000, 1_000)], 160, 36);
     assert!(spark.contains("<linearGradient"));
     assert!(spark.contains("stop-color=\"#e3b341\""));
