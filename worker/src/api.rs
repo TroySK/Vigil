@@ -15,8 +15,10 @@ pub const DAY_SECS: i64 = 86_400;
 pub const WEEK_SECS: i64 = 7 * DAY_SECS;
 /// Seconds in one day / week / month windows for `/api/health` uptime.
 pub const MONTH_SECS: i64 = 30 * DAY_SECS;
-/// Max rows served by list endpoints.
-pub const MAX_ROWS: i64 = 200;
+/// Max rows served by list endpoints. Hourly samples need far fewer rows
+/// than 5-minute probes (24/day vs 288/day): 100 rows still cover 4 days
+/// of hourly data while capping D1 rows scanned per request.
+pub const MAX_ROWS: i64 = 100;
 /// Default rows when `?limit=` is missing or unparseable.
 pub const DEFAULT_ROWS: i64 = 50;
 /// Rows scanned for history-bar rollups.
@@ -63,13 +65,20 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
 
 /// One monitor's health entry: status, latency, and day/week/month uptime.
 /// Pure shaping over already-fetched rows, so the snapshot assembly is
-/// unit-testable without D1. Missing samples read as up with zeroed
-/// readings, matching the old per-monitor path.
+/// unit-testable without D1.
+///
+/// Status comes from gaps (an open gap = down), NOT from the latest
+/// `samples` row: split cadence writes samples hourly but gaps every 5
+/// minutes, so the sample's `up` flag can lag reality by ~1h. Latency
+/// (`ms`/`at`) still comes from the latest sample — hourly-stale by
+/// design. Missing samples read as up with zeroed readings, matching the
+/// old per-monitor path.
 fn monitor_status(current: Option<&SampleOut>, gaps: &[Gap], base: i64) -> serde_json::Value {
-    let is_up = current.map_or(true, |r| r.up == 1);
     let track = Track {
         gaps: gaps.to_vec(),
     };
+    // Open gap = down right now, even when the last hourly sample says up.
+    let is_up = track.open().is_none() && current.map_or(true, |r| r.up == 1);
     // One pass over gaps for all three windows (was: three scans).
     let uptimes = track.uptime_many(base, &[DAY_SECS, WEEK_SECS, MONTH_SECS]);
     serde_json::json!({
@@ -88,10 +97,17 @@ fn monitor_status(current: Option<&SampleOut>, gaps: &[Gap], base: i64) -> serde
 pub async fn badge(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
     let id = query_param(url, "id");
     let (label, is_up) = if let Some(monitor) = id.as_deref().and_then(|i| site.get(i)) {
-        let current = latest(db, &monitor.id).await?;
+        // Status from gaps (open gap = down), not the hourly sample: split
+        // cadence probes uptime every 5m but samples hourly. One extra
+        // capped read only on badge hits, not on every page load.
+        let (current, gaps) = futures_util::try_join!(
+            latest(db, &monitor.id),
+            recent_gaps(db, &monitor.id, 5),
+        )?;
+        let open = gaps.iter().any(|g| g.to.is_none());
         (
             monitor.name.clone(),
-            current.as_ref().map_or(true, |r| r.up == 1),
+            !open && current.as_ref().map_or(true, |r| r.up == 1),
         )
     } else {
         let counts = db.get("counts").await?.unwrap_or_else(default_counts);
@@ -100,7 +116,7 @@ pub async fn badge(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
     let (word, color) = vigil_core::views::badge(is_up);
     let svg = vigil_core::views::svg(&label, word, color);
     // Cache policy comes from the shared `cache_control` in `http.rs`
-    // (60s public): badge embeds poll constantly, and every uncached hit
+    // (5min public): badge embeds poll constantly, and every uncached hit
     // costs D1 reads.
     Ok(Response::builder()
         .with_header("content-type", "image/svg+xml")?
@@ -217,5 +233,22 @@ mod tests {
         let v = monitor_status(Some(&tried(1_500, 0, 0)), &[gap], 2_000);
         assert_eq!(v["up"].as_bool(), Some(false));
         assert!(v["uptime"]["day"].as_f64().unwrap() < 100.0);
+    }
+
+    #[test]
+    fn status_reads_open_gap_despite_stale_up_sample() {
+        // Split cadence: samples land hourly, gaps every 5m. A monitor
+        // that went down after its last hourly sample must read down,
+        // not up, until the next sample lands.
+        let open = Gap {
+            at: 1_900,
+            to: None,
+            why: "refused".into(),
+        };
+        let v = monitor_status(Some(&tried(1_000, 54, 1)), &[open], 2_000);
+        assert_eq!(v["up"].as_bool(), Some(false));
+        // Latency still comes from the hourly sample (stale by design).
+        assert_eq!(v["ms"].as_i64(), Some(54));
+        assert_eq!(v["at"].as_i64(), Some(1_000));
     }
 }

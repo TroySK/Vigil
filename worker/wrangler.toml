@@ -6,12 +6,12 @@ compatibility_date = "2025-04-02"
 command = "cargo install -q worker-build && worker-build --release"
 
 [triggers]
-crons = ["*/1 * * * *"]
+crons = ["*/5 * * * *"]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "vigil"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "51432d2d-16f5-4722-96c6-a395cffb4d3d"
 
 [vars]
 # Optional: set via `wrangler secret put` instead for real passwords.

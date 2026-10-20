@@ -1,6 +1,6 @@
 //! Config validation: fail fast on typos before the cron tick stores junk.
 
-use crate::config::{Monitor, Probe, Site};
+use crate::config::{Monitor, Probe, Site, MIN_CADENCE_MIN, DEFAULT_SAMPLE_MIN};
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -26,12 +26,20 @@ impl Site {
     ///
     /// # Errors
     /// Returns every problem found (empty id, duplicate id, bad
-    /// timeout, zero `every_min`, bad URL/host, or zero monitors).
+    /// timeout, sub-5-minute uptime cadence, bad URL/host, or zero monitors).
     pub fn check(&self) -> Result<(), Vec<ConfigError>> {
         let mut problems = Vec::new();
         let mut seen = BTreeSet::new();
         for m in &self.monitors {
             check_monitor(m, &mut seen, &mut problems);
+        }
+        if self.sample_every_min != 0
+            && self.sample_every_min < MIN_CADENCE_MIN
+            && self.sample_every_min < DEFAULT_SAMPLE_MIN
+        {
+            // Global sample cadence below the uptime floor is a typo
+            // (samples ride on probes); per-monitor values clamp instead.
+            problems.push(ConfigError("bad sample_every_min".into()));
         }
         if self.monitors.is_empty() {
             problems.push(ConfigError("no monitors".into()));
@@ -60,7 +68,7 @@ fn check_monitor(m: &Monitor, seen: &mut BTreeSet<String>, problems: &mut Vec<Co
     if m.timeout_ms == 0 || m.timeout_ms > MAX_TIMEOUT_MS {
         problems.push(ConfigError(format!("bad timeout {}", m.id)));
     }
-    if m.every_min.is_some_and(|every| every == 0) {
+    if m.uptime_every_min().is_some_and(|every| every < MIN_CADENCE_MIN) {
         problems.push(ConfigError(format!("bad every_min {}", m.id)));
     }
     match &m.check {

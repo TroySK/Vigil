@@ -10,13 +10,13 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
   (element content and double-quoted attribute contexts).
 - Baseline response headers on every route: `referrer-policy: no-referrer`,
   `x-content-type-options: nosniff`, `x-frame-options: DENY`.
-- Tick-granular pages/APIs carry `Cache-Control: public, max-age=30`
-  (the badge keeps `no-store`); this bounds D1 fan-out cost per visitor.
+- 5-minute pages/APIs carry `Cache-Control: public, max-age=300`
+  (the badge matches); this bounds D1 fan-out cost per visitor.
 - Probes race per-monitor deadlines; webhook delivery has a 10s deadline;
   probe waves are capped to stay under the subrequest ceiling.
 - Site icons always load over TLS (even for plain-HTTP probes) and render
   from escaped origins.
-- The site config refuses `every_min: 0` and documents that secrets
+- The site config refuses sub-5-minute uptime cadences and documents that secrets
   pasted into headers end up in D1 (readable by anyone with DB access).
 - The config editor (`EDITOR=true`) is unauthenticated and serves
   `no-store` on every route while the status site stays offline; remove

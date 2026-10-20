@@ -15,8 +15,10 @@ use vigil_core::state::Gap;
 use worker::{Response, Result};
 
 /// Latency chart points per sparkline on the index page: each monitor's
-/// window spreads at most this many dots (see `series_by_monitor`).
-pub const INDEX_CHART_POINTS: i64 = 30;
+/// 24-hour pulse spreads at most this many dots (see `series_by_monitor`).
+/// Hourly samples yield at most 24 points, so 24 renders every sample
+/// with no stride and no extra D1 rows scanned.
+pub const INDEX_CHART_POINTS: i64 = 24;
 
 /// Render the full status page.
 pub async fn render(
@@ -260,7 +262,12 @@ fn one_row(
     lat: &[SampleOut],
     favicon: Option<&str>,
 ) -> String {
-    let is_up = current.map_or(true, |r| r.up == 1);
+    // Status from gaps (open gap = down), not the hourly sample: split
+    // cadence probes uptime every 5m but samples hourly, so the sample's
+    // `up` flag can lag reality by ~1h. Latency text still rides the
+    // latest sample (hourly-stale by design).
+    let open = gaps.iter().any(|g| g.to.is_none());
+    let is_up = !open && current.map_or(true, |r| r.up == 1);
     let word = if is_up { "UP" } else { "DOWN" };
     let detail = match current {
         Some(sample) if is_up => {
@@ -796,6 +803,8 @@ mod tests {
             href: None,
             quiet_chart: false,
             every_min: None,
+            uptime_every_min: None,
+            sample_every_min: None,
         }
     }
 

@@ -1,8 +1,12 @@
-//! Cron tick: probe every monitor, persist samples/gaps, page on transitions.
+//! Split-cadence cron tick: probe every due monitor every 5 minutes for
+//! uptime gaps, persist latency samples hourly, page on transitions.
 //!
-//! One tick = one `samples` row + gap open/close maintenance per monitor,
-//! plus webhook notifications with consecutive-failure grace. Old rows
-//! beyond [`RETENTION_SECS`](crate::db::RETENTION_SECS) are pruned.
+//! One tick = gap open/close maintenance per due monitor plus a `samples`
+//! row only when the hourly sample gate fires (hourly charts need one dot
+//! per hour, not one per 5-minute probe — this holds D1 rows-written
+//! under quota), plus webhook notifications with consecutive-failure
+//! grace. Old rows beyond [`RETENTION_SECS`](crate::db::RETENTION_SECS)
+//! are pruned.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -157,6 +161,12 @@ pub async fn tick(env: Env) -> Result<()> {
         } else {
             down += 1;
         }
+        let want_sample = sample_due(
+            kv.get(&format!("sample:{}", monitor.id))
+                .and_then(|s| s.parse().ok()),
+            site.sample_cadence_min(monitor),
+            now,
+        );
         writes.extend(record_stmts(
             &db,
             &monitor.id,
@@ -165,11 +175,12 @@ pub async fn tick(env: Env) -> Result<()> {
             &verdict,
             &location,
             gaps.get(monitor.id.as_str()),
+            want_sample,
         )?);
         let (prev_fails, was_up) = alert_for(&kv, &monitor.id);
         let plan = plan_alert(prev_fails, was_up, verdict.up, grace);
         // Steady-up ticks dominate the fleet: rewriting an identical
-        // `fails:0` every minute costs a D1 write per monitor for no state
+        // `fails:0` every tick costs a D1 write per monitor for no state
         // change. Only persist when the counter actually moved.
         if plan.fails != prev_fails {
             writes.push(db.put_stmt(&format!("fails:{}", monitor.id), &plan.fails.to_string())?);
@@ -183,6 +194,12 @@ pub async fn tick(env: Env) -> Result<()> {
             }
         }
         writes.push(db.put_stmt(&format!("last:{}", monitor.id), &now.to_string())?);
+        // Latency-sample stamp: only advance when a `samples` row was
+        // actually written this tick, so the next probe tick re-checks
+        // against the last real sample, not against "last probe".
+        if want_sample {
+            writes.push(db.put_stmt(&format!("sample:{}", monitor.id), &now.to_string())?);
+        }
         // First-seen stamp for the history bars: backfilled from retained
         // samples once, then trusted forever (steady ticks find the key in
         // `kv` and write nothing).
@@ -197,7 +214,7 @@ pub async fn tick(env: Env) -> Result<()> {
     if up + down > 0 {
         writes.push(db.put_stmt("counts", &format!("{up}/{down}"))?);
         // Skip-only ticks probe nothing: without this marker the pages
-        // would reload every minute on the tick clock even though no
+        // would reload every tick on the tick clock even though no
         // displayed data changed (see the refresh poller).
         writes.push(db.put_stmt("data_at", &now.to_string())?);
     }
@@ -265,17 +282,18 @@ fn plan_due(id: &str, last: Option<i64>, every_min: u64, now: i64) -> Due {
     }
 }
 
-/// Every `kv` key one tick needs: cadence stamps, alert counters, and
-/// first-seen stamps for all monitors, so the whole tick reads `kv` in as
-/// few queries as the param budget allows. (Counter rows for monitors
-/// that never failed simply come back absent.)
+/// Every `kv` key one tick needs: cadence stamps, alert counters,
+/// first-seen stamps, AND sample stamps for all monitors, so the whole
+/// tick reads `kv` in as few queries as the param budget allows.
+/// (Counter rows for monitors that never failed simply come back absent.)
 fn state_keys(ids: &[&str]) -> Vec<String> {
-    let mut keys = Vec::with_capacity(ids.len() * 4);
+    let mut keys = Vec::with_capacity(ids.len() * 5);
     for id in ids {
         keys.push(format!("last:{id}"));
         keys.push(format!("fails:{id}"));
         keys.push(format!("alert:{id}"));
         keys.push(format!("first:{id}"));
+        keys.push(format!("sample:{id}"));
     }
     keys
 }
@@ -345,8 +363,18 @@ async fn open_gaps(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, Gap>> {
     Ok(out)
 }
 
-/// Pure cadence math behind [`due`]: due with no history, or once at least
-/// `every_min` minutes elapsed since `last` (future stamps never count).
+/// Whether a latency `samples` row is due: never sampled, or at least
+/// `every_min` (sample cadence) elapsed since `last_sample`. Same interval
+/// rule as [`is_due`] but over the independent `sample:` stamp, so uptime
+/// probes can run every 5 minutes while charts stay hourly.
+#[must_use]
+pub fn sample_due(last_sample: Option<i64>, every_min: u64, now: i64) -> bool {
+    is_due(last_sample, every_min, now)
+}
+
+/// Pure cadence math behind [`plan_due`]: due with no history, or once at
+/// least `every_min` minutes elapsed since `last` (future stamps never
+/// count).
 #[must_use]
 pub fn is_due(last: Option<i64>, every_min: u64, now: i64) -> bool {
     let every_secs = every_min.saturating_mul(60);
@@ -396,8 +424,8 @@ mod tests {
     use super::{
         alert_for, close_gap_sql, first_value, form_encode, gap_why_update, hook_host, is_due,
         muted_set, open_gaps_sql, plan_alert, plan_deliveries, plan_due, probe_wave, prune_due,
-        prune_gaps_sql, prune_samples_sql, schema_current, stagger_offset, state_keys, wave_bounds,
-        why_gap_sql, Due,
+        prune_gaps_sql, prune_samples_sql, sample_due, schema_current, stagger_offset, state_keys,
+        wave_bounds, why_gap_sql, Due,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
@@ -688,6 +716,17 @@ mod tests {
     }
 
     #[test]
+    fn sample_gate_fires_hourly_on_five_minute_probes() {
+        // Split cadence: uptime probes every 5m, `samples` rows hourly.
+        // First probe always samples; a probe 5m later skips; an hour
+        // later samples again. Future stamps never count.
+        assert!(sample_due(None, 60, 10_000));
+        assert!(!sample_due(Some(10_000), 60, 10_300));
+        assert!(sample_due(Some(10_000), 60, 13_600));
+        assert!(!sample_due(Some(20_000), 60, 10_000));
+    }
+
+    #[test]
     fn plan_due_probes_skips_and_phases() {
         // Due or overdue history probes; fresh history skips.
         assert_eq!(plan_due("a", Some(1_000), 1, 1_060), Due::Probe);
@@ -804,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn state_keys_cover_cadence_and_alerts() {
+    fn state_keys_cover_cadence_alerts_and_samples() {
         assert_eq!(
             state_keys(&["a", "b"]),
             vec![
@@ -812,10 +851,12 @@ mod tests {
                 "fails:a".to_owned(),
                 "alert:a".to_owned(),
                 "first:a".to_owned(),
+                "sample:a".to_owned(),
                 "last:b".to_owned(),
                 "fails:b".to_owned(),
                 "alert:b".to_owned(),
                 "first:b".to_owned(),
+                "sample:b".to_owned(),
             ]
         );
         assert!(state_keys(&[]).is_empty());
@@ -863,9 +904,10 @@ fn cap_why(s: &str) -> &str {
     &s[..end]
 }
 
-/// One sample row plus gap open/close maintenance, as prepared statements
-/// for the end-of-tick write batch. `open` is this monitor's unterminated
-/// gap, if any. Decision logic mirrors the old executing version exactly.
+/// One sample row (only when `want_sample`) plus gap open/close maintenance,
+/// as prepared statements for the end-of-tick write batch. `open` is this
+/// monitor's unterminated gap, if any. Decision logic mirrors the old
+/// executing version exactly.
 fn record_stmts(
     db: &Db,
     id: &str,
@@ -874,20 +916,23 @@ fn record_stmts(
     verdict: &Say,
     location: &str,
     open: Option<&Gap>,
+    want_sample: bool,
 ) -> Result<Vec<D1PreparedStatement>> {
     let mut out = Vec::with_capacity(3);
-    let up_flag = i64::from(verdict.up);
-    let elapsed_ms = i64::try_from(seen.ms).unwrap_or(i64::MAX);
-    out.push(
-        db.q("INSERT INTO samples (id, at, ms, up, place) VALUES (?1, ?2, ?3, ?4, ?5)")
-            .bind(&[
-                id.into(),
-                num(now),
-                num(elapsed_ms),
-                num(up_flag),
-                location.into(),
-            ])?,
-    );
+    if want_sample {
+        let up_flag = i64::from(verdict.up);
+        let elapsed_ms = i64::try_from(seen.ms).unwrap_or(i64::MAX);
+        out.push(
+            db.q("INSERT INTO samples (id, at, ms, up, place) VALUES (?1, ?2, ?3, ?4, ?5)")
+                .bind(&[
+                    id.into(),
+                    num(now),
+                    num(elapsed_ms),
+                    num(up_flag),
+                    location.into(),
+                ])?,
+        );
+    }
     let mut track = Track::default();
     if let Some(gap) = open {
         track.gaps.push(Gap {
@@ -1115,8 +1160,8 @@ fn prune_due(now_secs: i64) -> bool {
 
 /// Rows removed per prune statement: the daily sweep pushes [`PRUNE_CHUNKS`]
 /// bounded statements per table into the same write batch, draining a full
-/// day of worst-case volume (~72k rows at 50 monitors) without one giant
-/// DELETE stalling D1 mid-tick.
+/// day of split-cadence volume (~9k gap/steady rows + ~1k hourly samples
+/// at 30 monitors) without one giant DELETE stalling D1 mid-tick.
 pub const PRUNE_CHUNK: i64 = 20_000;
 /// Prune statements per table per daily sweep (see [`PRUNE_CHUNK`]).
 pub const PRUNE_CHUNKS: usize = 5;

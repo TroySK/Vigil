@@ -38,30 +38,76 @@ pub struct Site {
     /// Optional Basic-auth gate for the whole site.
     #[serde(default)]
     pub auth: Option<Gate>,
-    /// Default probe cadence in minutes for monitors without an
-    /// [`Monitor::every_min`] override (`0`/unset means every tick).
+    /// Default probe cadence in minutes for monitors without a
+    /// [`Monitor::uptime_every_min`] override. Unset/`0` means every tick
+    /// (the cron fires every 5 minutes); per-monitor overrides can only
+    /// slow down, never speed up.
     #[serde(default)]
     pub check_every_min: u64,
+    /// Default latency-sample cadence in minutes for monitors without a
+    /// [`Monitor::sample_every_min`] override. Unset/`0` means hourly:
+    /// probes still run on the uptime cadence for fast paging, but
+    /// `samples` rows (charts, percentiles) are written at most once per
+    /// hour so D1 sample writes and chart scans stay flat.
+    #[serde(default)]
+    pub sample_every_min: u64,
     /// Auto-refresh interval in seconds for status pages (`None` means the
-    /// 30s default; `Some(0)` disables polling entirely).
+    /// hourly default; `Some(0)` disables polling entirely).
     #[serde(default)]
     pub refresh_secs: Option<u64>,
 }
 
+/// Minimum uptime-probe cadence in minutes: 5. Faster probing multiplies
+/// D1 `kv` reads/writes (every tick does a 4N-key `kv_map` plus cadence
+/// stamps) against the 5M rows/day quota, so anything faster is rejected
+/// by [`Site::check`] and clamped here.
+pub const MIN_CADENCE_MIN: u64 = 5;
+/// Default latency-sample cadence in minutes: hourly. Charts and
+/// percentiles need one dot per hour, not one per probe — a 5-minute
+/// fleet writes 12x the `samples` rows for identical pixels.
+pub const DEFAULT_SAMPLE_MIN: u64 = 60;
+/// Default page refresh when `refresh_secs` is unset: 5 minutes, matching
+/// the probe cadence so the page reloads on fresh uptime data without
+/// burning D1 reads between ticks.
+pub const DEFAULT_REFRESH_SECS: u64 = 300;
+
 impl Site {
-    /// Probe cadence for a monitor in minutes: its own `every_min` when
-    /// set, else the global `check_every_min`; always at least 1.
+    /// Uptime-probe cadence for a monitor in minutes: its own
+    /// `uptime_every_min` (legacy `every_min`) when set, else the global
+    /// `check_every_min`; unset/`0` means every tick, always at least
+    /// [`MIN_CADENCE_MIN`] so one fleet can't burn the D1 rows quota.
     #[must_use]
     pub fn cadence_min(&self, monitor: &Monitor) -> u64 {
-        monitor.every_min.unwrap_or(self.check_every_min).max(1)
+        monitor
+            .uptime_every_min()
+            .unwrap_or(self.check_every_min)
+            .max(MIN_CADENCE_MIN)
+    }
+
+    /// Latency-sample cadence for a monitor in minutes: its own
+    /// `sample_every_min` when set, else the global `sample_every_min`;
+    /// unset/`0` means [`DEFAULT_SAMPLE_MIN`] (hourly). Always at least
+    /// the uptime cadence — samples ride on probes, so sampling faster
+    /// than probing is meaningless.
+    #[must_use]
+    pub fn sample_cadence_min(&self, monitor: &Monitor) -> u64 {
+        let sample = monitor
+            .sample_every_min
+            .unwrap_or(self.sample_every_min);
+        let sample = if sample == 0 {
+            DEFAULT_SAMPLE_MIN
+        } else {
+            sample
+        };
+        sample.max(self.cadence_min(monitor))
     }
 
     /// Page auto-refresh interval in milliseconds: configured seconds, or
-    /// the 30s default when unset; `0` disables polling.
+    /// the hourly default when unset; `0` disables polling.
     #[must_use]
     pub fn refresh_ms(&self) -> u64 {
         match self.refresh_secs {
-            None => 30_000,
+            None => DEFAULT_REFRESH_SECS.saturating_mul(1_000),
             Some(0) => 0,
             Some(secs) => secs.saturating_mul(1_000),
         }
@@ -102,11 +148,25 @@ pub struct Monitor {
     /// Hide the latency sparkline for this monitor.
     #[serde(default)]
     pub quiet_chart: bool,
-    /// Probe every N minutes instead of every tick (`None` inherits the
-    /// global [`Site::check_every_min`]). Explicit `0` is rejected by
-    /// [`Site::check`].
+    /// Probe every N minutes instead of hourly (`None` inherits the
+    /// global [`Site::check_every_min`]). Values below 5 minutes are
+    /// rejected by [`Site::check`] to protect the D1 rows quota.
+    ///
+    /// Legacy name for [`Monitor::uptime_every_min`]: kept so existing
+    /// configs keep working; when both are set, `uptime_every_min` wins.
     #[serde(default)]
     pub every_min: Option<u64>,
+    /// Uptime-probe cadence override in minutes (`None` inherits the
+    /// global [`Site::check_every_min`], falling back to `every_min` for
+    /// legacy configs). Unset/`0` means every tick; values below
+    /// [`MIN_CADENCE_MIN`] are rejected by [`Site::check`].
+    #[serde(default)]
+    pub uptime_every_min: Option<u64>,
+    /// Latency-sample cadence override in minutes (`None` inherits the
+    /// global [`Site::sample_every_min`], unset = hourly). Samples ride on
+    /// probes, so values below the uptime cadence clamp up to it.
+    #[serde(default)]
+    pub sample_every_min: Option<u64>,
 }
 
 fn default_timeout() -> u64 {
@@ -144,6 +204,15 @@ pub enum Probe {
 
 fn default_method() -> String {
     DEFAULT_HTTP_METHOD.into()
+}
+
+impl Monitor {
+    /// Effective uptime-probe override: `uptime_every_min` when set, else
+    /// legacy `every_min` (`None` inherits the global cadence).
+    #[must_use]
+    pub fn uptime_every_min(&self) -> Option<u64> {
+        self.uptime_every_min.or(self.every_min)
+    }
 }
 
 /// Notification / grace configuration.

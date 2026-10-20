@@ -25,11 +25,14 @@
 #   links   footer label -> url map, rendered in file order (default: {})
 #   groups  group name -> [monitor ids]        (default: {}; unlisted ids
 #           render under "Other")
-#   check_every_min  default probe cadence in minutes for monitors
-#           without their own `every_min`      (default: 1 = every tick;
-#           the cron itself still fires every minute and skips
+#   check_every_min  default uptime-probe cadence in minutes for monitors
+#           without their own override       (default: 0 = every 5-min tick;
+#           the cron itself fires every 5 minutes and skips
 #           monitors that aren't due)
-#   refresh_secs  page auto-refresh interval in seconds (default: 30;
+#   sample_every_min  default latency-sample cadence (default: 0 = hourly;
+#           probes run for uptime, but `samples` rows for charts write at
+#           most once per hour to hold D1 rows down)
+#   refresh_secs  page auto-refresh interval in seconds (default: 300;
 #           0 disables polling entirely). Pages poll on this interval but
 #           reload only when a tick probed new data, so idle ticks cost a
 #           cheap health check instead of a full render.
@@ -43,7 +46,7 @@
 #     name: Search API        # required, display name
 #     expect: [200, 429]      # accepted HTTP codes (default: [] = any 2xx)
 #     timeout_ms: 8000        # per-probe timeout, 1..60000 (default: 10000)
-#     every_min: 5            # probe every 5m instead of every tick
+#     every_min: 120           # probe every 2h instead of hourly
 #                             # (default: unset = global check_every_min)
 #     has: "results"          # body must contain this (default: unset)
 #     lacks: "maintenance"    # body must NOT contain this (default: unset)
@@ -86,6 +89,7 @@
 
 title: Vigil Status
 check_every_min: 5
+sample_every_min: 60
 refresh_secs: 300
 
 links:

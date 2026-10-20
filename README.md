@@ -3,11 +3,12 @@
 Vigil is an uptime monitor and status page that runs entirely on Cloudflare
 Workers, written in Rust and compiled to WebAssembly.
 
-A scheduled cron trigger wakes the worker every minute. Each tick probes
+A scheduled cron trigger wakes the worker every 5 minutes. Each tick probes
 every due monitor over HTTP or TCP (concurrently, each raced against its
-own deadline), records latency samples and downtime windows in a D1
-database, and sends webhook notifications on state transitions. Probe
-cadence is configurable per monitor. A dependency-free status page renders
+own deadline), records hourly latency samples and 5-minute downtime windows
+in a D1 database, and sends webhook notifications on state transitions.
+Uptime cadence is 5 minutes at minimum (per monitor or global); latency
+samples stay hourly to hold D1 rows down. A dependency-free status page renders
 hourly history bars, latency charts with axes, upkeep banners, and
 per-monitor detail pages, alongside a small JSON API and SVG badges.
 
@@ -87,13 +88,18 @@ Config rules (same YAML shape as before):
 - Display: `tip` (hover tooltip), `href` (link on the name, opens in a new
   tab), `quiet_chart` (hide the latency chart). Each row shows the site's
   own `/favicon.ico` (with `favicon.png`/`icon.*` fallbacks) beside the name.
-- Probe cadence: top-level `check_every_min` sets the default cadence in
-  minutes; a monitor's own `every_min` overrides it. Unset (or `0` globally)
-  means every tick. Explicit `every_min: 0` on a monitor is rejected as a
-  typo. The cron itself always fires every minute and skips monitors that
+- Probe cadence (split): top-level `check_every_min` sets the default
+  uptime-probe cadence in minutes; a monitor's own `uptime_every_min`
+  (legacy `every_min`) overrides it. Both clamp to a 5-minute floor so
+  downtime pages fast without burning the D1 rows quota.
+  `sample_every_min` (global + per-monitor) sets the latency-sample
+  cadence separately — unset means hourly, so charts and percentiles
+  write ~12x fewer `samples` rows than 5-minute probing. Samples ride on
+  probes and never run faster than the uptime cadence.
+  The cron itself fires every 5 minutes and skips monitors that
   aren't due — first sightings spread across the interval so a fleet never
   synchronizes onto one tick.
-- `refresh_secs`: page auto-refresh interval in seconds (default 30,
+- `refresh_secs`: page auto-refresh interval in seconds (default 300,
   `0` disables polling). Pages poll on this interval but reload only when
   a tick probed new data.
 - `links` render as chips in file order (first link is leftmost) and open
@@ -235,10 +241,11 @@ if you want required reviewers before a deploy):
 
 - Probes race against a per-monitor deadline and run concurrently, so one
   hung endpoint cannot stall the cron tick.
-- Each tick writes one `samples` row and maintains open/closed `gaps`
-  rows per probed monitor in D1, then prunes rows older than 90 days.
-  Skipped monitors (cadence) record nothing; the published up/down counts
-  only refresh on ticks that probed at least one monitor.
+- Each tick maintains open/closed `gaps` rows per probed monitor and writes
+  one `samples` row only when the hourly sample gate fires, then prunes
+  rows older than 90 days. Skipped monitors (cadence) record nothing; the
+  published up/down counts only refresh on ticks that probed at least one
+  monitor.
 - Recovery always notifies; down-transitions notify only after
   `grace_min` consecutive failing ticks.
 - History bars show honest gaps: days/hours before a monitor's first

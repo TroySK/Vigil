@@ -153,27 +153,29 @@ fn range_param(url: &url::Url) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-/// Shared cache policy per path: tick-granular pages and read APIs tolerate
-/// 30s of staleness (the auto-refresh polls on the same interval), which
-/// caps D1 fan-out cost per visitor. `s-maxage` + `stale-while-revalidate`
-/// let the Cloudflare edge absorb the tail (D1 variance is the P90) while
-/// browsers still refresh promptly; icons set their own immutable policy
-/// and the badge (polled by external embeds) tolerates 60s. When the auth
-/// gate is on (`gated`), responses are `private` so a shared cache never
-/// serves one visitor's page to another (see the `Vary` in `handle`).
+/// Shared cache policy per path: probes run every 5 minutes but latency
+/// charts stay hourly, so pages and read APIs tolerate 5 minutes of
+/// staleness (the auto-refresh polls on the same interval), which caps
+/// D1 fan-out cost per visitor. `s-maxage` + `stale-while-revalidate`
+/// let the Cloudflare edge absorb the tail (D1 variance is the P90)
+/// while browsers still refresh promptly; icons set their own immutable
+/// policy and the badge (polled by external embeds) tolerates 5 minutes.
+/// When the auth gate is on (`gated`), responses are `private` so a
+/// shared cache never serves one visitor's page to another (see the
+/// `Vary` in `handle`).
 fn cache_control(path: &str, gated: bool) -> Option<&'static str> {
     if gated {
         return match path {
             "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history"
-            | "/api/incidents" | "/api/latency" => Some("private, max-age=30"),
-            "/api/badge" => Some("private, max-age=60"),
+            | "/api/incidents" | "/api/latency" => Some("private, max-age=300"),
+            "/api/badge" => Some("private, max-age=300"),
             _ => None,
         };
     }
     match path {
         "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history" | "/api/incidents"
-        | "/api/latency" => Some("public, max-age=30, s-maxage=30, stale-while-revalidate=60"),
-        "/api/badge" => Some("public, max-age=60, s-maxage=60, stale-while-revalidate=120"),
+        | "/api/latency" => Some("public, max-age=300, s-maxage=300, stale-while-revalidate=60"),
+        "/api/badge" => Some("public, max-age=300, s-maxage=300, stale-while-revalidate=60"),
         _ => None,
     }
 }
@@ -206,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_granular_routes_share_short_cache() {
+    fn hourly_granular_routes_share_five_minute_cache() {
         for path in [
             "/",
             "/index.html",
@@ -218,7 +220,7 @@ mod tests {
         ] {
             assert_eq!(
                 cache_control(path, false),
-                Some("public, max-age=30, s-maxage=30, stale-while-revalidate=60"),
+                Some("public, max-age=300, s-maxage=300, stale-while-revalidate=60"),
                 "{path} must be cheap to serve"
             );
         }
@@ -226,10 +228,11 @@ mod tests {
 
     #[test]
     fn badge_caches_briefly_and_errors_stay_uncached() {
-        // Badge embeds poll constantly; 60s of staleness caps D1 reads.
+        // Badge embeds poll constantly; 5 minutes of staleness caps D1 reads
+        // while staying fresh with the probe cadence.
         assert_eq!(
             cache_control("/api/badge", false),
-            Some("public, max-age=60, s-maxage=60, stale-while-revalidate=120")
+            Some("public, max-age=300, s-maxage=300, stale-while-revalidate=60")
         );
         assert_eq!(cache_control("/nope", false), None);
     }

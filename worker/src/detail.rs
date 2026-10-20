@@ -25,9 +25,10 @@ fn gap_in_range(at: i64, to: Option<i64>, cutoff: i64, now: i64) -> bool {
     at <= now && to.unwrap_or(now) >= cutoff
 }
 
-/// Latency chart points per range view: enough for a smooth line without
-/// bloating the inline SVG on long ranges.
-pub const DETAIL_LATENCY_POINTS: i64 = 300;
+/// Latency chart points per range view: hourly samples need far fewer dots
+/// than 5-minute probes (24/day vs 288/day), so 96 points keep long ranges
+/// honest without bloating the inline SVG or scanning extra D1 rows.
+pub const DETAIL_LATENCY_POINTS: i64 = 96;
 /// Incident rows shown on the detail page.
 pub const DETAIL_INCIDENTS: usize = 50;
 
@@ -78,7 +79,10 @@ pub async fn render(
         None
     };
     let current = regions.first();
-    let is_up = current.map_or(true, |r| r.up == 1);
+    // Status from gaps (open gap = down), not the hourly sample — see
+    // `one_row` in page.rs for why split cadence needs this.
+    let open = gaps.iter().any(|g| g.to.is_none());
+    let is_up = !open && current.map_or(true, |r| r.up == 1);
     // The 24-hour view renders 24 hourly cells; day ranges render one
     // cell per day (see range::bars_for). Both share the DayBar shape,
     // so one loop paints them.

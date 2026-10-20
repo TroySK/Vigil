@@ -20,6 +20,8 @@ fn web() -> Monitor {
         href: None,
         quiet_chart: false,
         every_min: None,
+        uptime_every_min: None,
+        sample_every_min: None,
     }
 }
 
@@ -203,6 +205,8 @@ fn config_check_reports_typed_errors() {
                 href: None,
                 quiet_chart: false,
                 every_min: None,
+                uptime_every_min: None,
+                sample_every_min: None,
             },
             Monitor {
                 id: "dup".into(), // duplicate
@@ -221,6 +225,8 @@ fn config_check_reports_typed_errors() {
                 href: None,
                 quiet_chart: false,
                 every_min: None,
+                uptime_every_min: None,
+                sample_every_min: None,
             },
         ],
         ..Site::default()
@@ -234,26 +240,51 @@ fn config_check_reports_typed_errors() {
 
 #[test]
 fn cadence_prefers_monitor_override_then_global() {
-    use vigil_core::config::{Monitor, Site};
+    use vigil_core::config::{Site, MIN_CADENCE_MIN, DEFAULT_SAMPLE_MIN};
     let site = Site {
-        check_every_min: 5,
+        check_every_min: 30,
+        sample_every_min: 120,
         ..Site::default()
     };
     let mut inherited = web();
     inherited.every_min = None;
-    assert_eq!(site.cadence_min(&inherited), 5);
+    assert_eq!(site.cadence_min(&inherited), 30);
+    // Legacy `every_min` still overrides the global uptime cadence.
     let mut overridden = web();
-    overridden.every_min = Some(15);
-    assert_eq!(site.cadence_min(&overridden), 15);
-    // Unset everywhere still probes every tick, never zero.
+    overridden.every_min = Some(60);
+    assert_eq!(site.cadence_min(&overridden), 60);
+    // `uptime_every_min` wins over legacy `every_min` when both are set.
+    let mut both = web();
+    both.every_min = Some(60);
+    both.uptime_every_min = Some(30);
+    assert_eq!(site.cadence_min(&both), 30);
+    // Sub-5-minute cadences clamp to the floor to protect D1 rows.
+    let mut fast = web();
+    fast.uptime_every_min = Some(1);
+    assert_eq!(site.cadence_min(&fast), MIN_CADENCE_MIN);
+    // Unset global uptime cadence means every tick (floor still applies);
+    // unset sample cadence means hourly.
     let bare = Site::default();
-    assert_eq!(bare.cadence_min(&inherited), 1);
+    assert_eq!(bare.cadence_min(&inherited), MIN_CADENCE_MIN);
+    assert_eq!(bare.sample_cadence_min(&inherited), DEFAULT_SAMPLE_MIN);
+    // Sample cadence follows its own override, but never runs faster than
+    // the uptime cadence (samples ride on probes).
+    assert_eq!(site.sample_cadence_min(&inherited), 120);
+    let mut frequent = web();
+    frequent.sample_every_min = Some(5);
+    assert_eq!(
+        site.sample_cadence_min(&frequent),
+        site.cadence_min(&frequent)
+    );
 }
 
 #[test]
 fn refresh_interval_defaults_and_disables() {
-    use vigil_core::config::Site;
-    assert_eq!(Site::default().refresh_ms(), 30_000);
+    use vigil_core::config::{Site, DEFAULT_REFRESH_SECS};
+    assert_eq!(
+        Site::default().refresh_ms(),
+        DEFAULT_REFRESH_SECS.saturating_mul(1_000)
+    );
     let off = Site {
         refresh_secs: Some(0),
         ..Site::default()
@@ -272,15 +303,54 @@ fn refresh_interval_defaults_and_disables() {
 }
 
 #[test]
-fn zero_every_min_is_rejected() {
+fn sub_floor_uptime_cadence_is_rejected() {
     use vigil_core::config::Site;
-    let mut bad = web();
-    bad.id = "z".into();
-    bad.every_min = Some(0);
-    let site = Site {
-        monitors: vec![bad],
+    for every in [1, 2, 4] {
+        let mut bad = web();
+        bad.id = "z".into();
+        bad.uptime_every_min = Some(every);
+        let site = Site {
+            monitors: vec![bad],
+            ..Site::default()
+        };
+        let errors = site.check().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.to_string().contains("bad every_min")),
+            "uptime_every_min={every} must be rejected"
+        );
+    }
+    // 5-minute floor and slower uptime cadences pass (legacy field too).
+    for every in [0, 5, 30, 60] {
+        let mut ok = web();
+        ok.every_min = if every == 0 { None } else { Some(every) };
+        let site = Site {
+            monitors: vec![ok],
+            ..Site::default()
+        };
+        assert!(site.check().is_ok(), "uptime every_min={every} must pass");
+    }
+    // Global sample cadence below the floor is a typo; hourly+ passes.
+    let bad_sample = Site {
+        sample_every_min: 1,
         ..Site::default()
     };
-    let errors = site.check().unwrap_err();
-    assert!(errors.iter().any(|e| e.to_string().contains("bad every_min")));
+    assert!(
+        bad_sample
+            .check()
+            .unwrap_err()
+            .iter()
+            .any(|e| e.to_string().contains("bad sample_every_min"))
+    );
+    let ok_sample = Site {
+        sample_every_min: 60,
+        ..Site::default()
+    };
+    // No monitors -> "no monitors" error, but never a sample error.
+    assert!(
+        ok_sample
+            .check()
+            .unwrap_err()
+            .into_iter()
+            .all(|e| !e.to_string().contains("sample"))
+    );
 }
