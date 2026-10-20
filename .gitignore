@@ -1,5 +1,7 @@
 /target/
 .opencode/
+.wrangler/
+worker/.wrangler/
 # Live site config: edited via the worker editor (EDITOR=true), stored in
 # D1. Never commit it — see config/site.example.yaml for the template.
 config/site.yaml
