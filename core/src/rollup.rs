@@ -4,9 +4,11 @@ use crate::state::GapSpan;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Latency at or below this is healthy; charts turn red above it.
-const LATENCY_STANDARD_MS: i64 = 200;
-/// Half-width of the gradient's amber transition around the standard.
+/// Values at or below this are green.
+const LATENCY_GREEN_END_MS: i64 = 200;
+/// Values from the green end through this are yellow; above is red.
+const LATENCY_YELLOW_END_MS: i64 = 600;
+/// Half-width of the blend at each color boundary.
 const LATENCY_BAND_MS: i64 = 20;
 
 /// Seconds in one day.
@@ -316,47 +318,54 @@ static LINE_GRADIENT_SEQ: AtomicU32 = AtomicU32::new(0);
 
 /// SVG gradient shared by latency lines and their dots.
 ///
-/// Green holds below [`LATENCY_STANDARD_MS`], amber marks the threshold,
-/// and red holds above it. `band` carries the SVG rows for the green,
-/// amber, and red stops; when the series never crosses the threshold, the
-/// gradient stays green.
-fn line_gradient(height: u32, band: Option<(u32, u32, u32)>) -> (String, String) {
+/// Green holds through `LATENCY_GREEN_END_MS`, yellow through
+/// `LATENCY_YELLOW_END_MS`, and red above. Narrow blends at the two
+/// boundaries keep the band edges from looking aliased. When the series
+/// never leaves the green band, the gradient is green throughout.
+fn line_gradient(height: u32, max_ms: i64, y: &impl Fn(i64) -> u32) -> (String, String) {
     let id = format!(
         "latency-line-{}",
         LINE_GRADIENT_SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    let stops = match band {
-        Some((green_y, amber_y, red_y)) if height > 0 => {
-            let offset = |y: u32| f64::from(y.min(height)) / f64::from(height);
-            let (green, amber, red) = (offset(green_y), offset(amber_y), offset(red_y));
-            format!(
-                "<stop offset=\"0\" stop-color=\"var(--color-bad)\"/>\
-                 <stop offset=\"{red:.4}\" stop-color=\"#ff7b72\"/>\
-                 <stop offset=\"{amber:.4}\" stop-color=\"#d29922\"/>\
-                 <stop offset=\"{green:.4}\" stop-color=\"#3fb950\"/>\
-                 <stop offset=\"1\" stop-color=\"var(--color-ok)\"/>"
-            )
+    let mut stops = String::new();
+    if height == 0 || max_ms <= LATENCY_GREEN_END_MS {
+        stops.push_str(
+            "<stop offset=\"0\" stop-color=\"var(--color-ok)\"/>\
+             <stop offset=\"1\" stop-color=\"var(--color-ok)\"/>",
+        );
+    } else {
+        let offset = |ms: i64| f64::from(y(ms).min(height)) / f64::from(height);
+        if max_ms > LATENCY_YELLOW_END_MS {
+            stops.push_str("<stop offset=\"0\" stop-color=\"var(--color-bad)\"/>");
+            let red = offset(LATENCY_YELLOW_END_MS + LATENCY_BAND_MS);
+            let _ = write!(
+                stops,
+                "<stop offset=\"{red:.4}\" stop-color=\"#ff7b72\"/>"
+            );
+            let yellow = offset(LATENCY_YELLOW_END_MS - LATENCY_BAND_MS);
+            let _ = write!(
+                stops,
+                "<stop offset=\"{yellow:.4}\" stop-color=\"#d4a72c\"/>"
+            );
+        } else {
+            stops.push_str("<stop offset=\"0\" stop-color=\"#d4a72c\"/>");
         }
-        _ => "<stop offset=\"0\" stop-color=\"var(--color-ok)\"/>\
-              <stop offset=\"1\" stop-color=\"var(--color-ok)\"/>"
-            .to_owned(),
-    };
+        let yellow = offset(LATENCY_GREEN_END_MS + LATENCY_BAND_MS);
+        let _ = write!(
+            stops,
+            "<stop offset=\"{yellow:.4}\" stop-color=\"#e3b341\"/>"
+        );
+        let green = offset(LATENCY_GREEN_END_MS - LATENCY_BAND_MS);
+        let _ = write!(
+            stops,
+            "<stop offset=\"{green:.4}\" stop-color=\"#3fb950\"/>"
+        );
+        stops.push_str("<stop offset=\"1\" stop-color=\"var(--color-ok)\"/>");
+    }
     let defs = format!(
         "<defs><linearGradient id=\"{id}\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"{height}\" gradientUnits=\"userSpaceOnUse\">{stops}</linearGradient></defs>"
     );
     (id, defs)
-}
-
-/// Rows for the green, amber, and red gradient stops. `None` keeps the
-/// line green when every sample is below the standard.
-fn threshold_band(y: &impl Fn(i64) -> u32, max_ms: i64) -> Option<(u32, u32, u32)> {
-    (max_ms > LATENCY_STANDARD_MS).then(|| {
-        (
-            y(LATENCY_STANDARD_MS - LATENCY_BAND_MS),
-            y(LATENCY_STANDARD_MS),
-            y(LATENCY_STANDARD_MS + LATENCY_BAND_MS),
-        )
-    })
 }
 
 /// Dependency-free SVG sparkline with per-point time tooltips
@@ -385,8 +394,7 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
         let scaled = (ms.max(0) as f64 / max) * f64::from(h.saturating_sub(4));
         h.saturating_sub(scaled.round() as u32 + 2)
     };
-    let band = threshold_band(&y_at, max_ms);
-    let (gradient_id, gradient_defs) = line_gradient(h, band);
+    let (gradient_id, gradient_defs) = line_gradient(h, max_ms, &y_at);
     let step = if points.len() < 2 {
         0.0
     } else {
@@ -454,8 +462,7 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32, hourly: bool) 
         let scaled = (ms.max(0) as f64 / max) * f64::from(plot_h);
         plot_h.saturating_sub(scaled.round() as u32)
     };
-    let band = threshold_band(&y, max_ms);
-    let (gradient_id, gradient_defs) = line_gradient(plot_h, band);
+    let (gradient_id, gradient_defs) = line_gradient(plot_h, max_ms, &y);
     let mut pixels = Vec::with_capacity(points.len());
     let mut marks = String::with_capacity(points.len() * 48);
     let mut dots = String::with_capacity(points.len() * 96);
