@@ -159,6 +159,34 @@ fn latency_chart_has_labeled_axes() {
 }
 
 #[test]
+fn latency_line_gradient_follows_standard() {
+    use vigil_core::rollup::{latency_chart, sparkline_points};
+
+    // A series below 200ms stays entirely in the healthy green band.
+    let low = latency_chart(&[(1_000, 120, "BOM"), (2_000, 180, "BOM")], 600, 150, false);
+    assert!(low.contains("<linearGradient"));
+    assert!(low.contains("--line:url(#latency-line-"));
+    assert!(low.contains("stop-color=\"var(--color-ok)\""));
+    assert!(!low.contains("var(--color-bad)"));
+    assert!(!low.contains("#d29922"));
+
+    // A high sample pulls in the red top and the amber threshold stop.
+    let mixed = latency_chart(&[(1_000, 100, "BOM"), (2_000, 600, "BOM")], 600, 150, false);
+    assert!(mixed.contains("stop-color=\"var(--color-bad)\""));
+    assert!(mixed.contains("stop-color=\"#d29922\""));
+    assert!(mixed.contains("stop-color=\"var(--color-ok)\""));
+    assert_eq!(mixed.matches("<stop ").count(), 5);
+    // 200ms sits two-thirds down a 600ms, 150px plot.
+    assert!(mixed.contains("offset=\"0.6667\""));
+
+    // Sparklines use the same value mapping.
+    let spark = sparkline_points(&[(1_000, 100), (2_000, 600)], 160, 36);
+    assert!(spark.contains("<linearGradient"));
+    assert!(spark.contains("stop-color=\"var(--color-bad)\""));
+    assert!(spark.contains("stop-color=\"#d29922\""));
+}
+
+#[test]
 fn latency_chart_drops_repeated_axis_labels() {
     use vigil_core::rollup::latency_chart;
     // Three samples inside one day all format as `01-January`; the axis

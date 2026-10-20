@@ -2,6 +2,12 @@
 
 use crate::state::GapSpan;
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Latency at or below this is healthy; charts turn red above it.
+const LATENCY_STANDARD_MS: i64 = 200;
+/// Half-width of the gradient's amber transition around the standard.
+const LATENCY_BAND_MS: i64 = 20;
 
 /// Seconds in one day.
 pub const SECS_PER_DAY: i64 = 86_400;
@@ -306,6 +312,53 @@ pub fn smooth_path(points: &[(u32, u32)]) -> String {
     d
 }
 
+static LINE_GRADIENT_SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// SVG gradient shared by latency lines and their dots.
+///
+/// Green holds below [`LATENCY_STANDARD_MS`], amber marks the threshold,
+/// and red holds above it. `band` carries the SVG rows for the green,
+/// amber, and red stops; when the series never crosses the threshold, the
+/// gradient stays green.
+fn line_gradient(height: u32, band: Option<(u32, u32, u32)>) -> (String, String) {
+    let id = format!(
+        "latency-line-{}",
+        LINE_GRADIENT_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let stops = match band {
+        Some((green_y, amber_y, red_y)) if height > 0 => {
+            let offset = |y: u32| f64::from(y.min(height)) / f64::from(height);
+            let (green, amber, red) = (offset(green_y), offset(amber_y), offset(red_y));
+            format!(
+                "<stop offset=\"0\" stop-color=\"var(--color-bad)\"/>\
+                 <stop offset=\"{red:.4}\" stop-color=\"#ff7b72\"/>\
+                 <stop offset=\"{amber:.4}\" stop-color=\"#d29922\"/>\
+                 <stop offset=\"{green:.4}\" stop-color=\"#3fb950\"/>\
+                 <stop offset=\"1\" stop-color=\"var(--color-ok)\"/>"
+            )
+        }
+        _ => "<stop offset=\"0\" stop-color=\"var(--color-ok)\"/>\
+              <stop offset=\"1\" stop-color=\"var(--color-ok)\"/>"
+            .to_owned(),
+    };
+    let defs = format!(
+        "<defs><linearGradient id=\"{id}\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"{height}\" gradientUnits=\"userSpaceOnUse\">{stops}</linearGradient></defs>"
+    );
+    (id, defs)
+}
+
+/// Rows for the green, amber, and red gradient stops. `None` keeps the
+/// line green when every sample is below the standard.
+fn threshold_band(y: &impl Fn(i64) -> u32, max_ms: i64) -> Option<(u32, u32, u32)> {
+    (max_ms > LATENCY_STANDARD_MS).then(|| {
+        (
+            y(LATENCY_STANDARD_MS - LATENCY_BAND_MS),
+            y(LATENCY_STANDARD_MS),
+            y(LATENCY_STANDARD_MS + LATENCY_BAND_MS),
+        )
+    })
+}
+
 /// Dependency-free SVG sparkline with per-point time tooltips
 /// (oldest → newest). Each sample gets an invisible hover target carrying a
 /// `data-tip` attribute (`{timestamp}: {ms}ms`); a small page script turns
@@ -321,12 +374,19 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
     if points.is_empty() {
         return String::new();
     }
-    let max = points
+    let max_ms = points
         .iter()
         .map(|&(_, ms)| ms)
         .max()
         .unwrap_or(0)
-        .max(1) as f64;
+        .max(1);
+    let max = max_ms as f64;
+    let y_at = |ms: i64| {
+        let scaled = (ms.max(0) as f64 / max) * f64::from(h.saturating_sub(4));
+        h.saturating_sub(scaled.round() as u32 + 2)
+    };
+    let band = threshold_band(&y_at, max_ms);
+    let (gradient_id, gradient_defs) = line_gradient(h, band);
     let step = if points.len() < 2 {
         0.0
     } else {
@@ -337,8 +397,7 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
     let mut dots = String::with_capacity(points.len() * 64);
     for (i, &(at, ms)) in points.iter().enumerate() {
         let x = (i as f64 * step).round() as u32;
-        let scaled = (ms.max(0) as f64 / max) * f64::from(h.saturating_sub(4));
-        let y = h.saturating_sub(scaled.round() as u32 + 2);
+        let y = y_at(ms);
         pixels.push((x, y));
         let _ = write!(marks, "<circle class=\"dot\" cx=\"{x}\" cy=\"{y}\" r=\"2\"/>");
         let _ = write!(
@@ -348,8 +407,8 @@ pub fn sparkline_points(points: &[(i64, i64)], w: u32, h: u32) -> String {
         );
     }
     format!(
-        "<svg class=\"spark\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-label=\"Latency sparkline\">\
-<title>Latency sparkline</title>\
+        "<svg class=\"spark\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-label=\"Latency sparkline\" style=\"--line:url(#{gradient_id})\">\
+{gradient_defs}<title>Latency sparkline</title>\
 <path d=\"{}\" class=\"line\"/>{marks}{dots}</svg>",
         smooth_path(&pixels)
     )
@@ -395,6 +454,8 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32, hourly: bool) 
         let scaled = (ms.max(0) as f64 / max) * f64::from(plot_h);
         plot_h.saturating_sub(scaled.round() as u32)
     };
+    let band = threshold_band(&y, max_ms);
+    let (gradient_id, gradient_defs) = line_gradient(plot_h, band);
     let mut pixels = Vec::with_capacity(points.len());
     let mut marks = String::with_capacity(points.len() * 48);
     let mut dots = String::with_capacity(points.len() * 96);
@@ -464,8 +525,8 @@ pub fn latency_chart(points: &[(i64, i64, &str)], w: u32, h: u32, hourly: bool) 
     format!(
         "<span class=\"chart-frame\" role=\"img\" aria-label=\"Latency chart, up to {max_ms}ms, {first_label} to {last_label}\">\
 <span class=\"chart-axis-y\" aria-hidden=true><span>{max_ms}ms</span><span>{mid}ms</span><span>0</span></span>\
-<span class=\"chart-plot\"><svg class=\"chart\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" aria-hidden=true focusable=false>\
-<line class=\"grid\" x1=\"0\" y1=\"0\" x2=\"{plot_w}\" y2=\"0\"/>\
+<span class=\"chart-plot\"><svg class=\"chart\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" aria-hidden=true focusable=false style=\"--line:url(#{gradient_id})\">\
+{gradient_defs}<line class=\"grid\" x1=\"0\" y1=\"0\" x2=\"{plot_w}\" y2=\"0\"/>\
 <line class=\"grid\" x1=\"0\" y1=\"{}\" x2=\"{plot_w}\" y2=\"{}\"/>\
 <line class=\"axis\" x1=\"0\" y1=\"{base}\" x2=\"{plot_w}\" y2=\"{base}\"/>\
 <path d=\"{}\" class=\"line\"/>{marks}{dots}</svg></span>\
