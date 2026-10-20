@@ -15,9 +15,8 @@ use vigil_core::state::Gap;
 use worker::{Response, Result};
 
 /// Latency chart points per sparkline on the index page: each monitor's
-/// 24-hour pulse spreads at most this many dots (see `series_by_monitor`).
-/// Hourly samples yield at most 24 points, so 24 renders every sample
-/// with no stride and no extra D1 rows scanned.
+/// selected-range window spreads at most this many dots (see
+/// `series_by_monitor`), strided server-side so long ranges stay cheap.
 pub const INDEX_CHART_POINTS: i64 = 24;
 
 /// Render the full status page.
@@ -136,13 +135,8 @@ pub async fn sections(
         .collect();
     let now = at.max(1);
     let cutoff = now.saturating_sub(range.secs());
-    // Sparklines always pulse the last 24 hours while bars follow the
-    // range: a range-wide sparkline would scan the full window per monitor
-    // per load (~777k rows at 90 days), burning the D1 rows-read quota for
-    // a glanceable trend. Bars carry the range history instead.
     // `quiet_chart` monitors skip the sparkline query entirely: their
     // series were fetched and then discarded.
-    let pulse_cutoff = now.saturating_sub(86_400);
     let chart_ids: Vec<&str> = site
         .monitors
         .iter()
@@ -156,7 +150,7 @@ pub async fn sections(
     let (latest, gap_lists, series, firsts) = futures_util::try_join!(
         latest_by_monitor(db, &ids),
         gaps_window_by_monitor(db, &ids, cutoff, now),
-        series_by_monitor(db, &chart_ids, pulse_cutoff, INDEX_CHART_POINTS),
+        series_by_monitor(db, &chart_ids, cutoff, INDEX_CHART_POINTS),
         db.kv_map(&first_keys),
     )?;
     let since = |id: &str| {
