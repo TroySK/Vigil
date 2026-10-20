@@ -715,6 +715,20 @@ mod tests {
     }
 
     #[test]
+    fn windowed_series_respects_selected_range_cutoff() {
+        // Homepage sparklines follow the selected range: samples before
+        // the caller's cutoff (a 24h pulse, for example) must not leak in.
+        let conn = seed_db();
+        let mut stmt = conn.prepare(&series_window_sql(1)).unwrap();
+        let ats: Vec<i64> = stmt
+            .query_map(params!["m2", 2_500.0, 29.0, 30.0], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(ats, vec![3_000]);
+    }
+
+    #[test]
     fn windowed_series_strides_each_monitor_to_thirty_points() {
         let conn = seed_db();
         let mut stmt = conn.prepare(&series_window_sql(2)).unwrap();

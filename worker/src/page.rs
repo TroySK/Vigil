@@ -544,6 +544,7 @@ mod tests {
     use crate::reads::SampleOut;
     use std::collections::BTreeMap;
     use vigil_core::config::{Monitor, Probe};
+    use vigil_core::state::Gap;
 
     #[test]
     fn counts_parse_and_reject_garbage() {
@@ -640,6 +641,66 @@ mod tests {
         assert!(down.contains("Check failing"));
         let fresh = one_row(&m, RANGE_24H, 10_000, None, &[], None, &[], None);
         assert!(fresh.contains("No data yet"));
+    }
+
+    #[test]
+    fn row_status_comes_from_open_gap_not_stale_sample() {
+        let m = http_monitor("https://example.com");
+        let current = tried(9_900, 54, 1);
+        let open = Gap {
+            at: 9_500,
+            to: None,
+            why: "refused".into(),
+        };
+        // Split cadence: the newest sample can still say up for ~1h after
+        // a monitor fails, but the open gap is written every 5 minutes.
+        let down = one_row(
+            &m,
+            RANGE_24H,
+            10_000,
+            Some(&current),
+            &[open],
+            None,
+            &[],
+            None,
+        );
+        assert!(down.contains("data-up=\"0\""));
+        assert!(down.contains("<i>DOWN</i>"));
+        assert!(down.contains("Check failing"));
+
+        // A closed gap is history, not current status.
+        let closed = Gap {
+            at: 9_000,
+            to: Some(9_500),
+            why: "refused".into(),
+        };
+        let up = one_row(
+            &m,
+            RANGE_24H,
+            10_000,
+            Some(&current),
+            &[closed],
+            None,
+            &[],
+            None,
+        );
+        assert!(up.contains("data-up=\"1\""));
+        assert!(up.contains("<i>UP</i>"));
+        assert!(up.contains("54ms"));
+    }
+
+    #[test]
+    fn row_sparkline_labels_follow_selected_range() {
+        let m = http_monitor("https://example.com");
+        let current = tried(2_000, 60, 1);
+        let lat = [tried(1_000, 54, 1), current.clone()];
+        let daily = one_row(&m, RANGE_24H, 10_000, Some(&current), &[], None, &lat, None);
+        assert!(daily.contains("data-tk=\"hour\""));
+        assert!(!daily.contains("data-tk=\"day\""));
+
+        let weekly = one_row(&m, RANGE_7D, 10_000, Some(&current), &[], None, &lat, None);
+        assert!(weekly.contains("data-tk=\"day\""));
+        assert!(!weekly.contains("data-tk=\"hour\""));
     }
 
     #[test]

@@ -20,7 +20,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run pure-logic tests
-        run: cargo test -p vigil-core -p vigil
+        run: cargo test -p vigil-core -p vigil -p vigil-worker
 
       - name: Check worker build
         run: cargo check -p vigil-worker --target wasm32-unknown-unknown

@@ -4,7 +4,7 @@
 //! tests pin only inline fixtures plus the `vigil::parse` helpers — never
 //! the live file's title or monitor list.
 
-use vigil_core::config::{Probe, Site};
+use vigil_core::config::{Probe, Site, DEFAULT_REFRESH_SECS, DEFAULT_SAMPLE_MIN, MIN_CADENCE_MIN};
 
 /// Full example exercising both probe shapes, timeouts, grace, and upkeep.
 const EXAMPLE_YAML: &str = r"
@@ -133,4 +133,62 @@ monitors:
     assert_eq!(site.monitors[0].timeout_ms, 10_000);
     assert_eq!(site.monitors[0].expect, Vec::<u16>::new());
     assert!(site.notify.hooks.is_empty());
+    // Split cadence and refresh controls are optional; old configs inherit
+    // the documented defaults instead of failing to parse.
+    assert_eq!(site.check_every_min, 0);
+    assert_eq!(site.sample_every_min, 0);
+    assert_eq!(site.refresh_secs, None);
+    assert_eq!(site.monitors[0].every_min, None);
+    assert_eq!(site.monitors[0].uptime_every_min, None);
+    assert_eq!(site.monitors[0].sample_every_min, None);
+    assert_eq!(
+        site.cadence_min(&site.monitors[0]),
+        MIN_CADENCE_MIN,
+        "unset uptime cadence probes every tick, clamped to the floor"
+    );
+    assert_eq!(
+        site.sample_cadence_min(&site.monitors[0]),
+        DEFAULT_SAMPLE_MIN,
+        "unset sample cadence samples hourly"
+    );
+    assert_eq!(
+        site.refresh_ms(),
+        DEFAULT_REFRESH_SECS.saturating_mul(1_000)
+    );
+}
+
+#[test]
+fn cadence_fields_parse_and_clamp_to_uptime() {
+    let site: Site = serde_yaml::from_str(
+        r"
+check_every_min: 15
+sample_every_min: 120
+refresh_secs: 45
+monitors:
+  - id: m
+    name: M
+    every_min: 30
+    uptime_every_min: 10
+    sample_every_min: 5
+    check:
+      via: tcp
+      host: example.com
+      port: 80
+",
+    )
+    .expect("cadence config parses");
+    assert_eq!(site.check_every_min, 15);
+    assert_eq!(site.sample_every_min, 120);
+    assert_eq!(site.refresh_secs, Some(45));
+    assert_eq!(site.refresh_ms(), 45_000);
+
+    let monitor = &site.monitors[0];
+    assert_eq!(monitor.every_min, Some(30));
+    assert_eq!(monitor.uptime_every_min, Some(10));
+    assert_eq!(monitor.sample_every_min, Some(5));
+    // The new field wins over the legacy alias, and sample cadence cannot
+    // run faster than the probe cadence it rides on.
+    assert_eq!(site.cadence_min(monitor), 10);
+    assert_eq!(site.sample_cadence_min(monitor), 10);
+    assert!(site.check().is_ok());
 }

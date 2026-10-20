@@ -162,6 +162,12 @@ fn latency_chart_has_labeled_axes() {
 fn latency_line_gradient_is_smooth_value_ramp() {
     use vigil_core::rollup::{latency_chart, sparkline_points};
 
+    fn line_ref(html: &str) -> &str {
+        let (_, rest) = html.split_once("--line:url(#").unwrap();
+        let (id, _) = rest.split_once(')').unwrap();
+        id
+    }
+
     // A series below the standard stays entirely green.
     let low = latency_chart(&[(1_000, 120, "BOM"), (2_000, 180, "BOM")], 600, 150, false);
     assert!(low.contains("<linearGradient"));
@@ -184,6 +190,12 @@ fn latency_line_gradient_is_smooth_value_ramp() {
     assert!(spark.contains("<linearGradient"));
     assert!(spark.contains("stop-color=\"#e3b341\""));
     assert!(spark.contains("stop-color=\"var(--color-bad)\""));
+
+    // Every chart owns its gradient: a page renders many charts inline, so
+    // a shared id would make them all paint the first chart's ramp.
+    let first = latency_chart(&[(1_000, 10, "BOM")], 600, 150, false);
+    let second = latency_chart(&[(1_000, 10, "BOM")], 600, 150, false);
+    assert_ne!(line_ref(&first), line_ref(&second));
 }
 
 #[test]
