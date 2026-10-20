@@ -219,10 +219,10 @@ if you want required reviewers before a deploy):
 
 ## Routes
 
-- `/` — status page: per-monitor rows with last-24-hour bars, latency
-  charts with labeled axes, upkeep banners, footer links, and groups.
-  Light/dark toggle included.
-- `/monitor?id=<id>` — per-monitor detail: 90-day bars, latency chart with
+- `/` — status page: per-monitor rows with history bars and latency
+  charts for the selected range (`?range=24h|7d|30d|90d`, default 90d),
+  upkeep banners, footer links, and groups. Light/dark toggle included.
+- `/monitor?id=<id>` — per-monitor detail: range bars, latency chart with
   labeled axes, incident table, and upkeep scoped to that monitor.
 - `/api/health` — JSON aggregate: up/down counts plus per-monitor status
   and day/week/month uptime percentages.
