@@ -112,7 +112,7 @@ fn base64_value(byte: u8) -> Result<u8, ()> {
 /// response time does not leak how many leading bytes matched. The loop
 /// runs over the longer input and treats absent bytes as zero.
 pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let mut diff = (left.len() ^ right.len()) as u8;
+    let mut diff = u8::from(left.len() != right.len());
     for i in 0..left.len().max(right.len()) {
         diff |= left.get(i).copied().unwrap_or(0) ^ right.get(i).copied().unwrap_or(0);
     }
@@ -216,6 +216,9 @@ mod tests {
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
         assert!(constant_time_eq(b"", b""));
+        // Length differences larger than u8::MAX must still compare unequal.
+        assert!(!constant_time_eq(&[0_u8; 256], &[0_u8; 512]));
+        assert!(!constant_time_eq(&[0_u8; 512], &[0_u8; 256]));
     }
 
     #[test]
