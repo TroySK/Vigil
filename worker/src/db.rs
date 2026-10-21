@@ -92,6 +92,7 @@ impl Db {
                  CREATE TABLE IF NOT EXISTS samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);\
                  CREATE INDEX IF NOT EXISTS idx_samples ON samples (id, at);\
                  CREATE INDEX IF NOT EXISTS idx_samples_at ON samples (at);\
+                 CREATE INDEX IF NOT EXISTS idx_samples_region ON samples (id, place, at DESC);\
                  CREATE TABLE IF NOT EXISTS gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);\
                  CREATE INDEX IF NOT EXISTS idx_gaps ON gaps (id, at);\
                  CREATE INDEX IF NOT EXISTS idx_gaps_upto ON gaps (upto);\
@@ -214,10 +215,12 @@ mod tests {
     fn migrations_cover_every_init_index() {
         const INIT: &str = include_str!("../migrations/0001_init.sql");
         const IDX: &str = include_str!("../migrations/0002_indexes.sql");
-        let shipped = format!("{INIT}\n{IDX}");
+        const REGION: &str = include_str!("../migrations/0004_region_index.sql");
+        let shipped = format!("{INIT}\n{IDX}\n{REGION}");
         for index in [
             "idx_samples",
             "idx_samples_at",
+            "idx_samples_region",
             "idx_gaps",
             "idx_gaps_upto",
             "idx_gaps_open",

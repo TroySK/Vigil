@@ -406,13 +406,21 @@ pub async fn series_ranged(
 /// Newest sample per probe origin, newest first. SQLite resolves the bare
 /// `ms`/`up` columns to the `MAX(at)` row within each group (documented
 /// bare-column behavior with a single min/max aggregate), so each row is
-/// that region's true latest sample.
+/// that region's true latest sample. The `(id, place, at DESC)` index keeps
+/// the per-region max lookup index-only; the old `(id, at)` index scanned
+/// every sample the monitor ever recorded.
 pub async fn region_latest(db: &Db, id: &str) -> Result<Vec<SampleOut>> {
-    db.q("SELECT MAX(at) AS at, ms, up, place FROM samples WHERE id = ?1 GROUP BY place ORDER BY at DESC")
+    db.q(region_latest_sql())
         .bind(&[id.into()])?
         .all()
         .await?
         .results()
+}
+
+/// Exact query behind [`region_latest`], exposed so tests execute the
+/// shipped text against bundled SQLite. `?1` monitor id.
+fn region_latest_sql() -> &'static str {
+    "SELECT MAX(at) AS at, ms, up, place FROM samples WHERE id = ?1 GROUP BY place ORDER BY at DESC"
 }
 
 #[cfg(test)]
@@ -420,7 +428,7 @@ mod tests {
     #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
     use super::{
         data_at_of, effective_since, gaps_window_sql, latest_sql, recent_gaps_window_sql,
-        series_ranged_sql, series_window_sql,
+        region_latest_sql, series_ranged_sql, series_window_sql,
     };
     use rusqlite::types::Value;
     use rusqlite::{params, params_from_iter};
@@ -431,6 +439,33 @@ mod tests {
         assert_eq!(data_at_of(Some("bogus".to_owned()), 2_000), 2_000);
         assert_eq!(data_at_of(Some("1500".to_owned()), 2_000), 1_500);
         assert_eq!(data_at_of(None, 2_000), 2_000);
+    }
+
+    #[test]
+    fn region_latest_uses_the_region_index() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);
+             CREATE INDEX idx_samples ON samples (id, at);
+             CREATE INDEX idx_samples_region ON samples (id, place, at DESC);",
+        )
+        .unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", region_latest_sql()))
+            .unwrap()
+            .query_map(params!["m"], |row| row.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        let plan = plan.join("\n");
+        assert!(
+            plan.contains("idx_samples_region"),
+            "regional latest must use (id, place, at): {plan}"
+        );
+        assert!(
+            !plan.contains("SCAN samples"),
+            "regional latest must not table-scan: {plan}"
+        );
     }
 
     #[test]
