@@ -7,7 +7,8 @@ use crate::auth::esc;
 use crate::db::Db;
 use crate::range::{bars_for, Range};
 use crate::reads::{
-    clock, gaps_window_by_monitor, latest_by_monitor, series_by_monitor, SampleOut,
+    clock, daily_series_by_monitor, gaps_window_by_monitor, latest_by_monitor, series_by_monitor,
+    SampleOut, ROLLUP_MIN_DAYS,
 };
 use vigil_core::config::{Monitor, Probe, Site};
 use vigil_core::rollup::{latency_chart, percentile_pair};
@@ -18,6 +19,11 @@ use worker::{Response, Result};
 /// selected-range window spreads at most this many dots (see
 /// `series_by_monitor`), strided server-side so long ranges stay cheap.
 pub const INDEX_CHART_POINTS: i64 = 24;
+
+/// Long ranges read the daily rollup; short ranges keep raw samples.
+fn uses_daily_rollup(range: Range) -> bool {
+    range.days >= ROLLUP_MIN_DAYS
+}
 
 /// Render the full status page.
 pub async fn render(
@@ -147,10 +153,19 @@ pub async fn sections(
     // maintains — no MIN(at) scan over the retention window (see
     // `effective_since`).
     let first_keys: Vec<String> = ids.iter().map(|id| format!("first:{id}")).collect();
+    // 30d/90d sparklines read one rollup row per monitor-day; 24h/7d keep
+    // raw samples (cheap at those spans and more detailed).
+    let series_for_range = async {
+        if uses_daily_rollup(range) {
+            daily_series_by_monitor(db, &chart_ids, cutoff, INDEX_CHART_POINTS).await
+        } else {
+            series_by_monitor(db, &chart_ids, cutoff, INDEX_CHART_POINTS).await
+        }
+    };
     let (latest, gap_lists, series, firsts) = futures_util::try_join!(
         latest_by_monitor(db, &ids),
         gaps_window_by_monitor(db, &ids, cutoff, now),
-        series_by_monitor(db, &chart_ids, cutoff, INDEX_CHART_POINTS),
+        series_for_range,
         db.kv_map(&first_keys),
     )?;
     let since = |id: &str| {
@@ -539,8 +554,8 @@ pub fn shell(
 
 #[cfg(test)]
 mod tests {
-    use super::{favicon_origin, links_html, one_row, parse_counts, shell, speculation_rule, time_html};
-    use crate::range::{RANGE_24H, RANGE_7D};
+    use super::{favicon_origin, links_html, one_row, parse_counts, shell, speculation_rule, time_html, uses_daily_rollup};
+    use crate::range::{RANGE_24H, RANGE_30D, RANGE_7D, RANGE_90D};
     use crate::reads::SampleOut;
     use std::collections::BTreeMap;
     use vigil_core::config::{Monitor, Probe};
@@ -552,6 +567,16 @@ mod tests {
         assert_eq!(parse_counts("0/0"), (0, 0));
         assert_eq!(parse_counts("nope"), (0, 0));
         assert_eq!(parse_counts(""), (0, 0));
+    }
+
+    #[test]
+    fn long_ranges_read_daily_rollups() {
+        // 24h/7d stay on raw samples; 30d/90d must not scan every sample
+        // just to draw 24 dots.
+        assert!(!uses_daily_rollup(RANGE_24H));
+        assert!(!uses_daily_rollup(RANGE_7D));
+        assert!(uses_daily_rollup(RANGE_30D));
+        assert!(uses_daily_rollup(RANGE_90D));
     }
 
     #[test]

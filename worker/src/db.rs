@@ -22,7 +22,7 @@ pub const RETENTION_SECS: i64 = 90 * 86_400;
 /// Schema generation marker stored in `kv` once the tick's self-heal has
 /// run: later ticks skip the DDL round trip entirely (CI migrations own
 /// DDL; the tick only covers fresh/manual databases).
-pub const SCHEMA_VERSION: &str = "2";
+pub const SCHEMA_VERSION: &str = "3";
 
 /// Bind an integer to D1 as a JS `Number`.
 ///
@@ -96,7 +96,8 @@ impl Db {
                  CREATE TABLE IF NOT EXISTS gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);\
                  CREATE INDEX IF NOT EXISTS idx_gaps ON gaps (id, at);\
                  CREATE INDEX IF NOT EXISTS idx_gaps_upto ON gaps (upto);\
-                 CREATE INDEX IF NOT EXISTS idx_gaps_open ON gaps (id, upto, at DESC);",
+                 CREATE INDEX IF NOT EXISTS idx_gaps_open ON gaps (id, upto, at DESC);\
+                 CREATE TABLE IF NOT EXISTS monitor_daily (id TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL, PRIMARY KEY (id, day));",
             )
             .await
             .map(|_| ())
@@ -215,8 +216,9 @@ mod tests {
     fn migrations_cover_every_init_index() {
         const INIT: &str = include_str!("../migrations/0001_init.sql");
         const IDX: &str = include_str!("../migrations/0002_indexes.sql");
+        const DAILY: &str = include_str!("../migrations/0003_daily_rollup.sql");
         const REGION: &str = include_str!("../migrations/0004_region_index.sql");
-        let shipped = format!("{INIT}\n{IDX}\n{REGION}");
+        let shipped = format!("{INIT}\n{IDX}\n{DAILY}\n{REGION}");
         for index in [
             "idx_samples",
             "idx_samples_at",
@@ -230,5 +232,48 @@ mod tests {
                 "migrations must create {index} (see Db::init)"
             );
         }
+        assert!(
+            shipped.contains("CREATE TABLE IF NOT EXISTS monitor_daily"),
+            "migrations must create the daily rollup (see Db::init)"
+        );
+    }
+
+    #[test]
+    fn daily_rollup_migration_backfills_newest_sample_per_day() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);",
+        )
+        .unwrap();
+        // m1: three samples on day 0; m2: one sample on day 0. The newest
+        // m1 row (ms 30) must represent its day.
+        for (id, at, ms) in [
+            ("m1", 10, 10),
+            ("m1", 20, 20),
+            ("m1", 30, 30),
+            ("m2", 40, 40),
+        ] {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id, f64::from(at), f64::from(ms), 1.0, "SIN"],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(include_str!("../migrations/0003_daily_rollup.sql"))
+            .unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, day, at, ms FROM monitor_daily ORDER BY id")
+            .unwrap();
+        let rows: Vec<(String, i64, i64, i64)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![("m1".to_owned(), 0, 30, 30), ("m2".to_owned(), 0, 40, 40),]
+        );
     }
 }

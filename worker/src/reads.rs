@@ -337,6 +337,81 @@ pub async fn series_by_monitor(
     Ok(out)
 }
 
+/// Ranges at least this long read the daily rollup instead of raw samples.
+/// 24h/7d keep every sample (cheap and detailed); 30d/90d would otherwise
+/// scan tens of thousands of rows to draw 24 dots.
+pub const ROLLUP_MIN_DAYS: i64 = 30;
+
+/// Exact query behind [`daily_series_by_monitor`], exposed so tests execute
+/// the shipped text against bundled SQLite. `?1..?N` monitor ids, then the
+/// cutoff day. At most 90 rows per monitor leave D1, and the stride happens
+/// in Rust, so there is no window-function sort over raw samples.
+fn daily_series_sql(n: usize) -> String {
+    format!(
+        "SELECT id, at, ms, up, place FROM monitor_daily WHERE id IN ({}) AND day >= ?{} ORDER BY id ASC, day DESC",
+        placeholders(n),
+        n + 1,
+    )
+}
+
+/// Up to `max_points` daily rollup samples per monitor inside `[cutoff,
+/// +inf)`, keyed by id, newest first. Reads one row per monitor per day
+/// (90 rows at the retention edge) instead of every raw sample in the
+/// range, then strides in memory.
+pub async fn daily_series_by_monitor(
+    db: &Db,
+    ids: &[&str],
+    cutoff: i64,
+    max_points: i64,
+) -> Result<BTreeMap<String, Vec<SampleOut>>> {
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        id: String,
+        at: i64,
+        ms: i64,
+        up: i64,
+        place: String,
+    }
+    let cutoff_day = cutoff - cutoff.rem_euclid(vigil_core::rollup::SECS_PER_DAY);
+    let mut out: BTreeMap<String, Vec<SampleOut>> = BTreeMap::new();
+    for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+        let rows: Vec<Row> = db
+            .q(&daily_series_sql(chunk.len()))
+            .bind(
+                &bind_ids(chunk)
+                    .into_iter()
+                    .chain([num(cutoff_day)])
+                    .collect::<Vec<_>>(),
+            )?
+            .all()
+            .await?
+            .results()?;
+        for row in rows {
+            out.entry(row.id.clone()).or_default().push(SampleOut {
+                at: row.at,
+                ms: row.ms,
+                up: row.up,
+                place: row.place.clone(),
+            });
+        }
+    }
+    Ok(out
+        .into_iter()
+        .map(|(id, rows)| (id, stride_points(rows, max_points)))
+        .collect())
+}
+
+/// Keep every `stride`-th row from a newest-first series, mirroring the
+/// raw-sample SQL stride: at most `max_points` dots, newest included.
+fn stride_points(points: Vec<SampleOut>, max_points: i64) -> Vec<SampleOut> {
+    let max = usize::try_from(max_points.max(1)).unwrap_or(usize::MAX);
+    if points.len() <= max {
+        return points;
+    }
+    let stride = points.len().div_ceil(max);
+    points.into_iter().step_by(stride).collect()
+}
+
 /// Last tick that probed at least one monitor, falling back to the tick
 /// clock when no probe has ever landed (fresh database): pages then keep
 /// reloading on ticks until the first real data arrives.
@@ -427,8 +502,9 @@ fn region_latest_sql() -> &'static str {
 mod tests {
     #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
     use super::{
-        data_at_of, effective_since, gaps_window_sql, latest_sql, recent_gaps_window_sql,
-        region_latest_sql, series_ranged_sql, series_window_sql,
+        daily_series_sql, data_at_of, effective_since, gaps_window_sql, latest_sql,
+        recent_gaps_window_sql, region_latest_sql, series_ranged_sql, series_window_sql,
+        stride_points, SampleOut,
     };
     use rusqlite::types::Value;
     use rusqlite::{params, params_from_iter};
@@ -607,6 +683,49 @@ mod tests {
             }
         }
         assert_eq!(found, 150);
+    }
+
+    #[test]
+    fn daily_series_sql_reads_only_rollup_rows() {
+        // Long ranges must not rank every raw sample: one row per day,
+        // newest first, no window functions.
+        let sql = daily_series_sql(2);
+        assert!(sql.contains("FROM monitor_daily"));
+        assert!(sql.contains("ORDER BY id ASC, day DESC"));
+        assert!(!sql.contains("ROW_NUMBER"));
+        assert!(!sql.contains("COUNT(*) OVER"));
+    }
+
+    #[test]
+    fn daily_series_strides_to_max_points_newest_first() {
+        let rows: Vec<SampleOut> = (0..90)
+            .rev()
+            .map(|i| SampleOut {
+                at: i,
+                ms: i,
+                up: 1,
+                place: "SIN".into(),
+            })
+            .collect();
+        let out = stride_points(rows, 24);
+        // ceil(90 / 24) = 4 → 23 points, matching the raw SQL stride.
+        assert_eq!(out.len(), 23);
+        assert_eq!(out[0].at, 89, "newest point must survive");
+        assert!(out.windows(2).all(|pair| pair[0].at > pair[1].at));
+        assert!(out.len() <= 24);
+    }
+
+    #[test]
+    fn daily_series_keeps_short_histories_intact() {
+        let rows: Vec<SampleOut> = (0..7)
+            .map(|i| SampleOut {
+                at: i,
+                ms: i,
+                up: 1,
+                place: "SIN".into(),
+            })
+            .collect();
+        assert_eq!(stride_points(rows, 24).len(), 7);
     }
 
     #[test]

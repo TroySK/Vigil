@@ -422,10 +422,10 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, close_gap_sql, first_value, form_encode, gap_why_update, hook_host, is_due,
-        muted_set, open_gaps_sql, plan_alert, plan_deliveries, plan_due, probe_wave, prune_due,
-        prune_gaps_sql, prune_samples_sql, sample_due, schema_current, stagger_offset, state_keys,
-        wave_bounds, why_gap_sql, Due,
+        alert_for, close_gap_sql, daily_upsert_sql, day_start, first_value, form_encode,
+        gap_why_update, hook_host, is_due, muted_set, open_gaps_sql, plan_alert, plan_deliveries,
+        plan_due, probe_wave, prune_daily_sql, prune_due, prune_gaps_sql, prune_samples_sql,
+        sample_due, schema_current, stagger_offset, state_keys, wave_bounds, why_gap_sql, Due,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
@@ -442,7 +442,8 @@ mod tests {
     }
 
     #[test]
-    fn gap_why_update_skips_identical_text() {        // Steady failure with a fresh reason appends once...
+    fn gap_why_update_skips_identical_text() {
+        // Steady failure with a fresh reason appends once...
         let fresh = Gap {
             at: 1,
             to: None,
@@ -569,6 +570,60 @@ mod tests {
         assert_eq!(probe_wave(23), 24);
         assert_eq!(probe_wave(40), 7);
         assert_eq!(probe_wave(100), 5);
+    }
+
+    #[test]
+    fn daily_rollup_keeps_the_newest_sample_per_day() {
+        assert_eq!(day_start(5), 0);
+        assert_eq!(day_start(86_400 + 5), 86_400);
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE monitor_daily (id TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL, PRIMARY KEY (id, day));",
+        )
+        .unwrap();
+        for (at, ms, place) in [(10, 10, "SIN"), (20, 20, "BOM")] {
+            conn.execute(
+                daily_upsert_sql(),
+                rusqlite::params!["m", 0.0, f64::from(at), f64::from(ms), 1.0, place],
+            )
+            .unwrap();
+        }
+        let (at, ms, place): (i64, i64, String) = conn
+            .query_row("SELECT at, ms, place FROM monitor_daily", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap();
+        assert_eq!((at, ms, place.as_str()), (20, 20, "BOM"));
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM monitor_daily", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn daily_rollup_prune_respects_retention() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE monitor_daily (id TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL, PRIMARY KEY (id, day));",
+        )
+        .unwrap();
+        for day in [1_i64, 2, 3, 1_000] {
+            conn.execute(
+                "INSERT INTO monitor_daily VALUES ('m', ?1, ?1, 10, 1, 'SIN')",
+                rusqlite::params![day],
+            )
+            .unwrap();
+        }
+        conn.execute(prune_daily_sql(), rusqlite::params![100.0, 2.0])
+            .unwrap();
+        let days: Vec<i64> = conn
+            .prepare("SELECT day FROM monitor_daily ORDER BY day")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(days, vec![3, 1_000]);
     }
 
     #[test]
@@ -932,6 +987,16 @@ fn record_stmts(
                     location.into(),
                 ])?,
         );
+        // One representative row per UTC day backs long-range sparklines:
+        // the newest sample wins, matching the raw-sample point it replaces.
+        out.push(db.q(daily_upsert_sql()).bind(&[
+            id.into(),
+            num(day_start(now)),
+            num(now),
+            num(elapsed_ms),
+            num(up_flag),
+            location.into(),
+        ])?);
     }
     let mut track = Track::default();
     if let Some(gap) = open {
@@ -961,6 +1026,18 @@ fn record_stmts(
         }
     }
     Ok(out)
+}
+
+/// Midnight UTC starting the day containing `at`.
+fn day_start(at: i64) -> i64 {
+    at - at.rem_euclid(SECS_PER_DAY)
+}
+
+/// Daily rollup upsert used by [`record_stmts`]. The newest sample in a
+/// day replaces the previous representative (no averaging), so long-range
+/// charts keep an honest point-in-time reading.
+fn daily_upsert_sql() -> &'static str {
+    "INSERT INTO monitor_daily (id, day, at, ms, up, place) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(id, day) DO UPDATE SET at = excluded.at, ms = excluded.ms, up = excluded.up, place = excluded.place"
 }
 
 /// Close a monitor's open gaps: every unterminated row, so one recovery
@@ -1174,7 +1251,7 @@ pub const PRUNE_CHUNKS: usize = 5;
 /// `DELETE ... LIMIT` is a dialect risk) and bounded per statement.
 fn prune_stmts(db: &Db, now: i64) -> Result<Vec<D1PreparedStatement>> {
     let cutoff = now.saturating_sub(crate::db::RETENTION_SECS);
-    let mut out = Vec::with_capacity(2 * PRUNE_CHUNKS);
+    let mut out = Vec::with_capacity(3 * PRUNE_CHUNKS);
     for _ in 0..PRUNE_CHUNKS {
         out.push(
             db.q(prune_samples_sql())
@@ -1182,6 +1259,10 @@ fn prune_stmts(db: &Db, now: i64) -> Result<Vec<D1PreparedStatement>> {
         );
         out.push(
             db.q(prune_gaps_sql())
+                .bind(&[num(cutoff), num(PRUNE_CHUNK)])?,
+        );
+        out.push(
+            db.q(prune_daily_sql())
                 .bind(&[num(cutoff), num(PRUNE_CHUNK)])?,
         );
     }
@@ -1200,4 +1281,11 @@ fn prune_samples_sql() -> &'static str {
 /// against bundled SQLite.
 fn prune_gaps_sql() -> &'static str {
     "DELETE FROM gaps WHERE rowid IN (SELECT rowid FROM gaps WHERE upto IS NOT NULL AND upto < ?1 ORDER BY upto ASC, rowid ASC LIMIT ?2)"
+}
+
+/// Exact prune text for the daily rollup, exposed so tests execute the
+/// shipped statement against bundled SQLite. One row per monitor per day
+/// still grows forever without its own retention sweep.
+fn prune_daily_sql() -> &'static str {
+    "DELETE FROM monitor_daily WHERE rowid IN (SELECT rowid FROM monitor_daily WHERE day < ?1 ORDER BY day ASC, rowid ASC LIMIT ?2)"
 }
