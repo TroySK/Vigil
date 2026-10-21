@@ -46,24 +46,33 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
 
 ## Operator actions (Cloudflare dashboard)
 
-1. **Rate limiting (do this first while the site is public).**
+1. **Close the workers.dev bypass.** Zone WAF/rate-limit rules do not
+   apply to `*.workers.dev`. If the Worker is served from a custom
+   domain, set `workers_dev = false` in `worker/wrangler.toml` (with an
+   explicit `routes`/custom-domain entry) and verify the workers.dev URL
+   returns 404. If you keep the workers.dev hostname, apply equivalent
+   rate limiting/Access to both hostnames.
+2. **Rate limiting (do this first while the site is public).**
    Security → WAF → Rate limiting rules → Create rule:
    - Expression: `(http.request.uri.path starts_with "/api/")`,
      100 requests / 10 seconds per IP, action: Block 1 minute.
    - Second rule for `/` and `/monitor`: 60 requests / 10 seconds
      per IP, action: Managed Challenge.
-2. **Access gate (if the page must not be public).** Set `[auth]`
+3. **Access gate (if the page must not be public).** Set `[auth]`
    in the editor-saved config with `pass_env = "STATUS_PASSWORD"`, then
    `wrangler secret put STATUS_PASSWORD`. There is no lockout or attempt
    throttling in the worker — the WAF rule above is the brute-force
    backstop, so keep it even with auth on. Use a 20+ character password.
-3. **Secret rotation.** Worker secrets: `wrangler secret put NAME`.
+4. **TLS.** Enable **Always Use HTTPS** and HSTS for the zone (or the
+   custom domain). Basic auth sends credentials on every request, so a
+   plain-HTTP path would expose them.
+5. **Secret rotation.** Worker secrets: `wrangler secret put NAME`.
    Removing the `STATUS_PASSWORD` repo secret deletes the worker secret;
    the deploy refuses to proceed while the saved config still references
    it, so change or remove `auth` in the same change. If a token ever lands
    in the saved config, revoke it at the issuer — D1 keeps it until
    overwritten, and the old YAML may live in backups.
-4. **After enabling auth**, re-check `/api/badge` consumers: badge URLs
+6. **After enabling auth**, re-check `/api/badge` consumers: badge URLs
    embedded as `<img>` tags cannot send Basic credentials and will break.
 
 ## Deliberately not handled
@@ -74,3 +83,9 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
   real throttling lives in the WAF rules above.
 - Cron placement is Cloudflare's choice: probe origins are displayed,
   never assigned.
+- Google Fonts and monitor favicons make visitors contact third-party
+  hosts (favicon requests can carry cookies for the monitored origin).
+  Remove or self-host them for privacy-sensitive deployments.
+- `serde_yaml 0.9` is unmaintained (no current advisory); CI runs
+  `cargo audit`, and migrating to a maintained parser is a follow-up.
+  The editor still parses untrusted YAML, so keep its token and size cap.

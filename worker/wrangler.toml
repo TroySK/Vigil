@@ -2,6 +2,12 @@ name = "vigil"
 main = "build/worker/shim.mjs"
 compatibility_date = "2025-04-02"
 
+# If this Worker is served from a custom domain, set `workers_dev = false`
+# so the *.workers.dev hostname cannot bypass zone WAF/rate-limit rules.
+# Leave it unset when the workers.dev hostname is the intended target
+# (this template's default); see SECURITY.md.
+# workers_dev = false
+
 # Workers Caching: consult the edge cache for public GET responses before
 # running the Worker. Without this block, Cache-Control only reaches
 # browsers and every tab poll/reload still pays D1 rows-read.
