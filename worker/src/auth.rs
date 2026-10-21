@@ -77,23 +77,31 @@ fn base64_decode(input: &str) -> Result<String, ()> {
                 if acc & 0x0f != 0 {
                     return Err(());
                 }
-                out.push((acc >> 4) as u8);
+                out.push(low_byte(acc >> 4));
             }
             3 => {
                 if acc & 0x03 != 0 {
                     return Err(());
                 }
-                out.push((acc >> 10) as u8);
-                out.push((acc >> 2) as u8);
+                out.push(low_byte(acc >> 10));
+                out.push(low_byte(acc >> 2));
             }
             _ => {
-                out.push((acc >> 16) as u8);
-                out.push((acc >> 8) as u8);
-                out.push(acc as u8);
+                out.push(low_byte(acc >> 16));
+                out.push(low_byte(acc >> 8));
+                out.push(low_byte(acc));
             }
         }
     }
     String::from_utf8(out).map_err(|_| ())
+}
+
+/// Low eight bits of a decoded Base64 accumulator. Call sites shift the
+/// relevant byte into position; the mask makes the truncation explicit.
+fn low_byte(value: u32) -> u8 {
+    #[allow(clippy::cast_possible_truncation)]
+    let byte = (value & 0xff) as u8;
+    byte
 }
 
 /// One Base64 alphabet value; `Err(())` for padding or any other byte.

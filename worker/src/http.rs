@@ -132,8 +132,7 @@ async fn route(
         "/" | "/index.html" => Some(&["range"]),
         "/monitor" => Some(&["id", "range"]),
         "/api/health" => Some(&[]),
-        "/api/badge" => Some(&["id"]),
-        "/api/history" | "/api/latency" => Some(&["id"]),
+        "/api/badge" | "/api/history" | "/api/latency" => Some(&["id"]),
         "/api/incidents" => Some(&["id", "limit"]),
         _ => None,
     };
@@ -208,16 +207,16 @@ fn range_param(url: &url::Url) -> Option<String> {
 fn cache_control(path: &str, gated: bool) -> Option<&'static str> {
     if gated {
         return match path {
-            "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history"
+            "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history" | "/api/badge"
             | "/api/incidents" | "/api/latency" => Some("private, no-store"),
-            "/api/badge" => Some("private, no-store"),
             _ => None,
         };
     }
     match path {
-        "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history" | "/api/incidents"
-        | "/api/latency" => Some("public, max-age=300, stale-while-revalidate=60"),
-        "/api/badge" => Some("public, max-age=300, stale-while-revalidate=60"),
+        "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history" | "/api/badge"
+        | "/api/incidents" | "/api/latency" => {
+            Some("public, max-age=300, stale-while-revalidate=60")
+        }
         _ => None,
     }
 }
@@ -377,7 +376,11 @@ mod tests {
                 .split_whitespace()
                 .next()
                 .unwrap_or_default();
-            assert_eq!(sha.len(), 40, "{action} must be pinned to a full SHA: {line}");
+            assert_eq!(
+                sha.len(),
+                40,
+                "{action} must be pinned to a full SHA: {line}"
+            );
             assert!(
                 sha.chars().all(|c| c.is_ascii_hexdigit()),
                 "{action} must be pinned to a commit: {line}"
@@ -385,7 +388,10 @@ mod tests {
         }
         const IGNORE: &str = include_str!("../../.gitignore");
         assert!(IGNORE.contains(".dev.vars*"), "wrangler secrets are local");
-        assert!(IGNORE.contains(".env*"), "local env files must never commit");
+        assert!(
+            IGNORE.contains(".env*"),
+            "local env files must never commit"
+        );
         assert!(
             WORKFLOW.contains("run: cargo audit"),
             "dependencies need an advisory check"
