@@ -1,6 +1,6 @@
 //! Config validation: fail fast on typos before the cron tick stores junk.
 
-use crate::config::{Monitor, Probe, Site, MIN_CADENCE_MIN, DEFAULT_SAMPLE_MIN};
+use crate::config::{Gate, Monitor, Probe, Site, MIN_CADENCE_MIN, DEFAULT_SAMPLE_MIN};
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -44,6 +44,9 @@ impl Site {
         if self.monitors.is_empty() {
             problems.push(ConfigError("no monitors".into()));
         }
+        if let Some(gate) = &self.auth {
+            check_auth(gate, &mut problems);
+        }
         if problems.is_empty() {
             Ok(())
         } else {
@@ -82,5 +85,30 @@ fn check_monitor(m: &Monitor, seen: &mut BTreeSet<String>, problems: &mut Vec<Co
                 problems.push(ConfigError(format!("bad tcp {}", m.id)));
             }
         }
+    }
+}
+
+/// Validate the optional Basic-auth gate. A gate with no resolvable
+/// password would otherwise authenticate `user:` (empty password), so
+/// ambiguous or empty credentials are configuration errors.
+fn check_auth(gate: &Gate, problems: &mut Vec<ConfigError>) {
+    if gate.user.trim().is_empty() {
+        problems.push(ConfigError("empty auth user".into()));
+    }
+    if gate.user.contains(':') {
+        problems.push(ConfigError("auth user must not contain a colon".into()));
+    }
+    match (&gate.pass, &gate.pass_env) {
+        (None, None) => problems.push(ConfigError(
+            "auth needs a password (set pass or pass_env)".into(),
+        )),
+        (Some(pass), None) if pass.is_empty() => {
+            problems.push(ConfigError("empty auth password".into()));
+        }
+        (None, Some(key)) if key.is_empty() => {
+            problems.push(ConfigError("empty auth password".into()));
+        }
+        (Some(_), Some(_)) => problems.push(ConfigError("auth sets both pass and pass_env".into())),
+        _ => {}
     }
 }

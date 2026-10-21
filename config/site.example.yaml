@@ -84,7 +84,9 @@
 #
 # auth (whole-site Basic auth):
 #   user: admin
-#   pass_env: STATUS_PASSWORD  # env var name; prefer over cleartext `pass`
+#   pass_env: STATUS_PASSWORD  # env var name; prefer over cleartext `pass`.
+#                              # Exactly one of pass/pass_env is required;
+#                              # missing or empty secret = deny all requests.
 # =====================================================================
 
 title: Vigil Status

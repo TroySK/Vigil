@@ -114,6 +114,9 @@ Config rules (same YAML shape as before):
   as unix seconds or RFC-3339, optional `only` monitor ids).
 - Access gate: set `auth` with a `user` plus either a `pass_env`
   environment variable name or a cleartext `pass` (prefer the secret).
+  Exactly one source is required; empty values are rejected by config
+  validation. If the referenced secret is missing or empty, the gate
+  denies every request (fail closed).
 
 ## Run checks and tests
 
@@ -185,8 +188,10 @@ push to `main` and on manual dispatch. What it does:
 5. Seeds the site config into D1 from the `SITE_YAML` repo secret when
    that secret exists (syntax-checked first; skipped otherwise — then
    the `EDITOR=true` editor flow owns the config).
-6. Sets the `STATUS_PASSWORD` worker secret when that repo secret exists
-   (skipped otherwise — the site stays public).
+6. Sets the `STATUS_PASSWORD` worker secret when that repo secret exists.
+   When `auth` references `pass_env = "STATUS_PASSWORD"`, a missing or
+   empty secret makes the gate deny every request (fail closed); it never
+   falls back to an empty password.
 7. Syncs the `EDITOR` worker secret from the `EDITOR` repo secret
    (`true` enables editor mode; unset deletes the worker secret so a
    stale flag can't keep the site offline).
@@ -202,7 +207,7 @@ if you want required reviewers before a deploy):
 | --- | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | Yes | API token with **Workers Scripts: Edit** and **D1: Edit** permissions ([create one here](https://dash.cloudflare.com/profile/api-tokens)). |
 | `CLOUDFLARE_ACCOUNT_ID` | Yes | Pins the deploy target (find it in the Cloudflare dashboard URL or **Workers & Pages → Overview**). The workflow fails fast when it is missing. |
-| `STATUS_PASSWORD` | No | Value for the `STATUS_PASSWORD` worker secret (Basic-auth password when `pass_env = "STATUS_PASSWORD"` is configured). Omit to keep the status page public. |
+| `STATUS_PASSWORD` | No | Value for the `STATUS_PASSWORD` worker secret (Basic-auth password when `pass_env = "STATUS_PASSWORD"` is configured). Omit only when `auth` is not configured: if it is referenced but missing or empty, the gate denies all access (fail closed). |
 | `SITE_YAML` | No | Full site-config YAML, seeded into D1 (`kv.site_yaml`) on every deploy. When set, it overwrites editor edits each deploy. Omit to manage config purely through the `EDITOR=true` editor flow. |
 | `EDITOR` | No | Set to exactly `true` to sync the `EDITOR` worker secret on deploy, taking the live site offline into the config editor. Delete or empty it and re-run the workflow to restore the site. |
 

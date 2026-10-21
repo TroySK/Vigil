@@ -354,3 +354,97 @@ fn sub_floor_uptime_cadence_is_rejected() {
             .all(|e| !e.to_string().contains("sample"))
     );
 }
+
+#[test]
+fn auth_config_rejects_missing_or_ambiguous_credentials() {
+    use vigil_core::config::{Gate, Site};
+    let with_auth = |auth: Gate| Site {
+        auth: Some(auth),
+        monitors: vec![web()],
+        ..Site::default()
+    };
+    let errors = |site: Site| {
+        site.check()
+            .unwrap_err()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    };
+
+    // Exactly one non-empty credential source is required.
+    let none = errors(with_auth(Gate {
+        user: "admin".into(),
+        pass: None,
+        pass_env: None,
+    }));
+    assert!(
+        none.iter().any(|e| e.contains("auth needs a password")),
+        "{none:?}"
+    );
+
+    let both = errors(with_auth(Gate {
+        user: "admin".into(),
+        pass: Some("secret".into()),
+        pass_env: Some("STATUS_PASSWORD".into()),
+    }));
+    assert!(
+        both.iter().any(|e| e.contains("both pass and pass_env")),
+        "{both:?}"
+    );
+
+    let empty_pass = errors(with_auth(Gate {
+        user: "admin".into(),
+        pass: Some(String::new()),
+        pass_env: None,
+    }));
+    assert!(
+        empty_pass.iter().any(|e| e.contains("empty auth password")),
+        "{empty_pass:?}"
+    );
+
+    let empty_env = errors(with_auth(Gate {
+        user: "admin".into(),
+        pass: None,
+        pass_env: Some(String::new()),
+    }));
+    assert!(
+        empty_env.iter().any(|e| e.contains("empty auth password")),
+        "{empty_env:?}"
+    );
+
+    let empty_user = errors(with_auth(Gate {
+        user: "  ".into(),
+        pass: Some("secret".into()),
+        pass_env: None,
+    }));
+    assert!(
+        empty_user.iter().any(|e| e.contains("empty auth user")),
+        "{empty_user:?}"
+    );
+
+    let colon_user = errors(with_auth(Gate {
+        user: "ad:min".into(),
+        pass: Some("secret".into()),
+        pass_env: None,
+    }));
+    assert!(
+        colon_user.iter().any(|e| e.contains("colon")),
+        "{colon_user:?}"
+    );
+
+    // Valid forms: cleartext pass, or a non-empty env var name.
+    assert!(with_auth(Gate {
+        user: "admin".into(),
+        pass: Some("secret".into()),
+        pass_env: None,
+    })
+    .check()
+    .is_ok());
+    assert!(with_auth(Gate {
+        user: "admin".into(),
+        pass: None,
+        pass_env: Some("STATUS_PASSWORD".into()),
+    })
+    .check()
+    .is_ok());
+}

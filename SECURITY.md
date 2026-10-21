@@ -21,6 +21,12 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
 - The config editor (`EDITOR=true`) is unauthenticated and serves
   `no-store` on every route while the status site stays offline; remove
   the var and redeploy immediately after saving.
+- Basic auth fails closed: a configured gate with a missing/empty
+  `pass`/`pass_env` secret denies every request instead of accepting
+  `user:` as credentials. Config validation also rejects empty users,
+  empty credentials, colons in the username, and both password sources.
+- Gated responses are `private, no-store`; 401 challenges are never
+  cached.
 
 ## Operator actions (Cloudflare dashboard)
 

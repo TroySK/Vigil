@@ -27,8 +27,9 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
         resp.headers_mut().set("vary", "Authorization")?;
     }
     // Error pages (notably the missing-config 500) must never sit in a
-    // shared cache: the next deploy or save may resolve them.
-    if resp.status_code() >= 500 {
+    // shared cache: the next deploy or save may resolve them. 401s must
+    // not be replayed by a shared browser profile either.
+    if resp.status_code() >= 500 || resp.status_code() == 401 {
         resp.headers_mut().set("cache-control", "no-store")?;
     } else if let Some(policy) = cache_control(url.path(), gated) {
         resp.headers_mut().set("cache-control", policy)?;
@@ -169,8 +170,8 @@ fn cache_control(path: &str, gated: bool) -> Option<&'static str> {
     if gated {
         return match path {
             "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history"
-            | "/api/incidents" | "/api/latency" => Some("private, max-age=300"),
-            "/api/badge" => Some("private, max-age=300"),
+            | "/api/incidents" | "/api/latency" => Some("private, no-store"),
+            "/api/badge" => Some("private, no-store"),
             _ => None,
         };
     }
@@ -310,12 +311,17 @@ mod tests {
     #[test]
     fn gated_sites_never_share_edge_cache() {
         // With an auth gate, responses vary by credentials: a shared
-        // edge cache must not serve one visitor's page to another.
+        // edge cache must not serve one visitor's page to another, and a
+        // shared browser profile must not replay gated data.
         for path in ["/", "/monitor", "/api/health", "/api/badge"] {
-            let policy = cache_control(path, true).expect("{path} stays cached");
+            let policy = cache_control(path, true).expect("{path} stays uncached");
             assert!(
                 policy.starts_with("private,"),
                 "{path} gated policy must be private, got {policy}"
+            );
+            assert!(
+                policy.contains("no-store"),
+                "{path} gated policy must not be stored, got {policy}"
             );
             assert!(!policy.contains("s-maxage"), "{path} must not set s-maxage");
         }

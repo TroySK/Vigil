@@ -6,16 +6,32 @@
 use vigil_core::config::Site;
 use worker::{Env, Request, Response, ResponseBody, Result};
 
+/// Resolve the expected password for a gate, or `None` when the config is
+/// ambiguous (both/neither source) or the secret is missing/empty.
+///
+/// A configured gate must never compare against `""`: that would accept
+/// `user:` as valid credentials. The caller denies on `None`.
+fn resolve_password(
+    gate: &vigil_core::config::Gate,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    match (&gate.pass, &gate.pass_env) {
+        (Some(pass), None) if !pass.is_empty() => Some(pass.clone()),
+        (None, Some(key)) if !key.is_empty() => lookup(key).filter(|password| !password.is_empty()),
+        _ => None,
+    }
+}
+
 /// `true` when the request passes the site gate (or no gate is configured).
 #[must_use]
 pub fn authed(req: &Request, site: &Site, env: &Env) -> bool {
     let Some(gate) = &site.auth else {
         return true;
     };
-    let want: String = match (&gate.pass, &gate.pass_env) {
-        (_, Some(key)) => env.var(key).map(|v| v.to_string()).unwrap_or_default(),
-        (Some(password), None) => password.clone(),
-        (None, None) => String::new(),
+    let Some(want) = resolve_password(gate, |key| env.var(key).ok().map(|v| v.to_string())) else {
+        // Fail closed: a missing secret, empty password, or ambiguous
+        // config must deny instead of matching `user:`.
+        return false;
     };
     let Some(encoded) = authorization_b64(req) else {
         return false;
@@ -91,11 +107,53 @@ pub fn esc(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64_decode, constant_time_eq, esc};
+    use super::{base64_decode, constant_time_eq, esc, resolve_password};
+    use vigil_core::config::Gate;
+
+    fn gate(pass: Option<&str>, pass_env: Option<&str>) -> Gate {
+        Gate {
+            user: "admin".into(),
+            pass: pass.map(str::to_owned),
+            pass_env: pass_env.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn password_resolution_fails_closed() {
+        // Cleartext password.
+        assert_eq!(
+            resolve_password(&gate(Some("secret"), None), |_| None).as_deref(),
+            Some("secret")
+        );
+        // Env secret, resolved through the lookup.
+        assert_eq!(
+            resolve_password(&gate(None, Some("STATUS_PASSWORD")), |key| {
+                (key == "STATUS_PASSWORD").then(|| "s3cret".to_owned())
+            })
+            .as_deref(),
+            Some("s3cret")
+        );
+        // Missing or empty secret must deny, never authenticate with "".
+        assert!(resolve_password(&gate(None, Some("STATUS_PASSWORD")), |_| None).is_none());
+        assert!(resolve_password(
+            &gate(None, Some("STATUS_PASSWORD")),
+            |_| Some(String::new())
+        )
+        .is_none());
+        // Ambiguous or absent config must deny (Site::check rejects it too).
+        assert!(resolve_password(&gate(Some("a"), Some("B")), |_| Some("B".into())).is_none());
+        assert!(resolve_password(&gate(None, None), |_| None).is_none());
+        // Empty cleartext / env name must deny.
+        assert!(resolve_password(&gate(Some(""), None), |_| None).is_none());
+        assert!(resolve_password(&gate(None, Some("")), |_| Some("x".into())).is_none());
+    }
 
     #[test]
     fn base64_vectors() {
-        assert_eq!(base64_decode("YWRtaW46c2VjcmV0").as_deref(), Ok("admin:secret"));
+        assert_eq!(
+            base64_decode("YWRtaW46c2VjcmV0").as_deref(),
+            Ok("admin:secret")
+        );
         assert_eq!(base64_decode("").as_deref(), Ok(""));
         assert!(base64_decode("!!!").is_err());
         assert!(base64_decode("/w==").is_err()); // 0xFF, not UTF-8
