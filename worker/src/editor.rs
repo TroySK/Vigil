@@ -86,6 +86,9 @@ pub async fn save(req: &mut Request, db: &Db) -> Result<Response> {
         Ok(_) => {
             db.batch(vec![db.put_stmt(vigil::SITE_KV_KEY, &yaml)?])
                 .await?;
+            // Drop this isolate's cached raw/parsed config so the saved
+            // bytes are used immediately if editor mode is still serving.
+            crate::site_store::invalidate();
             render(db, Some(&yaml), &[], true).await
         }
         Err(errors) => render(db, Some(&yaml), &errors, false).await,

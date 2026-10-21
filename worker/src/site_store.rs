@@ -6,10 +6,15 @@
 
 use crate::db::Db;
 use vigil_core::config::Site;
-use worker::{Env, Result};
+use worker::{Date, Env, Result};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+
+/// How long an isolate trusts its cached raw YAML. Config changes flow
+/// through the editor + redeploy path (which starts a fresh isolate), but a
+/// short TTL also picks up direct D1 edits without a request-per-read cost.
+pub const RAW_TTL_SECS: i64 = 60;
 
 /// `true` when the worker runs in config-editor mode (`EDITOR=true`).
 ///
@@ -49,16 +54,38 @@ impl std::fmt::Display for SiteError {
 
 /// Load and validate the site config from D1, memoized per raw bytes.
 ///
+/// The raw YAML is cached in the isolate for [`RAW_TTL_SECS`], so the
+/// steady-state request path costs no D1 round trip for config at all.
 /// YAML parsing plus [`Site::check`] runs only when the stored bytes
 /// change: isolates are reused across requests/ticks, so re-parsing an
 /// unchanged multi-KB config every 30s poll would burn the Worker's CPU
 /// budget for no new information. Failures are memoized too — a bad save
 /// keeps reporting its error instead of serving stale config.
 pub async fn load(db: &Db) -> Result<std::result::Result<Loaded, SiteError>> {
-    let Some(raw) = load_raw(db).await? else {
-        return Ok(Err(SiteError::Missing));
-    };
-    Ok(global().get(&raw))
+    let now = now_secs();
+    if let Some(raw) = global().cached_raw(now) {
+        return Ok(match raw {
+            Some(raw) => global().get(&raw),
+            None => Err(SiteError::Missing),
+        });
+    }
+    let raw = load_raw(db).await?;
+    global().remember_raw(raw.clone(), now);
+    Ok(match raw {
+        Some(raw) => global().get(&raw),
+        None => Err(SiteError::Missing),
+    })
+}
+
+/// Drop both the raw and parsed caches (config editor save).
+pub fn invalidate() {
+    global().invalidate();
+}
+
+/// Current time truncated to whole seconds.
+#[allow(clippy::cast_possible_wrap)] // epoch millis fit in i64 for millennia
+fn now_secs() -> i64 {
+    (Date::now().as_millis() / 1_000) as i64
 }
 
 /// Site config plus parse-time derivatives, memoized per raw bytes by
@@ -82,12 +109,20 @@ struct Cached {
     result: std::result::Result<Loaded, SiteError>,
 }
 
+/// One memoized raw read: the value (or absence) plus when it expires.
+#[derive(Debug)]
+struct RawCached {
+    value: Option<String>,
+    expires_at: i64,
+}
+
 /// Byte-keyed memo for [`load`]: cheap to consult on every request, exact
 /// on every save. A dedicated struct (rather than bare statics) keeps the
 /// policy unit-testable without global state.
 #[derive(Debug, Default)]
 pub struct SiteCache {
     inner: Mutex<Option<Cached>>,
+    raw: Mutex<Option<RawCached>>,
 }
 
 impl SiteCache {
@@ -95,6 +130,44 @@ impl SiteCache {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Cached raw YAML, if it has not expired. `Some(None)` means the
+    /// database was recently known to have no config.
+    #[must_use]
+    pub fn cached_raw(&self, now: i64) -> Option<Option<String>> {
+        let guard = self
+            .raw
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard
+            .as_ref()
+            .filter(|cached| now < cached.expires_at)
+            .map(|cached| cached.value.clone())
+    }
+
+    /// Remember a raw read (or its absence) for [`RAW_TTL_SECS`].
+    pub fn remember_raw(&self, value: Option<String>, now: i64) {
+        let mut guard = self
+            .raw
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = Some(RawCached {
+            value,
+            expires_at: now.saturating_add(RAW_TTL_SECS),
+        });
+    }
+
+    /// Forget everything; the next [`load`] reads D1 again.
+    pub fn invalidate(&self) {
+        *self
+            .raw
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Parse `raw` unless these exact bytes were seen before.
@@ -196,5 +269,28 @@ mod tests {
         );
         assert!(!loaded.favicons.contains_key("t"));
         assert_eq!(loaded.site.monitors.len(), 2);
+    }
+
+    #[test]
+    fn raw_cache_serves_within_ttl_and_expires() {
+        let cache = SiteCache::new();
+        assert_eq!(cache.cached_raw(100), None);
+        cache.remember_raw(Some(GOOD_YAML.to_owned()), 100);
+        assert_eq!(
+            cache.cached_raw(100 + super::RAW_TTL_SECS - 1),
+            Some(Some(GOOD_YAML.to_owned()))
+        );
+        assert_eq!(cache.cached_raw(100 + super::RAW_TTL_SECS), None);
+    }
+
+    #[test]
+    fn raw_cache_remembers_missing_config_and_invalidates() {
+        let cache = SiteCache::new();
+        cache.remember_raw(None, 100);
+        assert_eq!(cache.cached_raw(101), Some(None));
+        cache.remember_raw(Some(GOOD_YAML.to_owned()), 101);
+        assert_eq!(cache.cached_raw(102), Some(Some(GOOD_YAML.to_owned())));
+        cache.invalidate();
+        assert_eq!(cache.cached_raw(103), None);
     }
 }
