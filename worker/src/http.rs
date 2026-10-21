@@ -116,23 +116,44 @@ async fn route(
     // herd under traffic). CI migrations plus the cron tick's self-heal own
     // schema; requests just read.
     let gated = site.auth.is_some();
-    let resp = match url.path() {
-        "/" | "/index.html" => {
-            let range = crate::range::parse_range(range_param(url).as_deref());
-            crate::page::render(&db, site, &loaded.favicons, range).await?
+    // Path-scoped query allowlist: unknown or duplicated keys would make
+    // every variant a distinct cache entry (and force a fresh D1 read).
+    let allowed: Option<&[&str]> = match url.path() {
+        "/" | "/index.html" => Some(&["range"]),
+        "/monitor" => Some(&["id", "range"]),
+        "/api/health" => Some(&[]),
+        "/api/badge" => Some(&["id"]),
+        "/api/history" | "/api/latency" => Some(&["id"]),
+        "/api/incidents" => Some(&["id", "limit"]),
+        _ => None,
+    };
+    if allowed.is_some_and(|allowed| !api::query_ok(url, allowed)) {
+        return Ok((Response::error("unknown query parameter", 400)?, gated));
+    }
+    // Unknown range values are a 400, not a silent default: rendering and
+    // caching arbitrary `?range=` spellings would multiply D1 work.
+    let range = if matches!(url.path(), "/" | "/index.html" | "/monitor") {
+        match range_param(url) {
+            Some(raw) => match crate::range::exact_range(&raw) {
+                Some(range) => range,
+                None => return Ok((Response::error("bad range", 400)?, gated)),
+            },
+            None => crate::range::DEFAULT_RANGE,
         }
+    } else {
+        crate::range::DEFAULT_RANGE
+    };
+    let resp = match url.path() {
+        "/" | "/index.html" => crate::page::render(&db, site, &loaded.favicons, range).await?,
         "/monitor" => match detail_id(url) {
-            Some(id) => {
-                let range = crate::range::parse_range(range_param(url).as_deref());
-                crate::detail::render(&db, site, &loaded.favicons, &id, range).await?
-            }
+            Some(id) => crate::detail::render(&db, site, &loaded.favicons, &id, range).await?,
             None => Response::error("missing id", 400)?,
         },
         "/api/health" => api::health(&db, site).await?,
         "/api/badge" => api::badge(&db, site, url).await?,
-        "/api/history" => api::history(&db, url).await?,
-        "/api/incidents" => api::incidents(&db, url).await?,
-        "/api/latency" => api::latency(&db, url).await?,
+        "/api/history" => api::history(&db, site, url).await?,
+        "/api/incidents" => api::incidents(&db, site, url).await?,
+        "/api/latency" => api::latency(&db, site, url).await?,
         _ => Response::error("not found", 404)?,
     };
     Ok((resp, gated))

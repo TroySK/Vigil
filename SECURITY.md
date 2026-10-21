@@ -8,6 +8,10 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
 - All D1 access is parameterized; no SQL string interpolation exists.
 - All config- and DB-derived strings are HTML-escaped at render time
   (element content and double-quoted attribute contexts).
+- API ids are checked against the configured monitor list before any D1
+  read: history/incidents/latency return 404 for missing or removed ids,
+  and unknown/duplicate query parameters (plus unknown `?range=` values)
+  return 400 so arbitrary URLs cannot bypass the edge cache.
 - Baseline response headers on every route: `referrer-policy: no-referrer`,
   `x-content-type-options: nosniff`, `x-frame-options: DENY`.
 - Config validation allowlists link schemes: monitor `href` and webhook

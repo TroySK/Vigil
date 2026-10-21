@@ -61,16 +61,17 @@ pub(crate) const RANGE_90D: Range = Range {
 /// Default range: unknown or missing `?range=` values fall back here.
 pub(crate) const DEFAULT_RANGE: Range = RANGE_7D;
 
-/// Parse `?range=` (`24h`, `7d`, `30d`, `90d`, case-insensitive); anything
-/// else — including a missing value — selects the 7-day default.
+/// Exact `?range=` match (case-insensitive). `None` for unknown values so
+/// callers can return 400 instead of silently rendering the default and
+/// caching a cache-busting URL.
 #[must_use]
-pub(crate) fn parse_range(raw: Option<&str>) -> Range {
-    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-        Some("24h") => RANGE_24H,
-        Some("7d") => RANGE_7D,
-        Some("30d") => RANGE_30D,
-        Some("90d") => RANGE_90D,
-        _ => DEFAULT_RANGE,
+pub(crate) fn exact_range(raw: &str) -> Option<Range> {
+    match raw.to_ascii_lowercase().as_str() {
+        "24h" => Some(RANGE_24H),
+        "7d" => Some(RANGE_7D),
+        "30d" => Some(RANGE_30D),
+        "90d" => Some(RANGE_90D),
+        _ => None,
     }
 }
 
@@ -169,19 +170,28 @@ pub(crate) fn menu(active: Range, href: impl Fn(Range) -> String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{menu, parse_range, RANGES, RANGE_90D};
+    use super::{exact_range, menu, RANGES, RANGE_90D};
 
     #[test]
     fn range_parses_known_params_and_defaults_to_seven_days() {
-        assert_eq!(parse_range(Some("24h")).days, 1);
-        assert_eq!(parse_range(Some("7d")).days, 7);
-        assert_eq!(parse_range(Some("30d")).days, 30);
-        assert_eq!(parse_range(Some("90d")).days, 90);
-        assert_eq!(parse_range(Some("7D")).days, 7);
-        assert_eq!(parse_range(None).days, 7);
-        assert_eq!(parse_range(Some("")).days, 7);
-        assert_eq!(parse_range(Some("bogus")).days, 7);
+        assert_eq!(exact_range("24h").map(|r| r.days), Some(1));
+        assert_eq!(exact_range("7d").map(|r| r.days), Some(7));
+        assert_eq!(exact_range("30d").map(|r| r.days), Some(30));
+        assert_eq!(exact_range("90d").map(|r| r.days), Some(90));
+        assert_eq!(exact_range("7D").map(|r| r.days), Some(7));
+        assert_eq!(super::DEFAULT_RANGE.days, 7);
         assert_eq!(RANGES.len(), 4);
+    }
+
+    #[test]
+    fn exact_range_rejects_unknown_values() {
+        assert_eq!(exact_range("24h").map(|r| r.days), Some(1));
+        assert_eq!(exact_range("7D").map(|r| r.days), Some(7));
+        assert_eq!(exact_range("30d").map(|r| r.days), Some(30));
+        assert_eq!(exact_range("90d").map(|r| r.days), Some(90));
+        for bad in ["", "bogus", "7", "24h ", " 7D ", "90days"] {
+            assert!(exact_range(bad).is_none(), "{bad:?} must not parse");
+        }
     }
 
     #[test]

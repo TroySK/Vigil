@@ -248,6 +248,10 @@ if you want required reviewers before a deploy):
 - `/api/history?id=<id>` — raw latency samples for charts.
 - `/api/incidents?id=<id>&limit=<n>` — recent downtime windows.
 - `/api/latency?id=<id>` — latency percentiles plus raw samples.
+  History/incidents/latency require a currently configured id (404 for
+  missing or removed monitors). Unknown or duplicated query parameters,
+  and unknown `?range=` values, are rejected with 400 so arbitrary URLs
+  cannot bypass the edge cache.
 - `/favicon.ico` — tab icon generated from `worker/assets/vigil.svg` (public, long-cached).
 - `/logo.svg` — header brand mark (same artwork as `worker/assets/vigil.svg`).
 - `/editor` — copy-paste YAML config editor. Served **only** when the

@@ -4,7 +4,7 @@ use crate::db::Db;
 use crate::reads::{
     clock, latest, latest_by_monitor, recent_gaps, recent_gaps_by_monitor, series, SampleOut,
 };
-use vigil_core::config::Site;
+use vigil_core::config::{Monitor, Site};
 use vigil_core::rollup::percentile_triple;
 use vigil_core::state::{Gap, Track};
 use worker::{Response, ResponseBody, Result};
@@ -96,22 +96,26 @@ fn monitor_status(current: Option<&SampleOut>, gaps: &[Gap], base: i64) -> serde
 /// Shields-style SVG badge for one monitor (`?id=`) or the whole site.
 pub async fn badge(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
     let id = query_param(url, "id");
-    let (label, is_up) = if let Some(monitor) = id.as_deref().and_then(|i| site.get(i)) {
-        // Status from gaps (open gap = down), not the hourly sample: split
-        // cadence probes uptime every 5m but samples hourly. One extra
-        // capped read only on badge hits, not on every page load.
-        let (current, gaps) = futures_util::try_join!(
-            latest(db, &monitor.id),
-            recent_gaps(db, &monitor.id, 5),
-        )?;
-        let open = gaps.iter().any(|g| g.to.is_none());
-        (
-            monitor.name.clone(),
-            !open && current.as_ref().map_or(true, |r| r.up == 1),
-        )
-    } else {
-        let counts = db.get("counts").await?.unwrap_or_else(default_counts);
-        ("status".to_owned(), parse_counts(&counts).1 == 0)
+    let (label, is_up) = match id.as_deref() {
+        None => {
+            let counts = db.get("counts").await?.unwrap_or_else(default_counts);
+            ("status".to_owned(), parse_counts(&counts).1 == 0)
+        }
+        Some(id) => {
+            let Some(monitor) = site.get(id) else {
+                return Response::error("unknown id", 404);
+            };
+            // Status from gaps (open gap = down), not the hourly sample: split
+            // cadence probes uptime every 5m but samples hourly. One extra
+            // capped read only on badge hits, not on every page load.
+            let (current, gaps) =
+                futures_util::try_join!(latest(db, &monitor.id), recent_gaps(db, &monitor.id, 5),)?;
+            let open = gaps.iter().any(|g| g.to.is_none());
+            (
+                monitor.name.clone(),
+                !open && current.as_ref().map_or(true, |r| r.up == 1),
+            )
+        }
     };
     let (word, color) = vigil_core::views::badge(is_up);
     let svg = vigil_core::views::svg(&label, word, color);
@@ -124,25 +128,31 @@ pub async fn badge(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
 }
 
 /// Raw latency samples for charts (`?id=`, up to [`MAX_ROWS`]).
-pub async fn history(db: &Db, url: &url::Url) -> Result<Response> {
-    let id = query_param(url, "id").unwrap_or_default();
-    Response::from_json(&series(db, &id, MAX_ROWS).await?)
+pub async fn history(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
+    let Some(monitor) = requested_monitor(site, url) else {
+        return Response::error("unknown id", 404);
+    };
+    Response::from_json(&series(db, &monitor.id, MAX_ROWS).await?)
 }
 
 /// Recent downtime windows (`?id=`, `?limit=` clamped to [`MAX_ROWS`]).
-pub async fn incidents(db: &Db, url: &url::Url) -> Result<Response> {
-    let id = query_param(url, "id").unwrap_or_default();
+pub async fn incidents(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
+    let Some(monitor) = requested_monitor(site, url) else {
+        return Response::error("unknown id", 404);
+    };
     let limit: i64 = query_param(url, "limit")
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_ROWS)
         .clamp(1, MAX_ROWS);
-    Response::from_json(&recent_gaps(db, &id, limit).await?)
+    Response::from_json(&recent_gaps(db, &monitor.id, limit).await?)
 }
 
 /// Latency percentiles plus raw samples (`?id=`).
-pub async fn latency(db: &Db, url: &url::Url) -> Result<Response> {
-    let id = query_param(url, "id").unwrap_or_default();
-    let rows = series(db, &id, MAX_ROWS).await?;
+pub async fn latency(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
+    let Some(monitor) = requested_monitor(site, url) else {
+        return Response::error("unknown id", 404);
+    };
+    let rows = series(db, &monitor.id, MAX_ROWS).await?;
     let vals: Vec<i64> = rows.iter().map(|r| r.ms).collect();
     // One sort for all three percentiles (was: three sorts).
     let (p50, p95, p99) = percentile_triple(&vals, 50.0, 95.0, 99.0);
@@ -166,6 +176,23 @@ fn parse_counts(counts: &str) -> (u32, u32) {
     })
 }
 
+/// `true` when every query pair uses an allowed key exactly once. Unknown
+/// or duplicated keys would otherwise produce cache-busting URLs and
+/// ambiguous reads.
+pub(crate) fn query_ok(url: &url::Url, allowed: &[&str]) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    url.query_pairs()
+        .all(|(key, _)| allowed.contains(&key.as_ref()) && seen.insert(key.into_owned()))
+}
+
+/// The configured monitor named by `?id=`, or `None` when missing/unknown
+/// (including ids removed from config whose history is still retained).
+fn requested_monitor<'a>(site: &'a Site, url: &url::Url) -> Option<&'a Monitor> {
+    query_param(url, "id")
+        .as_deref()
+        .and_then(|id| site.get(id))
+}
+
 /// Extract one query parameter value with a single scan over the pairs
 /// (the old map-collecting version re-parsed and allocated the full query
 /// string on every call — twice per API request).
@@ -178,9 +205,43 @@ fn query_param(url: &url::Url, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_counts, monitor_status, parse_counts, query_param};
+    use super::{
+        default_counts, monitor_status, parse_counts, query_ok, query_param, requested_monitor,
+    };
     use crate::reads::SampleOut;
+    use vigil_core::config::Site;
     use vigil_core::state::Gap;
+
+    fn site() -> Site {
+        serde_yaml::from_str(
+            "monitors:\n  - id: a\n    name: A\n    check:\n      via: tcp\n      host: example.com\n      port: 80\n",
+        )
+        .expect("fixture parses")
+    }
+
+    #[test]
+    fn query_validation_rejects_unknown_and_duplicate_params() {
+        let ok = url::Url::parse("https://status.example/api/history?id=a&limit=5").unwrap();
+        assert!(query_ok(&ok, &["id", "limit"]));
+        assert!(!query_ok(&ok, &["id"]), "limit is unknown here");
+        let dup = url::Url::parse("https://status.example/api/history?id=a&id=b").unwrap();
+        assert!(!query_ok(&dup, &["id"]), "duplicate params are ambiguous");
+        let bare = url::Url::parse("https://status.example/api/health").unwrap();
+        assert!(query_ok(&bare, &[]));
+        let bust = url::Url::parse("https://status.example/api/health?x=1").unwrap();
+        assert!(!query_ok(&bust, &[]), "cache-busting params are rejected");
+    }
+
+    #[test]
+    fn requested_monitor_requires_a_configured_id() {
+        let site = site();
+        let known = url::Url::parse("https://status.example/api/history?id=a").unwrap();
+        assert!(requested_monitor(&site, &known).is_some());
+        let unknown = url::Url::parse("https://status.example/api/history?id=gone").unwrap();
+        assert!(requested_monitor(&site, &unknown).is_none());
+        let missing = url::Url::parse("https://status.example/api/history").unwrap();
+        assert!(requested_monitor(&site, &missing).is_none());
+    }
 
     #[test]
     fn health_counts_fall_back_to_zero() {
