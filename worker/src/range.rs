@@ -59,16 +59,17 @@ pub(crate) const RANGE_90D: Range = Range {
     short: "90D",
 };
 /// Default range: unknown or missing `?range=` values fall back here.
-pub(crate) const DEFAULT_RANGE: Range = RANGE_90D;
+pub(crate) const DEFAULT_RANGE: Range = RANGE_7D;
 
 /// Parse `?range=` (`24h`, `7d`, `30d`, `90d`, case-insensitive); anything
-/// else — including a missing value — selects the 90-day default.
+/// else — including a missing value — selects the 7-day default.
 #[must_use]
 pub(crate) fn parse_range(raw: Option<&str>) -> Range {
     match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
         Some("24h") => RANGE_24H,
         Some("7d") => RANGE_7D,
         Some("30d") => RANGE_30D,
+        Some("90d") => RANGE_90D,
         _ => DEFAULT_RANGE,
     }
 }
@@ -171,15 +172,15 @@ mod tests {
     use super::{menu, parse_range, RANGES, RANGE_90D};
 
     #[test]
-    fn range_parses_known_params_and_defaults_to_90_days() {
+    fn range_parses_known_params_and_defaults_to_seven_days() {
         assert_eq!(parse_range(Some("24h")).days, 1);
         assert_eq!(parse_range(Some("7d")).days, 7);
         assert_eq!(parse_range(Some("30d")).days, 30);
         assert_eq!(parse_range(Some("90d")).days, 90);
         assert_eq!(parse_range(Some("7D")).days, 7);
-        assert_eq!(parse_range(None).days, 90);
-        assert_eq!(parse_range(Some("")).days, 90);
-        assert_eq!(parse_range(Some("bogus")).days, 90);
+        assert_eq!(parse_range(None).days, 7);
+        assert_eq!(parse_range(Some("")).days, 7);
+        assert_eq!(parse_range(Some("bogus")).days, 7);
         assert_eq!(RANGES.len(), 4);
     }
 

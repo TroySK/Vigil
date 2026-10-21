@@ -220,7 +220,7 @@ if you want required reviewers before a deploy):
 ## Routes
 
 - `/` — status page: per-monitor rows with history bars and latency
-  charts for the selected range (`?range=24h|7d|30d|90d`, default 90d),
+  charts for the selected range (`?range=24h|7d|30d|90d`, default 7d),
   upkeep banners, footer links, and groups. Light/dark toggle included.
 - `/monitor?id=<id>` — per-monitor detail: range bars, latency chart with
   labeled axes, incident table, and upkeep scoped to that monitor.
