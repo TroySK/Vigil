@@ -197,10 +197,11 @@ push to `main` and on manual dispatch. What it does:
 5. Seeds the site config into D1 from the `SITE_YAML` repo secret when
    that secret exists (syntax-checked first; skipped otherwise — then
    the `EDITOR=true` editor flow owns the config).
-6. Sets the `STATUS_PASSWORD` worker secret when that repo secret exists.
-   When `auth` references `pass_env = "STATUS_PASSWORD"`, a missing or
-   empty secret makes the gate deny every request (fail closed); it never
-   falls back to an empty password.
+6. Sets the `STATUS_PASSWORD` worker secret when that repo secret exists,
+   and deletes it when unset (no stale password survives). Before
+   deploying, it reads the saved config and fails if `auth` is invalid or
+   references `STATUS_PASSWORD` while the secret is empty. The Worker
+   itself also fails closed if the secret is ever missing.
 7. Syncs the `EDITOR` worker secret from the `EDITOR` repo secret
    (`true` enables editor mode; unset deletes the worker secret so a
    stale flag can't keep the site offline).
@@ -219,7 +220,7 @@ if you want required reviewers before a deploy):
 | --- | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | Yes | API token with **Workers Scripts: Edit** and **D1: Edit** permissions ([create one here](https://dash.cloudflare.com/profile/api-tokens)). |
 | `CLOUDFLARE_ACCOUNT_ID` | Yes | Pins the deploy target (find it in the Cloudflare dashboard URL or **Workers & Pages → Overview**). The workflow fails fast when it is missing. |
-| `STATUS_PASSWORD` | No | Value for the `STATUS_PASSWORD` worker secret (Basic-auth password when `pass_env = "STATUS_PASSWORD"` is configured). Omit only when `auth` is not configured: if it is referenced but missing or empty, the gate denies all access (fail closed). |
+| `STATUS_PASSWORD` | No | Value for the `STATUS_PASSWORD` worker secret (Basic-auth password when `pass_env = "STATUS_PASSWORD"` is configured). Unset deletes the worker secret; the deploy fails while the saved config still references it, and the Worker fails closed if the secret is ever missing. |
 | `SITE_YAML` | No | Full site-config YAML, seeded into D1 (`kv.site_yaml`) on every deploy. When set, it overwrites editor edits each deploy. Omit to manage config purely through the `EDITOR=true` editor flow. |
 | `EDITOR` | No | Set to exactly `true` to sync the `EDITOR` worker secret on deploy, taking the live site offline into the config editor. Delete or empty it and re-run the workflow to restore the site. |
 | `EDITOR_TOKEN` | When `EDITOR=true` | 16+ character token required to open `/editor?token=…` while editor mode is on. Unset deletes the worker secret; the deploy fails if editor mode is enabled without it. |

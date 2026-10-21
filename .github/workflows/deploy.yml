@@ -122,16 +122,83 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SITE_YAML: ${{ secrets.SITE_YAML }}
 
+      # Fail before deploying an auth config that has no usable password:
+      # the Worker fails closed, but a misconfigured deploy would lock the
+      # site out. Cleartext `pass` is checked too; `pass_env` values other
+      # than STATUS_PASSWORD are managed by the operator elsewhere.
+      - name: Refuse auth config without a password
+        run: |
+          cd worker
+          npx -y "wrangler@${WRANGLER_VERSION}" d1 execute DB --remote --json \
+            --command "SELECT v FROM kv WHERE k = 'site_yaml'" > /tmp/site_config.json
+          python3 - <<'PY'
+          import json, os, sys
+
+          data = json.load(open("/tmp/site_config.json", encoding="utf-8"))
+          rows = []
+          for block in data if isinstance(data, list) else [data]:
+              if isinstance(block, dict) and isinstance(block.get("results"), list):
+                  rows.extend(block["results"])
+          if not rows or not rows[0].get("v"):
+              print("No saved site config; skipping auth check.")
+              sys.exit(0)
+
+          try:
+              import yaml
+          except ImportError:
+              sys.exit("pyyaml missing: cannot verify auth config before deploy")
+
+          site = yaml.safe_load(rows[0]["v"])
+          auth = site.get("auth") if isinstance(site, dict) else None
+          if auth is None:
+              print("No auth gate configured.")
+              sys.exit(0)
+          if not isinstance(auth, dict):
+              sys.exit("auth must be a mapping")
+
+          user = auth.get("user")
+          if not isinstance(user, str) or not user.strip() or ":" in user:
+              sys.exit("auth.user must be a non-empty string without ':'")
+
+          cleartext = auth.get("pass")
+          env_name = auth.get("pass_env")
+          if (cleartext is None) == (env_name is None):
+              sys.exit("auth must set exactly one of pass or pass_env")
+          if cleartext is not None and not cleartext:
+              sys.exit("auth.pass is empty")
+          if env_name is not None and not env_name:
+              sys.exit("auth.pass_env is empty")
+
+          if env_name == "STATUS_PASSWORD" and not os.environ.get("STATUS_PASSWORD"):
+              sys.exit("auth references STATUS_PASSWORD but the repo secret is empty/unset; set it or remove auth")
+          print("Auth config has a usable password source.")
+          PY
+          rm -f /tmp/site_config.json
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STATUS_PASSWORD: ${{ secrets.STATUS_PASSWORD }}
+
       # Optional: enables Basic auth on the status page (Gate + STATUS_PASSWORD).
-      # Skipped unless the STATUS_PASSWORD secret is set.
+      # Removing the repo secret deletes the worker secret (rather than
+      # leaving an old password valid); the Worker then fails closed if the
+      # saved config still references it. printf avoids echo option parsing
+      # for passwords like "-n".
       - name: Set STATUS_PASSWORD secret
         run: |
           cd worker
           if [ -z "$STATUS_PASSWORD" ]; then
-            echo "STATUS_PASSWORD not set, skipping."
-            exit 0
+            OUT=$(npx -y "wrangler@${WRANGLER_VERSION}" secret delete STATUS_PASSWORD 2>&1) || {
+              echo "$OUT"
+              if echo "$OUT" | grep -qiE 'not found|does not exist|not present'; then
+                echo "STATUS_PASSWORD already absent."
+              else
+                exit 1
+              fi
+            }
+          else
+            printf '%s' "$STATUS_PASSWORD" | npx -y "wrangler@${WRANGLER_VERSION}" secret put STATUS_PASSWORD
           fi
-          echo "$STATUS_PASSWORD" | npx -y "wrangler@${WRANGLER_VERSION}" secret put STATUS_PASSWORD
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

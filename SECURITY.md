@@ -54,8 +54,11 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
    throttling in the worker — the WAF rule above is the brute-force
    backstop, so keep it even with auth on. Use a 20+ character password.
 3. **Secret rotation.** Worker secrets: `wrangler secret put NAME`.
-   If a token ever lands in the saved config, revoke it at the issuer —
-   D1 keeps it until overwritten, and the old YAML may live in backups.
+   Removing the `STATUS_PASSWORD` repo secret deletes the worker secret;
+   the deploy refuses to proceed while the saved config still references
+   it, so change or remove `auth` in the same change. If a token ever lands
+   in the saved config, revoke it at the issuer — D1 keeps it until
+   overwritten, and the old YAML may live in backups.
 4. **After enabling auth**, re-check `/api/badge` consumers: badge URLs
    embedded as `<img>` tags cannot send Basic credentials and will break.
 

@@ -332,6 +332,23 @@ mod tests {
     }
 
     #[test]
+    fn deploy_workflow_handles_password_lifecycle() {
+        const WORKFLOW: &str = include_str!("../../.github/workflows/deploy.yml");
+        assert!(
+            WORKFLOW.contains("printf '%s' \"$STATUS_PASSWORD\""),
+            "passwords must not be interpreted by echo"
+        );
+        assert!(
+            WORKFLOW.contains("secret delete STATUS_PASSWORD"),
+            "removing the repo secret must delete the worker secret"
+        );
+        assert!(
+            WORKFLOW.contains("d1 execute DB --remote --json"),
+            "deploy must inspect the saved auth config before deploying"
+        );
+    }
+
+    #[test]
     fn badge_caches_briefly_and_errors_stay_uncached() {
         // Badge embeds poll constantly; 5 minutes of staleness caps D1 reads
         // while staying fresh with the probe cadence.
