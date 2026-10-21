@@ -257,6 +257,32 @@ mod tests {
     }
 
     #[test]
+    fn wrangler_build_pins_worker_build() {
+        // Deploys must not pick up a new worker-build release implicitly;
+        // pinning keeps local and CI builds identical and cacheable.
+        const WRANGLER: &str = include_str!("../wrangler.toml");
+        assert!(
+            WRANGLER.contains("cargo install -q worker-build --version 0.8.7 --locked"),
+            "wrangler.toml must pin worker-build"
+        );
+    }
+
+    #[test]
+    fn deploy_workflow_pins_wrangler() {
+        // CI shells out to Wrangler for every deploy step; a floating major
+        // would silently change CLI behavior between deploys.
+        const WORKFLOW: &str = include_str!("../../.github/workflows/deploy.yml");
+        assert!(
+            WORKFLOW.contains("WRANGLER_VERSION: \"4.151.3\""),
+            "deploy workflow must pin Wrangler"
+        );
+        assert!(
+            !WORKFLOW.contains("wrangler@4 "),
+            "no step may use a floating Wrangler major"
+        );
+    }
+
+    #[test]
     fn badge_caches_briefly_and_errors_stay_uncached() {
         // Badge embeds poll constantly; 5 minutes of staleness caps D1 reads
         // while staying fresh with the probe cadence.

@@ -8,6 +8,9 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      # Pin the CLI used by every deploy step; bump deliberately.
+      WRANGLER_VERSION: "4.151.3"
     steps:
       - uses: actions/checkout@v4
 
@@ -60,11 +63,11 @@ jobs:
       - name: Ensure D1 database and apply migrations
         run: |
           cd worker
-          DB_ID=$(npx -y wrangler@4 d1 list --json | jq -r '.[] | select(.name == "vigil") | .uuid // empty')
+          DB_ID=$(npx -y "wrangler@${WRANGLER_VERSION}" d1 list --json | jq -r '.[] | select(.name == "vigil") | .uuid // empty')
           if [[ -z "$DB_ID" ]]; then
             echo "Creating D1 database 'vigil'..."
-            npx -y wrangler@4 d1 create vigil
-            DB_ID=$(npx -y wrangler@4 d1 list --json | jq -r '.[] | select(.name == "vigil") | .uuid // empty')
+            npx -y "wrangler@${WRANGLER_VERSION}" d1 create vigil
+            DB_ID=$(npx -y "wrangler@${WRANGLER_VERSION}" d1 list --json | jq -r '.[] | select(.name == "vigil") | .uuid // empty')
           fi
           if [[ -z "$DB_ID" ]]; then
             echo "Could not find or create D1 database 'vigil'!"
@@ -72,7 +75,7 @@ jobs:
           fi
           echo "D1 database id: $DB_ID"
           sed -i -E "s/^database_id = .*$/database_id = \"$DB_ID\"/" wrangler.toml
-          npx -y wrangler@4 d1 migrations apply DB --remote
+          npx -y "wrangler@${WRANGLER_VERSION}" d1 migrations apply DB --remote
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -112,7 +115,7 @@ jobs:
               + "') ON CONFLICT(k) DO UPDATE SET v = excluded.v;\n"
           )
           EOF
-          npx -y wrangler@4 d1 execute DB --remote --file=/tmp/seed_site.sql
+          npx -y "wrangler@${WRANGLER_VERSION}" d1 execute DB --remote --file=/tmp/seed_site.sql
           rm -f /tmp/site.yaml /tmp/seed_site.sql
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -128,7 +131,7 @@ jobs:
             echo "STATUS_PASSWORD not set, skipping."
             exit 0
           fi
-          echo "$STATUS_PASSWORD" | npx -y wrangler@4 secret put STATUS_PASSWORD
+          echo "$STATUS_PASSWORD" | npx -y "wrangler@${WRANGLER_VERSION}" secret put STATUS_PASSWORD
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -145,7 +148,7 @@ jobs:
         run: |
           cd worker
           if [ -z "$EDITOR" ]; then
-            OUT=$(npx -y wrangler@4 secret delete EDITOR 2>&1) || {
+            OUT=$(npx -y "wrangler@${WRANGLER_VERSION}" secret delete EDITOR 2>&1) || {
               echo "$OUT"
               if echo "$OUT" | grep -qiE 'not found|does not exist|not present'; then
                 echo "EDITOR already absent."
@@ -154,7 +157,7 @@ jobs:
               fi
             }
           elif [ "$EDITOR" = "true" ]; then
-            printf '%s' "$EDITOR" | npx -y wrangler@4 secret put EDITOR
+            printf '%s' "$EDITOR" | npx -y "wrangler@${WRANGLER_VERSION}" secret put EDITOR
           else
             echo "EDITOR repo secret must be exactly 'true' or empty (got something else) — refusing to sync."
             exit 1
@@ -167,7 +170,7 @@ jobs:
       - name: Deploy worker
         run: |
           cd worker
-          npx -y wrangler@4 deploy
+          npx -y "wrangler@${WRANGLER_VERSION}" deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

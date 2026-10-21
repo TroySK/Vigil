@@ -9,7 +9,7 @@ compatibility_date = "2025-04-02"
 enabled = true
 
 [build]
-command = "cargo install -q worker-build && worker-build --release"
+command = "cargo install -q worker-build --version 0.8.7 --locked && worker-build --release"
 
 [triggers]
 crons = ["*/5 * * * *"]
