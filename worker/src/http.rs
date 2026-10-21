@@ -12,7 +12,12 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
     let editor = crate::site_store::is_editor(&env);
     // Editor mode short-circuits everything (except brand assets): the
     // status site is offline until `EDITOR=true` is removed + redeployed.
-    let (mut resp, gated) = route(req, env, &url, editor).await?;
+    // A propagated runtime error would otherwise bypass the header loop
+    // below, so turn it into a generic, hardened 500 first.
+    let (mut resp, gated) = match route(req, env, &url, editor).await {
+        Ok(result) => result,
+        Err(_) => (Response::error("internal error", 500)?, false),
+    };
     for (name, value) in security_headers() {
         resp.headers_mut().set(name, value)?;
     }
@@ -31,12 +36,17 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
     // Error pages (notably the missing-config 500) must never sit in a
     // shared cache: the next deploy or save may resolve them. 401s must
     // not be replayed by a shared browser profile either.
-    if resp.status_code() >= 500 || resp.status_code() == 401 {
+    if never_cache(resp.status_code()) {
         resp.headers_mut().set("cache-control", "no-store")?;
     } else if let Some(policy) = cache_control(url.path(), gated) {
         resp.headers_mut().set("cache-control", policy)?;
     }
     Ok(resp)
+}
+
+/// `true` for statuses that must never be stored by any cache.
+fn never_cache(status: u16) -> bool {
+    status >= 500 || status == 401
 }
 
 /// Gate, migrate, then route by path. Returns the response plus whether
@@ -225,7 +235,16 @@ fn security_headers() -> [(&'static str, &'static str); 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_control, is_static_asset, security_headers};
+    use super::{cache_control, is_static_asset, never_cache, security_headers};
+
+    #[test]
+    fn routing_failures_and_challenges_are_never_cached() {
+        assert!(never_cache(500));
+        assert!(never_cache(503));
+        assert!(never_cache(401));
+        assert!(!never_cache(200));
+        assert!(!never_cache(404));
+    }
 
     #[test]
     fn every_response_carries_hardening_headers() {
