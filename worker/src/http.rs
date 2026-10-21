@@ -156,9 +156,11 @@ fn range_param(url: &url::Url) -> Option<String> {
 /// Shared cache policy per path: probes run every 5 minutes but latency
 /// charts stay hourly, so pages and read APIs tolerate 5 minutes of
 /// staleness (the auto-refresh polls on the same interval), which caps
-/// D1 fan-out cost per visitor. `s-maxage` + `stale-while-revalidate`
-/// let the Cloudflare edge absorb the tail (D1 variance is the P90)
-/// while browsers still refresh promptly; icons set their own immutable
+/// D1 fan-out cost per visitor. `stale-while-revalidate` lets the
+/// Cloudflare edge (Workers Caching, enabled in `wrangler.toml`) absorb
+/// the tail (D1 variance is the P90) while browsers still refresh
+/// promptly. Do NOT add `s-maxage`/`must-revalidate`: Cloudflare documents
+/// both as disabling stale-while-revalidate. Icons set their own immutable
 /// policy and the badge (polled by external embeds) tolerates 5 minutes.
 /// When the auth gate is on (`gated`), responses are `private` so a
 /// shared cache never serves one visitor's page to another (see the
@@ -174,8 +176,8 @@ fn cache_control(path: &str, gated: bool) -> Option<&'static str> {
     }
     match path {
         "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history" | "/api/incidents"
-        | "/api/latency" => Some("public, max-age=300, s-maxage=300, stale-while-revalidate=60"),
-        "/api/badge" => Some("public, max-age=300, s-maxage=300, stale-while-revalidate=60"),
+        | "/api/latency" => Some("public, max-age=300, stale-while-revalidate=60"),
+        "/api/badge" => Some("public, max-age=300, stale-while-revalidate=60"),
         _ => None,
     }
 }
@@ -220,10 +222,38 @@ mod tests {
         ] {
             assert_eq!(
                 cache_control(path, false),
-                Some("public, max-age=300, s-maxage=300, stale-while-revalidate=60"),
+                Some("public, max-age=300, stale-while-revalidate=60"),
                 "{path} must be cheap to serve"
             );
         }
+    }
+
+    #[test]
+    fn public_cache_policy_keeps_stale_while_revalidate_alive() {
+        // Cloudflare documents that `s-maxage` (and must-revalidate)
+        // disables stale-while-revalidate. The public policy must not
+        // re-add it, or the edge can only serve fresh-or-block.
+        for path in ["/", "/api/health", "/api/badge"] {
+            let policy = cache_control(path, false).expect("public route is cached");
+            assert!(policy.starts_with("public, "), "{path}: {policy}");
+            assert!(
+                policy.contains("stale-while-revalidate=60"),
+                "{path} must allow SWR: {policy}"
+            );
+            assert!(!policy.contains("s-maxage"), "{path} must not set s-maxage");
+        }
+    }
+
+    #[test]
+    fn wrangler_enables_workers_caching() {
+        // `Cache-Control` alone only reaches browsers; Workers Caching
+        // needs an explicit cache block before the edge consults it.
+        const WRANGLER: &str = include_str!("../wrangler.toml");
+        assert!(WRANGLER.contains("[cache]"), "wrangler.toml needs [cache]");
+        assert!(
+            WRANGLER.lines().any(|line| line.trim() == "enabled = true"),
+            "wrangler.toml needs cache.enabled = true"
+        );
     }
 
     #[test]
@@ -232,7 +262,7 @@ mod tests {
         // while staying fresh with the probe cadence.
         assert_eq!(
             cache_control("/api/badge", false),
-            Some("public, max-age=300, s-maxage=300, stale-while-revalidate=60")
+            Some("public, max-age=300, stale-while-revalidate=60")
         );
         assert_eq!(cache_control("/nope", false), None);
     }
