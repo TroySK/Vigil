@@ -5,6 +5,11 @@ on:
     branches: ['main']
   workflow_dispatch:
 
+# The deploy job only needs the checked-out source; secrets are passed
+# explicitly per step. Keep the implicit GITHUB_TOKEN read-only.
+permissions:
+  contents: read
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -12,15 +17,17 @@ jobs:
       # Pin the CLI used by every deploy step; bump deliberately.
       WRANGLER_VERSION: "4.151.3"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Run pure-logic tests
         run: cargo test -p vigil-core -p vigil -p vigil-worker
@@ -29,7 +36,7 @@ jobs:
         run: cargo check -p vigil-worker --target wasm32-unknown-unknown
 
       - name: Use Node.js 22.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.x
 

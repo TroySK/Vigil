@@ -2,6 +2,9 @@
 .opencode/
 .wrangler/
 worker/.wrangler/
+# Local Wrangler secrets and env files: never commit credentials.
+.dev.vars*
+.env*
 # Live site config: edited via the worker editor (EDITOR=true), stored in
 # D1. Never commit it — see config/site.example.yaml for the template.
 config/site.yaml

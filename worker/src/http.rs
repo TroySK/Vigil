@@ -349,6 +349,46 @@ mod tests {
     }
 
     #[test]
+    fn deploy_workflow_pins_actions_and_limits_tokens() {
+        const WORKFLOW: &str = include_str!("../../.github/workflows/deploy.yml");
+        assert!(
+            WORKFLOW.contains("permissions:\n  contents: read"),
+            "workflow must default to a read-only GITHUB_TOKEN"
+        );
+        assert!(
+            WORKFLOW.contains("persist-credentials: false"),
+            "checkout must not leave the token in the git config"
+        );
+        for action in [
+            "actions/checkout",
+            "actions/setup-node",
+            "Swatinem/rust-cache",
+            "dtolnay/rust-toolchain",
+        ] {
+            let prefix = format!("uses: {action}@");
+            let line = WORKFLOW
+                .lines()
+                .find(|line| line.contains(&prefix))
+                .unwrap_or_else(|| panic!("{action} missing"));
+            let sha = line
+                .split('@')
+                .nth(1)
+                .unwrap_or_default()
+                .split_whitespace()
+                .next()
+                .unwrap_or_default();
+            assert_eq!(sha.len(), 40, "{action} must be pinned to a full SHA: {line}");
+            assert!(
+                sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "{action} must be pinned to a commit: {line}"
+            );
+        }
+        const IGNORE: &str = include_str!("../../.gitignore");
+        assert!(IGNORE.contains(".dev.vars*"), "wrangler secrets are local");
+        assert!(IGNORE.contains(".env*"), "local env files must never commit");
+    }
+
+    #[test]
     fn badge_caches_briefly_and_errors_stay_uncached() {
         // Badge embeds poll constantly; 5 minutes of staleness caps D1 reads
         // while staying fresh with the probe cadence.

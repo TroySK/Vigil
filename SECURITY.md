@@ -39,6 +39,9 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
   empty credentials, colons in the username, and both password sources.
 - Gated responses are `private, no-store`; 401 challenges are never
   cached.
+- Deploy CI pins action SHAs plus Wrangler and worker-build versions,
+  runs with `contents: read`, and does not persist the checkout token;
+  `.dev.vars*` and `.env*` are git-ignored.
 
 ## Operator actions (Cloudflare dashboard)
 
