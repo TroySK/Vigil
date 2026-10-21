@@ -186,6 +186,8 @@ push to `main` and on manual dispatch. What it does:
 
 1. Runs `cargo test -p vigil-core -p vigil` and
    `cargo check -p vigil-worker --target wasm32-unknown-unknown`.
+   A separate secret-free job runs `cargo audit`; action SHAs, Wrangler,
+   and worker-build are pinned.
 2. Requires the `CLOUDFLARE_ACCOUNT_ID` secret to be set and fails fast
    otherwise.
 3. Refuses to deploy when `EDITOR = ...` is uncommented in

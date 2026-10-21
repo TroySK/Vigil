@@ -386,6 +386,10 @@ mod tests {
         const IGNORE: &str = include_str!("../../.gitignore");
         assert!(IGNORE.contains(".dev.vars*"), "wrangler secrets are local");
         assert!(IGNORE.contains(".env*"), "local env files must never commit");
+        assert!(
+            WORKFLOW.contains("run: cargo audit"),
+            "dependencies need an advisory check"
+        );
     }
 
     #[test]

@@ -41,7 +41,8 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
   cached.
 - Deploy CI pins action SHAs plus Wrangler and worker-build versions,
   runs with `contents: read`, and does not persist the checkout token;
-  `.dev.vars*` and `.env*` are git-ignored.
+  a secret-free job runs `cargo audit`; `.dev.vars*` and `.env*` are
+  git-ignored.
 
 ## Operator actions (Cloudflare dashboard)
 
