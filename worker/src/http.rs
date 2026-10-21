@@ -17,10 +17,12 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
         resp.headers_mut().set(name, value)?;
     }
     if editor && !is_static_asset(url.path()) {
-        // Never cache the unauthenticated editor pages (favicon/logo keep
-        // their handler-set immutable cache; style.css/app.js use a short
+        // Never cache or index editor pages (favicon/logo keep their
+        // handler-set immutable cache; style.css/app.js use a short
         // revalidating cache — see icons.rs — even in editor mode).
         resp.headers_mut().set("cache-control", "no-store")?;
+        resp.headers_mut()
+            .set("x-robots-tag", "noindex, nofollow")?;
         return Ok(resp);
     }
     if gated {
@@ -47,7 +49,7 @@ async fn route(
 ) -> Result<(Response, bool)> {
     // Brand assets stay public so browsers can fetch the tab icon, the
     // header logo, and the shared stylesheet/script without credentials
-    // (pages link them, including the unauthenticated editor).
+    // (pages link them, including the token-gated editor).
     match url.path() {
         "/favicon.ico" => return Ok((crate::icons::favicon()?, false)),
         "/logo.svg" => return Ok((crate::icons::logo()?, false)),
@@ -57,17 +59,23 @@ async fn route(
     }
     let db = Db::of(&env)?;
     if editor {
-        // Editor mode: the status site is offline. Every route renders the
-        // editor; saving validates before persisting. No auth gate here —
-        // there may be no valid config to gate against yet — so keep this
-        // window short (the page and README say so).
+        // Editor mode: the status site is offline. The editor requires
+        // EDITOR_TOKEN; a missing/short token denies every request rather
+        // than exposing the config. Saves additionally require
+        // same-origin browser metadata (see editor::authorized).
         // Only POST /editor saves: accepting a save on every path lets a
         // stray POST (pinger, prefetch) with a YAML-shaped body overwrite
         // the site config.
+        let Some(token) = crate::editor::authorized(&req, url, &env) else {
+            return Ok((crate::editor::deny()?, false));
+        };
         if req.method() == worker::Method::Post && url.path() == "/editor" {
-            return Ok((crate::editor::save(&mut req, &db).await?, false));
+            return Ok((crate::editor::save(&mut req, &db, &token).await?, false));
         }
-        return Ok((crate::editor::render(&db, None, &[], false).await?, false));
+        return Ok((
+            crate::editor::render(&db, None, &[], false, &token).await?,
+            false,
+        ));
     }
     if url.path() == "/editor" {
         // The editor exists only in editor mode.

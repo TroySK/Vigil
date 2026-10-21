@@ -18,9 +18,12 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
   from escaped origins.
 - The site config refuses sub-5-minute uptime cadences and documents that secrets
   pasted into headers end up in D1 (readable by anyone with DB access).
-- The config editor (`EDITOR=true`) is unauthenticated and serves
-  `no-store` on every route while the status site stays offline; remove
-  the var and redeploy immediately after saving.
+- The config editor (`EDITOR=true`) is token-gated: `EDITOR_TOKEN` must
+  be a 16+ character worker secret, requests without it are rejected,
+  saves must carry same-origin metadata, bodies are capped at 1 MiB, and
+  every editor response is `no-store` + `noindex`. A missing/short token
+  disables the editor entirely (fail closed). Remove the flag and
+  redeploy immediately after saving.
 - Basic auth fails closed: a configured gate with a missing/empty
   `pass`/`pass_env` secret denies every request instead of accepting
   `user:` as credentials. Config validation also rejects empty users,

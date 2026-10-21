@@ -157,6 +157,14 @@ jobs:
               fi
             }
           elif [ "$EDITOR" = "true" ]; then
+            if [ -z "$EDITOR_TOKEN" ]; then
+              echo "EDITOR=true requires the EDITOR_TOKEN repo secret — refusing to expose an unauthenticated editor."
+              exit 1
+            fi
+            if [ "${#EDITOR_TOKEN}" -lt 16 ]; then
+              echo "EDITOR_TOKEN must be at least 16 characters."
+              exit 1
+            fi
             printf '%s' "$EDITOR" | npx -y "wrangler@${WRANGLER_VERSION}" secret put EDITOR
           else
             echo "EDITOR repo secret must be exactly 'true' or empty (got something else) — refusing to sync."
@@ -166,6 +174,29 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EDITOR: ${{ secrets.EDITOR }}
+          EDITOR_TOKEN: ${{ secrets.EDITOR_TOKEN }}
+
+      # Keep the editor token in sync too; a stale token must not linger
+      # after editor mode is turned off.
+      - name: Sync EDITOR_TOKEN secret
+        run: |
+          cd worker
+          if [ -n "$EDITOR_TOKEN" ]; then
+            printf '%s' "$EDITOR_TOKEN" | npx -y "wrangler@${WRANGLER_VERSION}" secret put EDITOR_TOKEN
+          else
+            OUT=$(npx -y "wrangler@${WRANGLER_VERSION}" secret delete EDITOR_TOKEN 2>&1) || {
+              echo "$OUT"
+              if echo "$OUT" | grep -qiE 'not found|does not exist|not present'; then
+                echo "EDITOR_TOKEN already absent."
+              else
+                exit 1
+              fi
+            }
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EDITOR_TOKEN: ${{ secrets.EDITOR_TOKEN }}
 
       - name: Deploy worker
         run: |

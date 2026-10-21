@@ -45,20 +45,25 @@ gate) is stored in the D1 database — not in git. To change it, enable
 the config editor. Two ways to set `EDITOR=true` on the worker:
 
 - **From GitHub** (recommended): set the `EDITOR` repo secret
-  (Settings → Secrets and variables → Actions) to exactly `true`, then
-  push or run the workflow manually. The workflow syncs it into the
-  worker secret before deploying.
+  (Settings → Secrets and variables → Actions) to exactly `true` and
+  `EDITOR_TOKEN` to a random value of at least 16 characters, then push
+  or run the workflow manually. The workflow syncs both into worker
+  secrets before deploying.
 - **From your machine**: `npx wrangler secret put EDITOR` (value
-  `true`) from `worker/`, then deploy.
+  `true`) and `npx wrangler secret put EDITOR_TOKEN` from `worker/`,
+  then deploy.
 
 Then:
 
 ```sh
-# 1. Open https://<your-worker>/editor and paste your YAML
-#    (full field reference with examples lives in
+# 1. Set a 16+ character EDITOR_TOKEN worker secret (GitHub: the
+#    EDITOR_TOKEN repo secret; locally:
+#    npx wrangler secret put EDITOR_TOKEN).
+# 2. Open https://<your-worker>/editor?token=<EDITOR_TOKEN> and paste your
+#    YAML (full field reference with examples lives in
 #    `config/site.example.yaml`; your previous `config/site.yaml`
 #    contents work verbatim). Saving validates before persisting.
-# 2. IMPORTANT: disable editor mode again and re-deploy — via GitHub,
+# 3. IMPORTANT: disable editor mode again and re-deploy — via GitHub,
 #    delete (or empty) the EDITOR repo secret and re-run the workflow;
 #    locally, `npx wrangler secret delete EDITOR` then redeploy.
 ```
@@ -66,8 +71,10 @@ Then:
 **The app does not work while `EDITOR=true` is set** — and that is
 deliberate. In editor mode every route (pages, APIs) renders the editor
 instead, and the cron tick skips probing. The editor page says so too.
-The editor is also unauthenticated (there may be no valid config to gate
-against yet), so keep the window short: save, remove the var, redeploy.
+Access requires `EDITOR_TOKEN`; requests without the token (or with a
+wrong/short one) are rejected. Saves must also come from the editor's
+own origin, and request bodies are capped at 1 MiB. Deploys fail when
+`EDITOR=true` is set without a token of at least 16 characters.
 
 Alternative: set the `SITE_YAML` repo secret (Settings → Secrets and
 variables → Actions) to the full YAML contents. The deploy workflow
@@ -195,7 +202,10 @@ push to `main` and on manual dispatch. What it does:
 7. Syncs the `EDITOR` worker secret from the `EDITOR` repo secret
    (`true` enables editor mode; unset deletes the worker secret so a
    stale flag can't keep the site offline).
-8. Runs `wrangler deploy` from `worker/`.
+8. Syncs `EDITOR_TOKEN`: set a 16+ character repo secret to enable
+   editor access; unset deletes the worker secret. The deploy fails when
+   `EDITOR=true` is set without a long enough token.
+9. Runs `wrangler deploy` from `worker/`.
 
 ### Required secrets
 
@@ -210,6 +220,7 @@ if you want required reviewers before a deploy):
 | `STATUS_PASSWORD` | No | Value for the `STATUS_PASSWORD` worker secret (Basic-auth password when `pass_env = "STATUS_PASSWORD"` is configured). Omit only when `auth` is not configured: if it is referenced but missing or empty, the gate denies all access (fail closed). |
 | `SITE_YAML` | No | Full site-config YAML, seeded into D1 (`kv.site_yaml`) on every deploy. When set, it overwrites editor edits each deploy. Omit to manage config purely through the `EDITOR=true` editor flow. |
 | `EDITOR` | No | Set to exactly `true` to sync the `EDITOR` worker secret on deploy, taking the live site offline into the config editor. Delete or empty it and re-run the workflow to restore the site. |
+| `EDITOR_TOKEN` | When `EDITOR=true` | 16+ character token required to open `/editor?token=…` while editor mode is on. Unset deletes the worker secret; the deploy fails if editor mode is enabled without it. |
 
 > Forks note: secrets are not available to pull-request runs from forks,
 > so the workflow will fail closed there rather than leak credentials.

@@ -111,7 +111,7 @@ fn base64_value(byte: u8) -> Result<u8, ()> {
 /// Constant-time equality: no early exit on a length mismatch either, so
 /// response time does not leak how many leading bytes matched. The loop
 /// runs over the longer input and treats absent bytes as zero.
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     let mut diff = (left.len() ^ right.len()) as u8;
     for i in 0..left.len().max(right.len()) {
         diff |= left.get(i).copied().unwrap_or(0) ^ right.get(i).copied().unwrap_or(0);
