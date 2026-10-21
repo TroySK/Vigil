@@ -40,9 +40,9 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
         .collect();
     let base = at.max(1);
     // Month uptime needs 30 days of gaps; older closures cannot affect it.
-    // The ranked per-monitor query caps rows at GAP_SCAN_ROWS inside the
-    // window, so a flapping monitor can't blow up rows-read on this
-    // highest-fan-out endpoint.
+    // Each monitor's newest GAP_SCAN_ROWS rows are selected by an indexed
+    // ORDER BY ... LIMIT inside the union, so a flapping monitor no longer
+    // ranks (and reads) its whole window before the cap applies.
     let (latest, gap_lists) = futures_util::try_join!(
         latest_by_monitor(db, &ids),
         recent_gaps_by_monitor(db, &ids, GAP_SCAN_ROWS, base.saturating_sub(MONTH_SECS)),

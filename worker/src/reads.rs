@@ -220,21 +220,27 @@ pub async fn first_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, 
 }
 
 /// Exact query behind [`recent_gaps_by_monitor`], exposed so tests execute
-/// the shipped text against bundled SQLite. `?1..?N` monitor ids, then
-/// cutoff, then limit: only gaps touching `[cutoff, +inf)` are ranked, so
-/// ancient history never consumes the per-monitor budget.
+/// the shipped text against bundled SQLite. `?1` cutoff, `?2` limit, then
+/// `?3..?N` monitor ids. Each monitor gets its own indexed
+/// `ORDER BY at DESC LIMIT` subquery: ranking the whole window with
+/// `ROW_NUMBER()` read every gap a flapping monitor ever opened before
+/// discarding all but the newest `limit`.
 fn recent_gaps_window_sql(n: usize) -> String {
-    format!(
-        "SELECT id, at, upto, why FROM (SELECT id, at, upto, why, ROW_NUMBER() OVER (PARTITION BY id ORDER BY at DESC) AS rn FROM gaps WHERE id IN ({}) AND (upto IS NULL OR upto >= ?{})) WHERE rn <= ?{} ORDER BY id ASC, at DESC",
-        placeholders(n),
-        n + 1,
-        n + 2,
-    )
+    (1..=n)
+        .map(|i| {
+            format!(
+                "SELECT id, at, upto, why FROM (SELECT id, at, upto, why FROM gaps WHERE id = ?{} AND (upto IS NULL OR upto >= ?1) ORDER BY at DESC LIMIT ?2)",
+                i + 2
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ")
 }
 
 /// Up to `limit` newest gaps per monitor inside `[cutoff, +inf)`, keyed by
-/// id, newest first. One window-function query replaces a round trip per
-/// monitor; predated closures never leave D1.
+/// id, newest first. One union query replaces a round trip per monitor;
+/// predated closures never leave D1, and each monitor's index scan stops
+/// after its own `limit` rows.
 pub async fn recent_gaps_by_monitor(
     db: &Db,
     ids: &[&str],
@@ -254,9 +260,9 @@ pub async fn recent_gaps_by_monitor(
         let rows: Vec<Row> = db
             .q(&recent_gaps_window_sql(chunk.len()))
             .bind(
-                &bind_ids(chunk)
+                &[num(cutoff), num(limit.max(1))]
                     .into_iter()
-                    .chain([num(cutoff), num(limit.max(1))])
+                    .chain(bind_ids(chunk))
                     .collect::<Vec<_>>(),
             )?
             .all()
@@ -569,11 +575,23 @@ mod tests {
     }
 
     #[test]
+    fn recent_gaps_sql_limits_before_returning_rows() {
+        // Per-monitor LIMIT must run inside each indexed branch. The old
+        // ROW_NUMBER() ranked every matching gap before applying the cap.
+        let sql = recent_gaps_window_sql(2);
+        assert!(sql.contains("UNION ALL"));
+        assert_eq!(sql.matches("ORDER BY at DESC LIMIT ?2").count(), 2);
+        assert!(!sql.contains("ROW_NUMBER"));
+        assert!(!sql.contains("PARTITION BY"));
+    }
+
+    #[test]
     fn recent_gaps_window_reads_chunk_within_param_budget() {
         let ids: Vec<String> = (0..150).map(|i| format!("m{i}")).collect();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);",
+            "CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);
+             CREATE INDEX idx_gaps ON gaps (id, at);",
         )
         .unwrap();
         for id in &ids {
@@ -587,10 +605,10 @@ mod tests {
         for chunk in ids.chunks(crate::db::MAX_PARAMS) {
             assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
             let mut stmt = conn.prepare(&recent_gaps_window_sql(chunk.len())).unwrap();
-            // Binds are ids, then cutoff, then limit.
-            let mut rows = stmt
-                .query(params_from_iter(id_binds(chunk, &[100.0, 500.0])))
-                .unwrap();
+            // Binds are cutoff, limit, then ids.
+            let mut binds = vec![Value::Real(100.0), Value::Real(500.0)];
+            binds.extend(id_binds(chunk, &[]));
+            let mut rows = stmt.query(params_from_iter(binds)).unwrap();
             while rows.next().unwrap().is_some() {
                 found += 1;
             }
@@ -757,7 +775,7 @@ mod tests {
         let conn = seed_db();
         let mut stmt = conn.prepare(&recent_gaps_window_sql(1)).unwrap();
         let ats: Vec<i64> = stmt
-            .query_map(params!["m1", 350.0, 500.0], |row| row.get(1))
+            .query_map(params![350.0, 500.0, "m1"], |row| row.get(1))
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
