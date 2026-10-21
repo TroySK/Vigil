@@ -89,9 +89,9 @@ fn bind_ids(ids: &[&str]) -> Vec<wasm_bindgen::JsValue> {
 
 /// Newest sample per monitor, keyed by monitor id, from batched round
 /// trips (one query per [`MAX_PARAMS`](crate::db::MAX_PARAMS)-id chunk).
-/// SQLite resolves the bare `ms`/`up`/`place` columns to the `MAX(at)` row
-/// within each group (documented bare-column behavior with a single
-/// min/max aggregate). Deliberately no `MIN(at)`: the earliest sample
+/// Each id gets its own indexed `ORDER BY at DESC LIMIT 1`: a grouped
+/// `MAX(at)` would scan every retained sample for that monitor (64,800
+/// rows at 30 monitors × 90 days) to return one row. The earliest sample
 /// comes from the `first:` kv stamps (see [`effective_since`]), so this
 /// query never scans the full retention window.
 pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, SampleOut>> {
@@ -127,12 +127,17 @@ pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String,
 }
 
 /// Exact query behind [`latest_by_monitor`], exposed so tests execute the
-/// shipped text against bundled SQLite. `?1..?N` monitor ids.
+/// shipped text against bundled SQLite. `?1..?N` monitor ids. Each branch
+/// is wrapped so its `LIMIT 1` applies per monitor, not to the compound.
 fn latest_sql(n: usize) -> String {
-    format!(
-        "SELECT id, MAX(at) AS at, ms, up, place FROM samples WHERE id IN ({}) GROUP BY id",
-        placeholders(n)
-    )
+    (1..=n)
+        .map(|i| {
+            format!(
+                "SELECT id, at, ms, up, place FROM (SELECT id, at, ms, up, place FROM samples WHERE id = ?{i} ORDER BY at DESC LIMIT 1)"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ")
 }
 
 /// Exact query behind [`gaps_window_by_monitor`], exposed so tests execute
@@ -413,6 +418,7 @@ mod tests {
     };
     use rusqlite::types::Value;
     use rusqlite::{params, params_from_iter};
+    use std::collections::BTreeMap;
 
     #[test]
     fn probed_clock_falls_back_to_tick_clock() {
@@ -422,45 +428,91 @@ mod tests {
     }
 
     #[test]
-    fn latest_sql_covers_exactly_its_ids_without_first() {
-        // Health needs only the newest sample: no MIN(at) scan over the
-        // full retention window.
+    fn latest_sql_seeks_one_newest_row_per_id() {
+        // Health needs only the newest sample per monitor. A grouped MAX
+        // scanned every retained row; one indexed ORDER BY ... LIMIT 1 per
+        // id makes that an index seek instead.
         let sql = latest_sql(2);
-        assert!(sql.contains("FROM samples WHERE id IN (?1,?2)"));
-        assert!(sql.contains("GROUP BY id"));
+        assert!(sql.contains("UNION ALL"));
+        assert_eq!(sql.matches("ORDER BY at DESC LIMIT 1").count(), 2);
+        assert!(!sql.contains("GROUP BY"));
+        assert!(!sql.contains("MAX("));
         assert!(!sql.contains("MIN("));
     }
 
     #[test]
     fn latest_only_reads_chunk_within_param_budget() {
         // 150 ids exceed one query's param budget: split into chunks and
-        // merge, exactly like `latest_by_monitor` must.
+        // merge, exactly like `latest_by_monitor` must. Each id has a
+        // history: the query must return its newest row, not the first.
         let ids: Vec<String> = (0..150).map(|i| format!("m{i}")).collect();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);",
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);
+             CREATE INDEX idx_samples ON samples (id, at);",
         )
         .unwrap();
         for (i, id) in ids.iter().enumerate() {
-            conn.execute(
-                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, 1_000.0 + i as f64, 50.0, 1.0, "SIN"],
-            )
-            .unwrap();
+            for step in 0..3_i64 {
+                conn.execute(
+                    "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        id,
+                        1_000.0 + i as f64 * 10.0 + step as f64,
+                        50.0 + step as f64,
+                        1.0,
+                        "SIN"
+                    ],
+                )
+                .unwrap();
+            }
         }
         let mut found = 0_usize;
         let mut newest = 0_i64;
+        let mut latest = BTreeMap::new();
         for chunk in ids.chunks(crate::db::MAX_PARAMS) {
             assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
             let mut stmt = conn.prepare(&latest_sql(chunk.len())).unwrap();
             let mut rows = stmt.query(params_from_iter(id_binds(chunk, &[]))).unwrap();
             while let Some(row) = rows.next().unwrap() {
                 found += 1;
-                newest = newest.max(row.get::<_, i64>(1).unwrap());
+                let id: String = row.get(0).unwrap();
+                let at: i64 = row.get(1).unwrap();
+                let ms: i64 = row.get(2).unwrap();
+                newest = newest.max(at);
+                latest.insert(id, (at, ms));
             }
         }
         assert_eq!(found, 150);
-        assert_eq!(newest, 1_149);
+        assert_eq!(newest, 2_492);
+        assert_eq!(latest.get("m0"), Some(&(1_002, 52)));
+        assert_eq!(latest.get("m149"), Some(&(2_492, 52)));
+    }
+
+    #[test]
+    fn latest_sql_has_no_full_sample_scan() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);
+             CREATE INDEX idx_samples ON samples (id, at);",
+        )
+        .unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", latest_sql(2)))
+            .unwrap()
+            .query_map(params!["a", "b"], |row| row.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        let plan = plan.join("\n");
+        assert!(
+            plan.contains("SEARCH samples USING INDEX idx_samples"),
+            "latest must use the (id, at) index, got: {plan}"
+        );
+        assert!(
+            !plan.contains("SCAN samples"),
+            "latest must not table-scan: {plan}"
+        );
     }
 
     #[test]
