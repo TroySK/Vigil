@@ -104,4 +104,41 @@ mod tests {
         assert!(!APP_JS.contains("pageswap"));
         assert!(!APP_JS.contains("pagereveal"));
     }
+
+    #[test]
+    fn app_hoists_one_timezone_abbreviation_per_pass() {
+        // Local-mode tooltips reuse a single abbreviation computed at the
+        // top of `applyTz`; constructing an `Intl.DateTimeFormat` per
+        // tooltip made the 30-second pass cost thousands of formatters.
+        assert!(
+            APP_JS.contains("tzAb=local?tzAbbr():''"),
+            "abbreviation must be hoisted once per pass"
+        );
+        assert_eq!(
+            APP_JS.matches("tzAbbr()").count(),
+            3,
+            "definition, pass-level lookup, and toggle label only"
+        );
+    }
+
+    #[test]
+    fn app_timer_updates_only_relative_timestamps() {
+        // Absolute labels and tooltips are static between timezone changes;
+        // the 30-second tick must not rescan and rewrite every tooltip.
+        assert!(APP_JS.contains("function applyRel("));
+        assert!(APP_JS.contains("applyRel();},30000)"));
+        assert!(
+            !APP_JS.contains("},30000){if(document.hidden)return;applyTz();}"),
+            "tick must not rerun the full timezone pass"
+        );
+    }
+
+    #[test]
+    fn app_limits_favicon_fallback_chain() {
+        assert!(
+            APP_JS.contains("var FB=[\"/favicon.ico\",\"/favicon.png\",\"/favicon.svg\"];"),
+            "fallback chain stays at three candidates"
+        );
+        assert!(!APP_JS.contains("apple-touch-icon.png"));
+    }
 }

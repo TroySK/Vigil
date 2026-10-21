@@ -87,7 +87,7 @@ Config rules (same YAML shape as before):
 - TCP checks: `check.via: tcp` with `host` and a non-zero `port`.
 - Display: `tip` (hover tooltip), `href` (link on the name, opens in a new
   tab), `quiet_chart` (hide the latency chart). Each row shows the site's
-  own `/favicon.ico` (with `favicon.png`/`icon.*` fallbacks) beside the name.
+  own `/favicon.ico` (with `favicon.png`/`favicon.svg` fallbacks) beside the name.
 - Probe cadence (split): top-level `check_every_min` sets the default
   uptime-probe cadence in minutes; a monitor's own `uptime_every_min`
   (legacy `every_min`) overrides it. Both clamp to a 5-minute floor so
