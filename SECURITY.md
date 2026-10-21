@@ -10,6 +10,11 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
   (element content and double-quoted attribute contexts).
 - Baseline response headers on every route: `referrer-policy: no-referrer`,
   `x-content-type-options: nosniff`, `x-frame-options: DENY`.
+- Config validation allowlists link schemes: monitor `href` and webhook
+  URLs accept `http`/`https` (plus same-origin `/path` for `href`);
+  footer `links` also accept `mailto:`. `javascript:`, `data:`,
+  `vbscript:`, `blob:`, `file:`, protocol-relative `//host`, and
+  control-character obfuscation are rejected before anything renders.
 - 5-minute pages/APIs carry `Cache-Control: public, max-age=300`
   (the badge matches); this bounds D1 fan-out cost per visitor.
 - Probes race per-monitor deadlines; webhook delivery has a 10s deadline;

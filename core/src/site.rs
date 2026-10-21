@@ -44,6 +44,16 @@ impl Site {
         if self.monitors.is_empty() {
             problems.push(ConfigError("no monitors".into()));
         }
+        for (label, url) in &self.links {
+            if !valid_link(url, true) {
+                problems.push(ConfigError(format!("bad link {label}")));
+            }
+        }
+        for hook in &self.notify.hooks {
+            if !valid_link(&hook.url, false) {
+                problems.push(ConfigError("bad hook url".into()));
+            }
+        }
         if let Some(gate) = &self.auth {
             check_auth(gate, &mut problems);
         }
@@ -74,9 +84,12 @@ fn check_monitor(m: &Monitor, seen: &mut BTreeSet<String>, problems: &mut Vec<Co
     if m.uptime_every_min().is_some_and(|every| every < MIN_CADENCE_MIN) {
         problems.push(ConfigError(format!("bad every_min {}", m.id)));
     }
+    if m.href.as_deref().is_some_and(|href| !valid_link(href, false)) {
+        problems.push(ConfigError(format!("bad href {}", m.id)));
+    }
     match &m.check {
         Probe::Http { url, .. } => {
-            if !(url.starts_with("http://") || url.starts_with("https://")) {
+            if !valid_http_url(url) {
                 problems.push(ConfigError(format!("bad url {}", m.id)));
             }
         }
@@ -86,6 +99,29 @@ fn check_monitor(m: &Monitor, seen: &mut BTreeSet<String>, problems: &mut Vec<Co
             }
         }
     }
+}
+
+/// `true` for an absolute `http(s)` URL with a host.
+fn valid_http_url(value: &str) -> bool {
+    url::Url::parse(value)
+        .is_ok_and(|parsed| matches!(parsed.scheme(), "http" | "https") && parsed.host().is_some())
+}
+
+/// `true` for a renderable link: a same-origin root-relative path, an
+/// absolute `http(s)` URL, or (footer links only) `mailto:`. Control
+/// characters are rejected so `java\nscript:` cannot slip through.
+fn valid_link(value: &str, allow_mailto: bool) -> bool {
+    if value.chars().any(char::is_control) {
+        return false;
+    }
+    if value.starts_with('/') {
+        // `//evil.example` is protocol-relative, not same-origin.
+        return !value.starts_with("//");
+    }
+    url::Url::parse(value).is_ok_and(|parsed| {
+        matches!(parsed.scheme(), "http" | "https")
+            || (allow_mailto && parsed.scheme() == "mailto")
+    })
 }
 
 /// Validate the optional Basic-auth gate. A gate with no resolvable

@@ -93,7 +93,8 @@ Config rules (same YAML shape as before):
   `has` / `lacks` keyword rules, and `timeout_ms` (1–60000).
 - TCP checks: `check.via: tcp` with `host` and a non-zero `port`.
 - Display: `tip` (hover tooltip), `href` (link on the name, opens in a new
-  tab), `quiet_chart` (hide the latency chart). Each row shows the site's
+  tab; `http`/`https` or a same-origin `/path` only), `quiet_chart` (hide
+  the latency chart). Each row shows the site's
   own `/favicon.ico` (with `favicon.png`/`favicon.svg` fallbacks) beside the name.
 - Probe cadence (split): top-level `check_every_min` sets the default
   uptime-probe cadence in minutes; a monitor's own `uptime_every_min`
@@ -110,7 +111,8 @@ Config rules (same YAML shape as before):
   `0` disables polling). Pages poll on this interval but reload only when
   a tick probed new data.
 - `links` render as chips in file order (first link is leftmost) and open
-  in a new tab.
+  in a new tab. URLs must be `http`/`https`, `mailto:`, or a same-origin
+  `/path`; dangerous schemes (`javascript:`, `data:`, …) are rejected.
 - Group monitors with `groups` (name to list of monitor ids). Monitors not
   listed in any group render under "Other".
 - Notifications: add `notify.hooks` entries (`url`, `method`, `mode`, `text`

@@ -448,3 +448,65 @@ fn auth_config_rejects_missing_or_ambiguous_credentials() {
     .check()
     .is_ok());
 }
+
+#[test]
+fn links_reject_dangerous_schemes() {
+    use vigil_core::config::{Hook, Site};
+    let site = |href: Option<&str>, link: &str, hook: &str| Site {
+        monitors: vec![Monitor {
+            href: href.map(str::to_owned),
+            ..web()
+        }],
+        links: [("Home".to_owned(), link.to_owned())].into_iter().collect(),
+        notify: vigil_core::config::Notify {
+            hooks: vec![Hook {
+                url: hook.to_owned(),
+                method: "POST".into(),
+                mode: "json".into(),
+                text: "x".into(),
+            }],
+            ..Default::default()
+        },
+        ..Site::default()
+    };
+    let bad = |value: &str| {
+        site(Some(value), value, value)
+            .check()
+            .unwrap_err()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    };
+
+    for value in [
+        "javascript:alert(1)",
+        "JaVaScRiPt:alert(1)",
+        "data:text/html,<script>alert(1)</script>",
+        "vbscript:msgbox(1)",
+        "blob:https://example.com/x",
+        "file:///etc/passwd",
+        "https://example.com/\nnext",
+        "//evil.example",
+    ] {
+        let errors = bad(value);
+        assert!(errors.iter().any(|e| e.contains("bad href")), "{value:?}: {errors:?}");
+        assert!(errors.iter().any(|e| e.contains("bad link")), "{value:?}: {errors:?}");
+        assert!(errors.iter().any(|e| e.contains("bad hook")), "{value:?}: {errors:?}");
+    }
+
+    // Normal web URLs and same-origin paths remain valid.
+    for value in ["https://example.com/x", "http://example.com", "/status"] {
+        assert!(site(Some(value), value, value).check().is_ok(), "{value:?}");
+    }
+    // Footer links may use mailto; monitor links and hooks may not.
+    assert!(site(None, "mailto:ops@example.com", "https://hooks.example/x")
+        .check()
+        .is_ok());
+    let errors = site(Some("mailto:ops@example.com"), "https://example.com", "https://hooks.example/x")
+        .check()
+        .unwrap_err()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert!(errors.iter().any(|e| e.contains("bad href")), "{errors:?}");
+}
