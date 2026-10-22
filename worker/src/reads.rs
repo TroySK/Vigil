@@ -478,23 +478,39 @@ pub async fn series_ranged(
         .results()
 }
 
-/// Newest sample per probe origin, newest first. SQLite resolves the bare
-/// `ms`/`up` columns to the `MAX(at)` row within each group (documented
-/// bare-column behavior with a single min/max aggregate), so each row is
-/// that region's true latest sample. The `(id, place, at DESC)` index keeps
-/// the per-region max lookup index-only; the old `(id, at)` index scanned
-/// every sample the monitor ever recorded.
+/// Newest sample per probe origin, newest first.
+///
+/// The tick keeps [`region_latest`] current, so this is one primary-key
+/// lookup instead of grouping the monitor's whole retained history. The
+/// scan fallback covers a database whose 0005 backfill has not run yet
+/// (self-heal happens on the next tick).
 pub async fn region_latest(db: &Db, id: &str) -> Result<Vec<SampleOut>> {
-    db.q(region_latest_sql())
+    let rows: Vec<SampleOut> = db
+        .q(region_latest_lookup_sql())
+        .bind(&[id.into()])?
+        .all()
+        .await?
+        .results()?;
+    if !rows.is_empty() {
+        return Ok(rows);
+    }
+    db.q(region_latest_scan_sql())
         .bind(&[id.into()])?
         .all()
         .await?
         .results()
 }
 
-/// Exact query behind [`region_latest`], exposed so tests execute the
-/// shipped text against bundled SQLite. `?1` monitor id.
-fn region_latest_sql() -> &'static str {
+/// Exact query behind the maintained read, exposed so tests can assert the
+/// primary-key plan. `?1` monitor id.
+fn region_latest_lookup_sql() -> &'static str {
+    "SELECT at, ms, up, place FROM region_latest WHERE id = ?1 ORDER BY at DESC"
+}
+
+/// Pre-0005 fallback: newest sample per place from raw samples. The
+/// `(id, place, at DESC)` index keeps this index-only, but it still walks
+/// every retained sample, so it must stay off the hot path.
+fn region_latest_scan_sql() -> &'static str {
     "SELECT MAX(at) AS at, ms, up, place FROM samples WHERE id = ?1 GROUP BY place ORDER BY at DESC"
 }
 
@@ -503,8 +519,8 @@ mod tests {
     #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
     use super::{
         daily_series_sql, data_at_of, effective_since, gaps_window_sql, latest_sql,
-        recent_gaps_window_sql, region_latest_sql, series_ranged_sql, series_window_sql,
-        stride_points, SampleOut,
+        recent_gaps_window_sql, region_latest_lookup_sql, region_latest_scan_sql, series_ranged_sql,
+        series_window_sql, stride_points, SampleOut,
     };
     use rusqlite::types::Value;
     use rusqlite::{params, params_from_iter};
@@ -527,7 +543,7 @@ mod tests {
         )
         .unwrap();
         let plan: Vec<String> = conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {}", region_latest_sql()))
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", region_latest_scan_sql()))
             .unwrap()
             .query_map(params!["m"], |row| row.get(3))
             .unwrap()
@@ -542,6 +558,34 @@ mod tests {
             !plan.contains("SCAN samples"),
             "regional latest must not table-scan: {plan}"
         );
+    }
+
+    #[test]
+    fn region_latest_reads_one_primary_key_row_per_place() {
+        // The tick maintains region_latest, so the detail page must not
+        // group the whole sample history to find each place's newest row.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE region_latest (id TEXT NOT NULL, place TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place));",
+        )
+        .unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                region_latest_lookup_sql()
+            ))
+            .unwrap()
+            .query_map(params!["m"], |row| row.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+        let plan = plan.join("\n");
+        assert!(plan.contains("SEARCH region_latest"), "{plan}");
+        assert!(
+            !plan.contains("SCAN region_latest"),
+            "lookup must seek the primary key, not scan: {plan}"
+        );
+        assert!(!region_latest_lookup_sql().contains("GROUP BY"));
     }
 
     #[test]

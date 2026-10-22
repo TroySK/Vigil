@@ -22,7 +22,7 @@ pub const RETENTION_SECS: i64 = 90 * 86_400;
 /// Schema generation marker stored in `kv` once the tick's self-heal has
 /// run: later ticks skip the DDL round trip entirely (CI migrations own
 /// DDL; the tick only covers fresh/manual databases).
-pub const SCHEMA_VERSION: &str = "3";
+pub const SCHEMA_VERSION: &str = "4";
 
 /// Bind an integer to D1 as a JS `Number`.
 ///
@@ -97,7 +97,9 @@ impl Db {
                  CREATE INDEX IF NOT EXISTS idx_gaps ON gaps (id, at);\
                  CREATE INDEX IF NOT EXISTS idx_gaps_upto ON gaps (upto);\
                  CREATE INDEX IF NOT EXISTS idx_gaps_open ON gaps (id, upto, at DESC);\
-                 CREATE TABLE IF NOT EXISTS monitor_daily (id TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL, PRIMARY KEY (id, day));",
+                 CREATE TABLE IF NOT EXISTS monitor_daily (id TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL, PRIMARY KEY (id, day));\
+                 CREATE TABLE IF NOT EXISTS region_latest (id TEXT NOT NULL, place TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place));\
+                 INSERT OR REPLACE INTO region_latest (id, place, at, ms, up) SELECT id, place, MAX(at), ms, up FROM samples GROUP BY id, place;",
             )
             .await
             .map(|_| ())
@@ -218,7 +220,8 @@ mod tests {
         const IDX: &str = include_str!("../migrations/0002_indexes.sql");
         const DAILY: &str = include_str!("../migrations/0003_daily_rollup.sql");
         const REGION: &str = include_str!("../migrations/0004_region_index.sql");
-        let shipped = format!("{INIT}\n{IDX}\n{DAILY}\n{REGION}");
+        const REGION_LATEST: &str = include_str!("../migrations/0005_region_latest.sql");
+        let shipped = format!("{INIT}\n{IDX}\n{DAILY}\n{REGION}\n{REGION_LATEST}");
         for index in [
             "idx_samples",
             "idx_samples_at",
@@ -235,6 +238,51 @@ mod tests {
         assert!(
             shipped.contains("CREATE TABLE IF NOT EXISTS monitor_daily"),
             "migrations must create the daily rollup (see Db::init)"
+        );
+        assert!(
+            shipped.contains("CREATE TABLE IF NOT EXISTS region_latest"),
+            "migrations must create the per-region latest table (see Db::init)"
+        );
+    }
+
+    #[test]
+    fn region_latest_migration_backfills_newest_sample_per_place() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);",
+        )
+        .unwrap();
+        for (id, at, ms, place) in [
+            ("m1", 10, 10, "SIN"),
+            ("m1", 20, 20, "SIN"),
+            ("m1", 30, 30, "BOM"),
+            ("m2", 40, 40, "SIN"),
+        ] {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id, f64::from(at), f64::from(ms), 1.0, place],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(include_str!("../migrations/0005_region_latest.sql"))
+            .unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, place, at, ms FROM region_latest ORDER BY id, place")
+            .unwrap();
+        let rows: Vec<(String, String, i64, i64)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("m1".into(), "BOM".into(), 30, 30),
+                ("m1".into(), "SIN".into(), 20, 20),
+                ("m2".into(), "SIN".into(), 40, 40),
+            ]
         );
     }
 

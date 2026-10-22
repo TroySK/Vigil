@@ -430,8 +430,9 @@ mod tests {
         alert_for, cap_len, close_gap_sql, daily_upsert_sql, day_start, first_value, form_encode,
         gap_why_update, hook_budget, hook_host, is_due, muted_set, open_gaps_sql, plan_alert,
         plan_deliveries, plan_due, probe_wave, prune_daily_sql, prune_due, prune_gaps_sql,
-        prune_samples_sql, sample_due, schema_current, stagger_offset, state_keys, wave_bounds,
-        why_gap_sql, Due, MAX_HOOK_DELIVERIES, SUBREQUEST_CEILING, SUBREQUEST_OVERHEAD,
+        prune_samples_sql, region_upsert_sql, sample_due, schema_current, stagger_offset,
+        state_keys, wave_bounds, why_gap_sql, Due, MAX_HOOK_DELIVERIES, SUBREQUEST_CEILING,
+        SUBREQUEST_OVERHEAD,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
@@ -606,6 +607,36 @@ mod tests {
         assert_eq!(cap_len(40, 9), 9);
         assert_eq!(cap_len(2, 9), 2);
         assert_eq!(cap_len(40, 0), 0);
+    }
+
+    #[test]
+    fn region_upsert_keeps_only_the_newest_sample_per_place() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE region_latest (id TEXT NOT NULL, place TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place));",
+        )
+        .unwrap();
+        for (place, at, ms, up) in [("SIN", 10, 10, 1), ("SIN", 20, 30, 0), ("BOM", 15, 15, 1)] {
+            conn.execute(
+                region_upsert_sql(),
+                rusqlite::params!["m", place, f64::from(at), f64::from(ms), f64::from(up)],
+            )
+            .unwrap();
+        }
+        let mut stmt = conn
+            .prepare("SELECT place, at, ms, up FROM region_latest ORDER BY place")
+            .unwrap();
+        let rows: Vec<(String, i64, i64, i64)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![("BOM".into(), 15, 15, 1), ("SIN".into(), 20, 30, 0)]
+        );
     }
 
     #[test]
@@ -1009,7 +1040,7 @@ fn record_stmts(
     open: Option<&Gap>,
     want_sample: bool,
 ) -> Result<Vec<D1PreparedStatement>> {
-    let mut out = Vec::with_capacity(3);
+    let mut out = Vec::with_capacity(4);
     if want_sample {
         let up_flag = i64::from(verdict.up);
         let elapsed_ms = i64::try_from(seen.ms).unwrap_or(i64::MAX);
@@ -1032,6 +1063,15 @@ fn record_stmts(
             num(elapsed_ms),
             num(up_flag),
             location.into(),
+        ])?);
+        // Keep the detail page's per-region status a primary-key lookup
+        // instead of a scan of every retained sample (see reads.rs).
+        out.push(db.q(region_upsert_sql()).bind(&[
+            id.into(),
+            location.into(),
+            num(now),
+            num(elapsed_ms),
+            num(up_flag),
         ])?);
     }
     let mut track = Track::default();
@@ -1074,6 +1114,13 @@ fn day_start(at: i64) -> i64 {
 /// charts keep an honest point-in-time reading.
 fn daily_upsert_sql() -> &'static str {
     "INSERT INTO monitor_daily (id, day, at, ms, up, place) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(id, day) DO UPDATE SET at = excluded.at, ms = excluded.ms, up = excluded.up, place = excluded.place"
+}
+
+/// Per-region latest upsert used by [`record_stmts`]. Only one row per
+/// monitor/origin survives, so the detail page reads a bounded table
+/// instead of grouping the raw sample history.
+fn region_upsert_sql() -> &'static str {
+    "INSERT INTO region_latest (id, place, at, ms, up) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id, place) DO UPDATE SET at = excluded.at, ms = excluded.ms, up = excluded.up"
 }
 
 /// Close a monitor's open gaps: every unterminated row, so one recovery
