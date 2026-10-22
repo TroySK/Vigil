@@ -24,6 +24,24 @@ pub const RETENTION_SECS: i64 = 90 * 86_400;
 /// DDL; the tick only covers fresh/manual databases).
 pub const SCHEMA_VERSION: &str = "5";
 
+/// DDL and one-time backfill for a fresh/manual database. Kept as a
+/// constant so tests execute the exact SQL the tick runs (D1 has caught
+/// dialect differences that bundled SQLite accepts).
+pub const INIT_SQL: &str = "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);\
+                 CREATE TABLE IF NOT EXISTS samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);\
+                 CREATE INDEX IF NOT EXISTS idx_samples ON samples (id, at);\
+                 CREATE INDEX IF NOT EXISTS idx_samples_at ON samples (at);\
+                 CREATE INDEX IF NOT EXISTS idx_samples_region ON samples (id, place, at DESC);\
+                 CREATE TABLE IF NOT EXISTS gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);\
+                 CREATE INDEX IF NOT EXISTS idx_gaps ON gaps (id, at);\
+                 CREATE INDEX IF NOT EXISTS idx_gaps_upto ON gaps (upto);\
+                 CREATE INDEX IF NOT EXISTS idx_gaps_open ON gaps (id, upto, at DESC);\
+                 CREATE TABLE IF NOT EXISTS monitor_daily (id TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL, PRIMARY KEY (id, day));\
+                 CREATE TABLE IF NOT EXISTS region_latest (id TEXT NOT NULL, place TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place));\
+                 INSERT OR REPLACE INTO region_latest (id, place, at, ms, up) SELECT id, place, MAX(at), ms, up FROM samples GROUP BY id, place;\
+                 CREATE TABLE IF NOT EXISTS region_daily (id TEXT NOT NULL, place TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place, day));\
+                 INSERT OR REPLACE INTO region_daily (id, place, day, at, ms, up) SELECT id, place, (at / 86400) * 86400 AS day, MAX(at), ms, up FROM samples GROUP BY id, place, day;";
+
 /// Bind an integer to D1 as a JS `Number`.
 ///
 /// D1 rejects `BigInt` values, and `wasm-bindgen` converts Rust
@@ -86,25 +104,7 @@ impl Db {
 
     /// Create tables/indexes on first boot. Idempotent.
     pub async fn init(&self) -> Result<()> {
-        self.inner
-            .exec(
-                "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);\
-                 CREATE TABLE IF NOT EXISTS samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);\
-                 CREATE INDEX IF NOT EXISTS idx_samples ON samples (id, at);\
-                 CREATE INDEX IF NOT EXISTS idx_samples_at ON samples (at);\
-                 CREATE INDEX IF NOT EXISTS idx_samples_region ON samples (id, place, at DESC);\
-                 CREATE TABLE IF NOT EXISTS gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);\
-                 CREATE INDEX IF NOT EXISTS idx_gaps ON gaps (id, at);\
-                 CREATE INDEX IF NOT EXISTS idx_gaps_upto ON gaps (upto);\
-                 CREATE INDEX IF NOT EXISTS idx_gaps_open ON gaps (id, upto, at DESC);\
-                 CREATE TABLE IF NOT EXISTS monitor_daily (id TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL, PRIMARY KEY (id, day));\
-                 CREATE TABLE IF NOT EXISTS region_latest (id TEXT NOT NULL, place TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place));\
-                 INSERT OR REPLACE INTO region_latest (id, place, at, ms, up) SELECT id, place, MAX(at), ms, up FROM samples GROUP BY id, place;\
-                 CREATE TABLE IF NOT EXISTS region_daily (id TEXT NOT NULL, place TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place, day));\
-                 INSERT OR REPLACE INTO region_daily (id, place, day, at, ms, up) SELECT id, place, (at / 86400) * 86400, MAX(at), ms, up FROM samples GROUP BY id, place, day;",
-            )
-            .await
-            .map(|_| ())
+        self.inner.exec(INIT_SQL).await.map(|_| ())
     }
 
     /// Read a `kv` value.
@@ -165,7 +165,7 @@ struct KvRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{clock_keys, kv_select_sql, MAX_PARAMS};
+    use super::{clock_keys, kv_select_sql, INIT_SQL, MAX_PARAMS};
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
 
@@ -250,6 +250,51 @@ mod tests {
             shipped.contains("CREATE TABLE IF NOT EXISTS region_daily"),
             "migrations must create the per-region daily rollup (see Db::init)"
         );
+    }
+
+    #[test]
+    fn init_sql_backfills_region_rollups() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);",
+        )
+        .unwrap();
+        for (at, ms, place) in [
+            (10, 10, "SIN"),
+            (20, 20, "SIN"),
+            (86_400 + 10, 30, "SIN"),
+            (15, 40, "BOM"),
+        ] {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params!["m1", f64::from(at), f64::from(ms), 1.0, place],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(INIT_SQL).unwrap();
+        let daily: Vec<(String, i64, i64)> = conn
+            .prepare("SELECT place, day, at FROM region_daily ORDER BY day, place")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            daily,
+            vec![
+                ("BOM".into(), 0, 15),
+                ("SIN".into(), 0, 20),
+                ("SIN".into(), 86_400, 86_410),
+            ]
+        );
+        let latest: Vec<(String, i64)> = conn
+            .prepare("SELECT place, at FROM region_latest ORDER BY place")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(latest, vec![("BOM".into(), 15), ("SIN".into(), 86_410)]);
     }
 
     #[test]
