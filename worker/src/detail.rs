@@ -63,11 +63,34 @@ pub async fn render(
     // history cutoff is the tick-maintained `first:` stamp, not a MIN(at)
     // scan over the retention window.
     let first_key = format!("first:{id}");
-    let (regions, gaps, first_raw, lat) = futures_util::try_join!(
+    let (regions, gaps, first_raw, lat, geo) = futures_util::try_join!(
         region_latest(db, id),
         recent_gaps(db, id, crate::api::GAP_SCAN_ROWS),
         db.get(&first_key),
-        series_ranged(db, id, cutoff, DETAIL_LATENCY_POINTS),
+        async {
+            if range.uses_rollup() {
+                Ok::<_, worker::Error>(
+                    crate::reads::daily_series_by_monitor(
+                        db,
+                        &[id],
+                        cutoff,
+                        DETAIL_LATENCY_POINTS,
+                    )
+                    .await?
+                    .remove(id)
+                    .unwrap_or_default(),
+                )
+            } else {
+                series_ranged(db, id, cutoff, DETAIL_LATENCY_POINTS).await
+            }
+        },
+        async {
+            if range.uses_rollup() {
+                crate::reads::region_daily_by_monitor(db, id, cutoff).await
+            } else {
+                Ok::<_, worker::Error>(Vec::new())
+            }
+        },
     )?;
     let has_samples =
         !regions.is_empty() || gaps.iter().any(|g| gap_in_range(g.at, g.to, cutoff, now));
@@ -163,7 +186,16 @@ pub async fn render(
             esc(&gap.why)
         );
     }
-    let geo_table = geo_latency_table(&lat, now, range.days, range.label);
+    let geo_table = geo_latency_table(
+        if range.uses_rollup() {
+            geo.as_slice()
+        } else {
+            lat.as_slice()
+        },
+        now,
+        range.days,
+        range.label,
+    );
     let mut notes = String::new();
     for upkeep in &site.upkeep {
         if !upkeep.only.is_empty() && !upkeep.only.iter().any(|only| only == id) {

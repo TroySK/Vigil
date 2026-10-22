@@ -430,9 +430,9 @@ mod tests {
         alert_for, cap_len, close_gap_sql, daily_upsert_sql, day_start, first_value, form_encode,
         gap_why_update, hook_budget, hook_host, is_due, muted_set, open_gaps_sql, plan_alert,
         plan_deliveries, plan_due, probe_wave, prune_daily_sql, prune_due, prune_gaps_sql,
-        prune_samples_sql, region_upsert_sql, sample_due, schema_current, stagger_offset,
-        state_keys, wave_bounds, why_gap_sql, Due, MAX_HOOK_DELIVERIES, SUBREQUEST_CEILING,
-        SUBREQUEST_OVERHEAD,
+        prune_samples_sql, region_daily_upsert_sql, region_upsert_sql, sample_due,
+        schema_current, stagger_offset, state_keys, wave_bounds, why_gap_sql, Due,
+        MAX_HOOK_DELIVERIES, SUBREQUEST_CEILING, SUBREQUEST_OVERHEAD,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
@@ -636,6 +636,52 @@ mod tests {
         assert_eq!(
             rows,
             vec![("BOM".into(), 15, 15, 1), ("SIN".into(), 20, 30, 0)]
+        );
+    }
+
+    #[test]
+    fn region_daily_upsert_keeps_the_newest_sample_per_place_and_day() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE region_daily (id TEXT NOT NULL, place TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place, day));",
+        )
+        .unwrap();
+        for (place, day, at, ms) in [
+            ("SIN", 0, 10, 10),
+            ("SIN", 0, 20, 30),
+            ("SIN", 86_400, 86_410, 40),
+            ("BOM", 0, 15, 15),
+        ] {
+            conn.execute(
+                region_daily_upsert_sql(),
+                rusqlite::params![
+                    "m",
+                    place,
+                    f64::from(day),
+                    f64::from(at),
+                    f64::from(ms),
+                    1.0
+                ],
+            )
+            .unwrap();
+        }
+        let mut stmt = conn
+            .prepare("SELECT place, day, at, ms FROM region_daily ORDER BY day, place")
+            .unwrap();
+        let rows: Vec<(String, i64, i64, i64)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("BOM".into(), 0, 15, 15),
+                ("SIN".into(), 0, 20, 30),
+                ("SIN".into(), 86_400, 86_410, 40),
+            ]
         );
     }
 
@@ -1073,6 +1119,15 @@ fn record_stmts(
             num(elapsed_ms),
             num(up_flag),
         ])?);
+        // Long-range regional sparklines read one row per origin/day.
+        out.push(db.q(region_daily_upsert_sql()).bind(&[
+            id.into(),
+            location.into(),
+            num(day_start(now)),
+            num(now),
+            num(elapsed_ms),
+            num(up_flag),
+        ])?);
     }
     let mut track = Track::default();
     if let Some(gap) = open {
@@ -1121,6 +1176,13 @@ fn daily_upsert_sql() -> &'static str {
 /// instead of grouping the raw sample history.
 fn region_upsert_sql() -> &'static str {
     "INSERT INTO region_latest (id, place, at, ms, up) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id, place) DO UPDATE SET at = excluded.at, ms = excluded.ms, up = excluded.up"
+}
+
+/// Per-region daily upsert used by [`record_stmts`]. One row per monitor,
+/// origin, and UTC day, newest sample wins (same contract as
+/// [`daily_upsert_sql`]).
+fn region_daily_upsert_sql() -> &'static str {
+    "INSERT INTO region_daily (id, place, day, at, ms, up) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(id, place, day) DO UPDATE SET at = excluded.at, ms = excluded.ms, up = excluded.up"
 }
 
 /// Close a monitor's open gaps: every unterminated row, so one recovery

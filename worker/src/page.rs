@@ -8,7 +8,7 @@ use crate::db::Db;
 use crate::range::{bars_for, Range};
 use crate::reads::{
     clock, daily_series_by_monitor, gaps_window_by_monitor, latest_by_monitor, series_by_monitor,
-    SampleOut, ROLLUP_MIN_DAYS,
+    SampleOut,
 };
 use vigil_core::config::{Monitor, Probe, Site};
 use vigil_core::rollup::{latency_chart, percentile_pair};
@@ -22,7 +22,7 @@ pub const INDEX_CHART_POINTS: i64 = 24;
 
 /// Long ranges read the daily rollup; short ranges keep raw samples.
 fn uses_daily_rollup(range: Range) -> bool {
-    range.days >= ROLLUP_MIN_DAYS
+    range.uses_rollup()
 }
 
 /// Render the full status page.

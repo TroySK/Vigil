@@ -30,6 +30,12 @@ impl Range {
     pub(crate) fn hourly(self) -> bool {
         self.days <= 1
     }
+
+    /// Long ranges read the daily rollups; short ranges keep raw samples
+    /// (cheap at those spans and more detailed).
+    pub(crate) fn uses_rollup(self) -> bool {
+        self.days >= crate::reads::ROLLUP_MIN_DAYS
+    }
 }
 
 /// Range pills in display order.
@@ -181,6 +187,15 @@ mod tests {
         assert_eq!(exact_range("7D").map(|r| r.days), Some(7));
         assert_eq!(super::DEFAULT_RANGE.days, 7);
         assert_eq!(RANGES.len(), 4);
+    }
+
+    #[test]
+    fn long_ranges_use_the_daily_rollup() {
+        use super::{RANGE_24H, RANGE_30D, RANGE_7D, RANGE_90D};
+        assert!(!RANGE_24H.uses_rollup());
+        assert!(!RANGE_7D.uses_rollup());
+        assert!(RANGE_30D.uses_rollup());
+        assert!(RANGE_90D.uses_rollup());
     }
 
     #[test]

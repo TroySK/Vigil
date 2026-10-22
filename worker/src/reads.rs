@@ -412,6 +412,29 @@ fn stride_points(points: Vec<SampleOut>, max_points: i64) -> Vec<SampleOut> {
     points.into_iter().step_by(stride).collect()
 }
 
+/// Exact query behind [`region_daily`], exposed so tests execute the
+/// shipped text. `?1` monitor id, `?2` cutoff day. Bounded by retention
+/// days x origins instead of raw samples.
+fn region_daily_sql() -> &'static str {
+    "SELECT at, ms, up, place FROM region_daily WHERE id = ?1 AND day >= ?2 ORDER BY at DESC"
+}
+
+/// Per-origin samples from the daily rollup, newest first. Long-range
+/// regional sparklines use this instead of striding raw samples globally
+/// (which could drop an entire origin).
+pub async fn region_daily_by_monitor(
+    db: &Db,
+    id: &str,
+    cutoff: i64,
+) -> Result<Vec<SampleOut>> {
+    let cutoff_day = cutoff - cutoff.rem_euclid(vigil_core::rollup::SECS_PER_DAY);
+    db.q(region_daily_sql())
+        .bind(&[id.into(), num(cutoff_day)])?
+        .all()
+        .await?
+        .results()
+}
+
 /// Last tick that probed at least one monitor, falling back to the tick
 /// clock when no probe has ever landed (fresh database): pages then keep
 /// reloading on ticks until the first real data arrives.
@@ -519,8 +542,8 @@ mod tests {
     #![allow(clippy::cast_precision_loss, clippy::cast_lossless)]
     use super::{
         daily_series_sql, data_at_of, effective_since, gaps_window_sql, latest_sql,
-        recent_gaps_window_sql, region_latest_lookup_sql, region_latest_scan_sql, series_ranged_sql,
-        series_window_sql, stride_points, SampleOut,
+        recent_gaps_window_sql, region_daily_sql, region_latest_lookup_sql, region_latest_scan_sql,
+        series_ranged_sql, series_window_sql, stride_points, SampleOut,
     };
     use rusqlite::types::Value;
     use rusqlite::{params, params_from_iter};
@@ -586,6 +609,43 @@ mod tests {
             "lookup must seek the primary key, not scan: {plan}"
         );
         assert!(!region_latest_lookup_sql().contains("GROUP BY"));
+    }
+
+    #[test]
+    fn region_daily_series_reads_one_row_per_origin_per_day() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE region_daily (id TEXT NOT NULL, place TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place, day));",
+        )
+        .unwrap();
+        for (place, day, at, ms) in [
+            ("SIN", 0, 10, 10),
+            ("SIN", 86_400, 86_410, 20),
+            ("BOM", 86_400, 86_420, 30),
+        ] {
+            conn.execute(
+                "INSERT INTO region_daily VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params!["m", place, day as f64, at as f64, ms as f64, 1.0],
+            )
+            .unwrap();
+        }
+        let mut stmt = conn.prepare(region_daily_sql()).unwrap();
+        let rows: Vec<(i64, i64, String)> = stmt
+            .query_map(params!["m", 0.0], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (86_420, 30, "BOM".into()),
+                (86_410, 20, "SIN".into()),
+                (10, 10, "SIN".into()),
+            ]
+        );
+        assert!(!region_daily_sql().contains("OVER ("));
     }
 
     #[test]
