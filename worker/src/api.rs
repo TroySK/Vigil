@@ -103,7 +103,10 @@ pub async fn badge(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
         }
         Some(id) => {
             let Some(monitor) = site.get(id) else {
-                return Response::error("unknown id", 404);
+                // A renamed or removed monitor must not leave a broken image
+                // in someone else's README. Render a neutral badge and let
+                // the normal cache policy retire it.
+                return badge_svg(id, "unknown", UNKNOWN_BADGE_COLOR);
             };
             // Status from gaps (open gap = down), not the hourly sample: split
             // cadence probes uptime every 5m but samples hourly. One extra
@@ -118,13 +121,26 @@ pub async fn badge(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
         }
     };
     let (word, color) = vigil_core::views::badge(is_up);
-    let svg = vigil_core::views::svg(&label, word, color);
+    badge_svg(&label, word, color)
+}
+
+/// Neutral color for a badge whose monitor no longer exists.
+const UNKNOWN_BADGE_COLOR: &str = "#6e7781";
+
+/// Build the SVG response shared by live and unknown-id badges.
+fn badge_svg(label: &str, word: &str, color: &str) -> Result<Response> {
+    let svg = badge_markup(label, word, color);
     // Cache policy comes from the shared `cache_control` in `http.rs`
     // (5min public): badge embeds poll constantly, and every uncached hit
     // costs D1 reads.
     Ok(Response::builder()
         .with_header("content-type", "image/svg+xml")?
         .body(ResponseBody::Body(svg.into_bytes())))
+}
+
+/// SVG text behind [`badge_svg`], split out so tests can assert markup.
+fn badge_markup(label: &str, word: &str, color: &str) -> String {
+    vigil_core::views::svg(label, word, color)
 }
 
 /// Raw latency samples for charts (`?id=`, up to [`MAX_ROWS`]).
@@ -206,7 +222,8 @@ fn query_param(url: &url::Url, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_counts, monitor_status, parse_counts, query_ok, query_param, requested_monitor,
+        badge_markup, default_counts, monitor_status, parse_counts, query_ok, query_param,
+        requested_monitor, UNKNOWN_BADGE_COLOR,
     };
     use crate::reads::SampleOut;
     use vigil_core::config::Site;
@@ -265,6 +282,15 @@ mod tests {
             up,
             place: "BOM".into(),
         }
+    }
+
+    #[test]
+    fn unknown_badge_renders_a_neutral_pill() {
+        let svg = badge_markup("retired", "unknown", UNKNOWN_BADGE_COLOR);
+        assert!(svg.starts_with("<svg "));
+        assert!(svg.contains(">retired<"));
+        assert!(svg.contains(">unknown<"));
+        assert!(!svg.contains("404"));
     }
 
     #[test]
