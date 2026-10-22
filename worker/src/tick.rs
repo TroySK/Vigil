@@ -424,9 +424,9 @@ mod tests {
         alert_for, cap_len, close_gap_sql, daily_upsert_sql, day_start, first_value, form_encode,
         gap_why_update, hook_budget, hook_host, is_due, muted_set, open_gaps_sql, plan_alert,
         plan_deliveries, plan_due, probe_wave, prune_daily_sql, prune_due, prune_gaps_sql,
-        prune_samples_sql, region_daily_upsert_sql, region_upsert_sql, sample_due, schema_current,
-        stagger_offset, state_keys, wave_bounds, why_gap_sql, Due, MAX_HOOK_DELIVERIES,
-        SUBREQUEST_CEILING, SUBREQUEST_OVERHEAD,
+        prune_region_daily_sql, prune_samples_sql, region_daily_upsert_sql, region_upsert_sql,
+        sample_due, schema_current, stagger_offset, state_keys, wave_bounds, why_gap_sql, Due,
+        MAX_HOOK_DELIVERIES, SUBREQUEST_CEILING, SUBREQUEST_OVERHEAD,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
@@ -725,6 +725,32 @@ mod tests {
             .unwrap();
         let days: Vec<i64> = conn
             .prepare("SELECT day FROM monitor_daily ORDER BY day")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(days, vec![3, 1_000]);
+    }
+
+    #[test]
+    fn region_daily_prune_respects_retention() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE region_daily (id TEXT NOT NULL, place TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place, day));",
+        )
+        .unwrap();
+        for (place, day) in [("SIN", 1_i64), ("BOM", 2), ("SIN", 3), ("SIN", 1_000)] {
+            conn.execute(
+                "INSERT INTO region_daily VALUES ('m', ?1, ?2, ?2, 10, 1)",
+                rusqlite::params![place, day],
+            )
+            .unwrap();
+        }
+        conn.execute(prune_region_daily_sql(), rusqlite::params![100.0, 2.0])
+            .unwrap();
+        let days: Vec<i64> = conn
+            .prepare("SELECT day FROM region_daily ORDER BY day")
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
@@ -1413,7 +1439,7 @@ pub const PRUNE_CHUNKS: usize = 5;
 /// `DELETE ... LIMIT` is a dialect risk) and bounded per statement.
 fn prune_stmts(db: &Db, now: i64) -> Result<Vec<D1PreparedStatement>> {
     let cutoff = now.saturating_sub(crate::db::RETENTION_SECS);
-    let mut out = Vec::with_capacity(3 * PRUNE_CHUNKS);
+    let mut out = Vec::with_capacity(4 * PRUNE_CHUNKS);
     for _ in 0..PRUNE_CHUNKS {
         out.push(
             db.q(prune_samples_sql())
@@ -1425,6 +1451,10 @@ fn prune_stmts(db: &Db, now: i64) -> Result<Vec<D1PreparedStatement>> {
         );
         out.push(
             db.q(prune_daily_sql())
+                .bind(&[num(cutoff), num(PRUNE_CHUNK)])?,
+        );
+        out.push(
+            db.q(prune_region_daily_sql())
                 .bind(&[num(cutoff), num(PRUNE_CHUNK)])?,
         );
     }
@@ -1450,4 +1480,11 @@ fn prune_gaps_sql() -> &'static str {
 /// still grows forever without its own retention sweep.
 fn prune_daily_sql() -> &'static str {
     "DELETE FROM monitor_daily WHERE rowid IN (SELECT rowid FROM monitor_daily WHERE day < ?1 ORDER BY day ASC, rowid ASC LIMIT ?2)"
+}
+
+/// Retention sweep for the per-region daily rollup. It has the same
+/// unbounded-growth shape as `monitor_daily` and backs the same 90-day
+/// detail ranges, so it shares the retention cutoff and chunk size.
+fn prune_region_daily_sql() -> &'static str {
+    "DELETE FROM region_daily WHERE rowid IN (SELECT rowid FROM region_daily WHERE day < ?1 ORDER BY day ASC, rowid ASC LIMIT ?2)"
 }
