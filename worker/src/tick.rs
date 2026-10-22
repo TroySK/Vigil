@@ -117,7 +117,7 @@ pub async fn tick(env: Env) -> Result<()> {
     // (was: an identical uppercase + alloc per monitor).
     let location = place(colo_here.as_deref());
     let mut probed = Vec::with_capacity(due_monitors.len());
-    for (start, end) in wave_bounds(due_monitors.len(), probe_wave(site.notify.hooks.len())) {
+    for (start, end) in wave_bounds(due_monitors.len(), probe_wave()) {
         // `probe` never throws: failures come back as `Seen::Dead`.
         let mut wave = join_all(
             due_monitors[start..end]
@@ -230,7 +230,13 @@ pub async fn tick(env: Env) -> Result<()> {
         writes.extend(prune_stmts(&db, now)?);
     }
     db.batch(writes).await?;
-    notify_all(&site, &pending_hooks, now).await;
+    notify_all(
+        &site,
+        &pending_hooks,
+        now,
+        hook_budget(due_monitors.len()),
+    )
+    .await;
     Ok(())
 }
 
@@ -384,13 +390,12 @@ pub fn is_due(last: Option<i64>, every_min: u64, now: i64) -> bool {
     }
 }
 
-/// Concurrent probes per wave, fitted to the 50-subrequest ceiling: one
-/// colo lookup plus one request per webhook hook plus headroom, clamped so
-/// small fleets still parallelize (25) and huge ones still progress (5).
-/// A fixed wave of 10 serialized large fleets for no reason; the tail was
-/// the sum of the slowest probe per wave.
-fn probe_wave(hooks: usize) -> usize {
-    50usize.saturating_sub(hooks.saturating_add(3)).clamp(5, 25)
+/// Concurrent probes per wave. Concurrency only: the total probe count is
+/// every due monitor, and the webhook budget (see [`hook_budget`]) yields
+/// to it. 25 keeps small fleets parallel without one burst exhausting the
+/// isolate's connection pool.
+fn probe_wave() -> usize {
+    PROBE_WAVE
 }
 
 /// `[start, end)` index ranges partitioning `total` items into waves of at
@@ -422,10 +427,11 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, close_gap_sql, daily_upsert_sql, day_start, first_value, form_encode,
-        gap_why_update, hook_host, is_due, muted_set, open_gaps_sql, plan_alert, plan_deliveries,
-        plan_due, probe_wave, prune_daily_sql, prune_due, prune_gaps_sql, prune_samples_sql,
-        sample_due, schema_current, stagger_offset, state_keys, wave_bounds, why_gap_sql, Due,
+        alert_for, cap_len, close_gap_sql, daily_upsert_sql, day_start, first_value, form_encode,
+        gap_why_update, hook_budget, hook_host, is_due, muted_set, open_gaps_sql, plan_alert,
+        plan_deliveries, plan_due, probe_wave, prune_daily_sql, prune_due, prune_gaps_sql,
+        prune_samples_sql, sample_due, schema_current, stagger_offset, state_keys, wave_bounds,
+        why_gap_sql, Due, MAX_HOOK_DELIVERIES, SUBREQUEST_CEILING, SUBREQUEST_OVERHEAD,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
@@ -561,15 +567,45 @@ mod tests {
     }
 
     #[test]
-    fn probe_waves_fit_the_subrequest_budget() {
-        // 50-subrequest ceiling minus colo + webhooks + headroom, clamped
-        // so small fleets still parallelize and huge ones still progress.
-        assert_eq!(probe_wave(0), 25);
-        assert_eq!(probe_wave(5), 25);
-        assert_eq!(probe_wave(22), 25);
-        assert_eq!(probe_wave(23), 24);
-        assert_eq!(probe_wave(40), 7);
-        assert_eq!(probe_wave(100), 5);
+    fn probes_are_never_dropped_for_webhooks() {
+        // Wave size bounds concurrency, not the number of probes. Every due
+        // monitor still gets exactly one probe even when hooks fill the
+        // subrequest budget.
+        assert_eq!(probe_wave(), 25);
+        let bounds = wave_bounds(60, probe_wave());
+        assert_eq!(bounds.first().copied(), Some((0, 25)));
+        assert_eq!(bounds.last().copied(), Some((50, 60)));
+        assert_eq!(
+            bounds.iter().map(|(start, end)| end - start).sum::<usize>(),
+            60
+        );
+    }
+
+    #[test]
+    fn webhook_budget_never_overspends_the_subrequest_ceiling() {
+        // Probes are the product feature; webhooks are best-effort. The
+        // per-tick budget must leave room for colo + D1 even when every
+        // monitor is due, and shrink deliveries instead of dropping probes.
+        assert_eq!(hook_budget(0), 40);
+        assert_eq!(hook_budget(10), 30);
+        assert_eq!(hook_budget(30), 10);
+        assert_eq!(hook_budget(45), 0);
+        for due in 0..=60 {
+            let hooks = hook_budget(due);
+            assert!(hooks <= MAX_HOOK_DELIVERIES);
+            assert!(
+                due + hooks + SUBREQUEST_OVERHEAD <= SUBREQUEST_CEILING
+                    || due + SUBREQUEST_OVERHEAD > SUBREQUEST_CEILING,
+                "due={due} hooks={hooks}"
+            );
+        }
+    }
+
+    #[test]
+    fn deliveries_cap_to_the_remaining_budget() {
+        assert_eq!(cap_len(40, 9), 9);
+        assert_eq!(cap_len(2, 9), 2);
+        assert_eq!(cap_len(40, 0), 0);
     }
 
     #[test]
@@ -1101,6 +1137,33 @@ fn plan_alert(prev_fails: i64, was_up: bool, verdict_up: bool, grace: i64) -> Al
     }
 }
 
+/// Free-plan ceiling for subrequests made by one Worker invocation. Probes,
+/// the colo lookup, D1 round trips, and webhook deliveries all share it.
+pub const SUBREQUEST_CEILING: usize = 50;
+/// Worst-case per-tick subrequests that are not probes or webhooks: colo
+/// lookup (1), chunked `kv_map`/`open_gaps`/`first_by_monitor` reads, the
+/// chunked write batch, and the daily prune batch. Kept conservative so a
+/// fleet-wide flap can never push a tick over the ceiling.
+pub const SUBREQUEST_OVERHEAD: usize = 10;
+/// Concurrent probes per wave.
+const PROBE_WAVE: usize = 25;
+
+/// Deliveries left after every due probe and the fixed overhead. Probes are
+/// never traded away for webhooks: when a fleet is large enough that the
+/// probes alone fill the ceiling, this returns zero and the tick logs the
+/// truncation. On the paid plan (1000 subrequests) the cap is still useful
+/// as a burst limiter.
+fn hook_budget(due_monitors: usize) -> usize {
+    SUBREQUEST_CEILING
+        .saturating_sub(SUBREQUEST_OVERHEAD.saturating_add(due_monitors))
+        .min(MAX_HOOK_DELIVERIES)
+}
+
+/// Number of deliveries to keep from `total`, given the remaining budget.
+fn cap_len(total: usize, budget: usize) -> usize {
+    total.min(budget)
+}
+
 /// Fire all configured webhooks for every pending transition.
 /// Best-effort by design: delivery never fails the tick, and the alert
 /// markers are already in the write batch before this runs, so a failed
@@ -1108,20 +1171,16 @@ fn plan_alert(prev_fails: i64, was_up: bool, verdict_up: bool, grace: i64) -> Al
 /// a fleet-wide flap doesn't serialize into minutes of wall time (each
 /// hook still races its own [`HOOK_TIMEOUT_MS`] deadline). Failures are
 /// logged (host + error, never the body) so `wrangler tail` shows drops.
-async fn notify_all(site: &Site, pending: &[(String, bool, String)], now: i64) {
+async fn notify_all(site: &Site, pending: &[(String, bool, String)], now: i64, budget: usize) {
     let deliveries = plan_deliveries(site, pending, now);
-    // Bound total subrequests: concurrency alone (`HOOK_WAVE`) still lets a
-    // fleet-wide flap (monitors × hooks) blow the 50-subrequest ceiling
-    // after the probe wave. Truncate explicitly so the drop is visible.
-    let capped: &[(&Hook, String)] = if deliveries.len() > MAX_HOOK_DELIVERIES {
+    let keep = cap_len(deliveries.len(), budget);
+    if keep < deliveries.len() {
         console_log!(
-            "webhooks: truncating {} deliveries to {MAX_HOOK_DELIVERIES}",
+            "webhooks: truncating {} deliveries to {keep} (subrequest budget)",
             deliveries.len()
         );
-        &deliveries[..MAX_HOOK_DELIVERIES]
-    } else {
-        &deliveries
-    };
+    }
+    let capped = &deliveries[..keep];
     for wave in capped.chunks(HOOK_WAVE) {
         let sends = wave.iter().map(|(hook, body)| async move {
             if let Err(e) = fire_hook(hook, body).await {
