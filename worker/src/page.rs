@@ -104,11 +104,11 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
     format!(
         "<section class=\"hero-stat\" data-up=\"{state}\">\
         <p class=\"figure tnum\" data-count=\"{figure}\">{figure}</p>\
-        <p class=\"qualifier\">{qualifier}</p>\
+        <p class=\"qualifier\" data-qualifier>{qualifier}</p>\
         <div class=\"stat-strip tnum\">\
-        <div><b>{up}</b><span>up</span></div>\
-        <div><b>{down}</b><span>down</span></div>\
-        <div><b>{total}</b><span>monitors</span></div>\
+        <div><b data-stat=up>{up}</b><span>up</span></div>\
+        <div><b data-stat=down>{down}</b><span>down</span></div>\
+        <div><b data-stat=total>{total}</b><span>monitors</span></div>\
         </div>\
         <p class=\"site-sub\">{sub}</p>\
         <p class=\"sr-only\" role=status aria-live=polite aria-atomic=true data-live></p></section>",
@@ -363,14 +363,20 @@ fn one_row(
         .as_deref()
         .map_or_else(String::new, |t| format!(" title=\"{}\"", esc(t)));
     let flag = if is_up { "1" } else { "0" };
+    let (place, ms_attr, has_data) = current.map_or((String::new(), 0, 0), |sample| {
+        (esc(&sample.place), sample.ms, 1)
+    });
     let name = monitor_name(monitor, favicon);
     format!(
-        "<article class=r data-up=\"{flag}\"{tip}>\
+        "<article class=r data-up=\"{flag}\" data-id=\"{id}\" data-place=\"{place}\" data-ms=\"{ms}\" data-has=\"{has}\"{tip}>\
         <div class=r-head><span class=d aria-hidden=true></span>\
         <b>{name}</b><div class=r-meta><s>{detail}</s><i>{word}</i><a class=det href=\"/monitor?id={}&range={}\">details &rsaquo;</a></div></div>\
         {extra}</article>",
         encode_monitor_id(&monitor.id),
-        range.param
+        range.param,
+        id = esc(&monitor.id),
+        has = has_data,
+        ms = ms_attr,
     )
 }
 
@@ -582,6 +588,10 @@ mod tests {
         );
         assert!(html.contains("data-live"));
         assert!(hidden > html.find("data-count").expect("figure"));
+        assert!(html.contains("data-qualifier"));
+        assert!(html.contains("data-stat=up"));
+        assert!(html.contains("data-stat=down"));
+        assert!(html.contains("data-stat=total"));
     }
 
     #[test]
@@ -668,6 +678,10 @@ mod tests {
             None,
         );
         assert!(up.contains("data-up=\"1\""));
+        assert!(up.contains("data-id=\"m\""));
+        assert!(up.contains("data-place=\"BOM\""));
+        assert!(up.contains("data-ms=\"54\""));
+        assert!(up.contains("data-has=\"1\""));
         assert!(up.contains("<i>UP</i>"));
         assert!(up.contains("54ms"));
         assert!(up.contains("BOM"));
@@ -689,6 +703,7 @@ mod tests {
         assert!(down.contains("Check failing"));
         let fresh = one_row(&m, RANGE_24H, 10_000, None, &[], None, &[], None);
         assert!(fresh.contains("No data yet"));
+        assert!(fresh.contains("data-has=\"0\""));
     }
 
     #[test]
@@ -733,6 +748,10 @@ mod tests {
             None,
         );
         assert!(up.contains("data-up=\"1\""));
+        assert!(up.contains("data-id=\"m\""));
+        assert!(up.contains("data-place=\"BOM\""));
+        assert!(up.contains("data-ms=\"54\""));
+        assert!(up.contains("data-has=\"1\""));
         assert!(up.contains("<i>UP</i>"));
         assert!(up.contains("54ms"));
     }

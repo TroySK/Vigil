@@ -213,11 +213,12 @@ pub async fn render(
             live.as_deref()
         }
     };
+    // The id escapes once here, not once per range option below.
+    let id = esc(&monitor.id);
     let body = format!(
         "<nav class=crumb aria-label=Breadcrumb><a href=\"/?range={range_param}\">&lsaquo; all monitors</a></nav>\
-        <section class=detail-hero aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>\
-        <p class=status-line role=status><span class=status-word data-up=\"{flag}\">{word}</span> \
-        <span class=tnum>{ms}</span></p>{notes}</section>\
+        <section class=detail-hero data-id=\"{id}\" aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>\
+        {status}{notes}</section>\
         <h3 class=sect>Last {range_label}</h3><div class={bars_class} role=img aria-label=\"{bars_label}\" tabindex=0>{cells}</div>\
         <h3 class=sect>Latency</h3><p class=tnum>P50 {p50}ms &middot; P95 {p95}ms &middot; {n} samples</p>{spark} \
         <h3 class=sect>Latency by region &middot; last {range_label}</h3><p class=tnum>Per-region latency over the last {range_label}, grouped by probe origin.</p>{geo_table} \
@@ -225,9 +226,7 @@ pub async fn render(
         esc(&monitor.name),
         logo = crate::page::favicon_img(origin, 24),
         range_param = range.param,
-        word = if is_up { "UP" } else { "DOWN" },
-        flag = if is_up { "1" } else { "0" },
-        ms = last_probe_label(current),
+        status = status_line(is_up, current),
         p50 = p50,
         p95 = p95,
         n = vals.len(),
@@ -239,8 +238,6 @@ pub async fn render(
     );
 
     let links = links_html(&site.links);
-    // The id escapes once here, not once per range option below.
-    let id = esc(&monitor.id);
     let menu = crate::range::menu(range, |option| {
         format!("/monitor?id={id}&range={}", option.param)
     });
@@ -336,6 +333,22 @@ pub fn geo_latency_table(
 }
 
 /// "418ms last probe · BOM" for the detail hero, or the empty state.
+/// Status line plus the attributes the in-place health patch needs: the
+/// word/state, the latest sample's latency and origin, and whether any
+/// sample exists. The poller replaces the text without re-rendering.
+fn status_line(is_up: bool, current: Option<&SampleOut>) -> String {
+    let (place, ms, has_data) = current.map_or((String::new(), 0, 0), |sample| {
+        (esc(&sample.place), sample.ms, 1)
+    });
+    format!(
+        "<p class=status-line role=status><span class=status-word data-up=\"{flag}\">{word}</span> \
+        <span class=tnum data-ms=\"{ms}\" data-place=\"{place}\" data-has=\"{has_data}\">{label}</span></p>",
+        flag = if is_up { "1" } else { "0" },
+        word = if is_up { "UP" } else { "DOWN" },
+        label = last_probe_label(current),
+    )
+}
+
 fn last_probe_label(current: Option<&SampleOut>) -> String {
     current.map_or_else(
         || "No probes yet".to_owned(),
@@ -351,7 +364,9 @@ fn last_probe_label(current: Option<&SampleOut>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{gap_in_range, geo_latency_table, last_probe_label, standalone_rel};
+    use super::{
+        gap_in_range, geo_latency_table, last_probe_label, standalone_rel, status_line,
+    };
     use crate::reads::SampleOut;
 
     fn sample(up: i64) -> SampleOut {
@@ -370,6 +385,19 @@ mod tests {
             up: 1,
             place: place.into(),
         }
+    }
+
+    #[test]
+    fn status_line_carries_patch_anchors() {
+        let up = status_line(true, Some(&sample(1)));
+        assert!(up.contains("data-up=\"1\""));
+        assert!(up.contains("data-ms=\"418\""));
+        assert!(up.contains("data-place=\"BOM\""));
+        assert!(up.contains("data-has=\"1\""));
+        assert!(up.contains("UP"));
+        let fresh = status_line(true, None);
+        assert!(fresh.contains("data-has=\"0\""));
+        assert!(fresh.contains("No probes yet"));
     }
 
     #[test]

@@ -197,6 +197,23 @@ mod tests {
     }
 
     #[test]
+    fn app_patches_health_without_reloading_stable_pages() {
+        assert!(APP_JS.contains("function patchHealth("));
+        assert!(APP_JS.contains("function patchRow("));
+        assert!(APP_JS.contains("data-place"));
+        assert!(APP_JS.contains("data-ms"));
+        assert!(APP_JS.contains("data-has"));
+        assert!(
+            APP_JS.contains("if(!patchHealth(j))location.reload();"),
+            "reload stays a structural-change fallback"
+        );
+        assert!(
+            !APP_JS.contains("if(nxt>seen)location.reload();"),
+            "a data tick must patch, not reload"
+        );
+    }
+
+    #[test]
     fn app_timer_updates_only_relative_timestamps() {
         // Absolute labels and tooltips are static between timezone changes;
         // the 30-second tick must not rescan and rewrite every tooltip.
