@@ -102,7 +102,7 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
         "1"
     };
     format!(
-        "<section class=\"hero-stat\" data-up=\"{state}\" aria-live=polite>\
+        "<section class=\"hero-stat\" data-up=\"{state}\">\
         <p class=\"figure tnum\" data-count=\"{figure}\">{figure}</p>\
         <p class=\"qualifier\">{qualifier}</p>\
         <div class=\"stat-strip tnum\">\
@@ -110,7 +110,8 @@ fn hero_html(site: &Site, up: u32, down: u32, at: i64) -> String {
         <div><b>{down}</b><span>down</span></div>\
         <div><b>{total}</b><span>monitors</span></div>\
         </div>\
-        <p class=\"site-sub\">{sub}</p></section>",
+        <p class=\"site-sub\">{sub}</p>\
+        <p class=\"sr-only\" role=status aria-live=polite aria-atomic=true data-live></p></section>",
         sub = esc(&site.title),
     )
 }
@@ -557,12 +558,31 @@ pub fn shell(
 
 #[cfg(test)]
 mod tests {
-    use super::{favicon_origin, links_html, one_row, parse_counts, shell, speculation_rule, time_html, uses_daily_rollup};
+    use super::{favicon_origin, hero_html, links_html, one_row, parse_counts, shell, speculation_rule, time_html, uses_daily_rollup};
     use crate::range::{RANGE_24H, RANGE_30D, RANGE_7D, RANGE_90D};
     use crate::reads::SampleOut;
     use std::collections::BTreeMap;
     use vigil_core::config::{Monitor, Probe};
     use vigil_core::state::Gap;
+
+    #[test]
+    fn hero_keeps_live_announcements_off_the_animated_figure() {
+        let html = hero_html(&vigil_core::config::Site::default(), 2, 1, 1_000);
+        assert_eq!(
+            html.matches("aria-live").count(),
+            1,
+            "only the hidden status node may be live"
+        );
+        let hidden = html.find("class=\"sr-only\"").expect("hidden live node");
+        assert!(html.contains("role=status"));
+        assert!(html.contains("aria-live=polite"));
+        assert!(
+            !html[..hidden].contains("aria-live"),
+            "the counting figure must not be live"
+        );
+        assert!(html.contains("data-live"));
+        assert!(hidden > html.find("data-count").expect("figure"));
+    }
 
     #[test]
     fn counts_parse_and_reject_garbage() {
