@@ -3,7 +3,7 @@
 use crate::api;
 use crate::auth::{authed, deny};
 use crate::db::Db;
-use worker::{Env, Request, Response, Result};
+use worker::{console_log, Env, Request, Response, Result};
 
 /// Handle every incoming `fetch`: editor mode, auth gate, migrate, route,
 /// then harden and cache-tag the response on the single exit path.
@@ -16,7 +16,12 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
     // below, so turn it into a generic, hardened 500 first.
     let (mut resp, gated) = match route(req, env, &url, editor).await {
         Ok(result) => result,
-        Err(_) => (Response::error("internal error", 500)?, false),
+        Err(error) => {
+            // The body stays generic; the log is the only way `wrangler tail`
+            // can tell a D1 outage from a config or serialization bug.
+            console_log!("route {} failed: {error}", url.path());
+            (Response::error("internal error", 500)?, false)
+        }
     };
     for (name, value) in security_headers() {
         resp.headers_mut().set(name, value)?;
