@@ -241,6 +241,10 @@ fn recent_gaps_window_sql(n: usize) -> String {
 /// id, newest first. One union query replaces a round trip per monitor;
 /// predated closures never leave D1, and each monitor's index scan stops
 /// after its own `limit` rows.
+///
+/// Health now aggregates uptime in SQL (see [`uptime_by_monitor`]); this
+/// reader stays for batched gap views and its index-plan regression tests.
+#[allow(dead_code)]
 pub async fn recent_gaps_by_monitor(
     db: &Db,
     ids: &[&str],
@@ -277,6 +281,108 @@ pub async fn recent_gaps_by_monitor(
         }
     }
     Ok(out)
+}
+
+/// Per-monitor health summary computed in SQL: whether a gap is open and
+/// the uptime percentage for day/week/month.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Uptime {
+    /// At least one unterminated gap.
+    pub open: bool,
+    /// Day uptime percentage, one decimal.
+    pub day: f64,
+    /// Week uptime percentage, one decimal.
+    pub week: f64,
+    /// Month uptime percentage, one decimal.
+    pub month: f64,
+}
+
+/// Uptime for every monitor with gaps in the month window, keyed by id.
+/// Missing ids have no gaps and therefore 100% uptime (unrecorded time is
+/// up, matching [`Track::uptime_many`](vigil_core::state::Track::uptime_many)).
+///
+/// One aggregate query per id chunk replaces shipping up to 500 gap rows
+/// per monitor to the Worker on every health poll.
+pub async fn uptime_by_monitor(
+    db: &Db,
+    ids: &[&str],
+    now: i64,
+    windows: [i64; 3],
+) -> Result<BTreeMap<String, Uptime>> {
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        id: String,
+        open: i64,
+        down_day: i64,
+        down_week: i64,
+        down_month: i64,
+    }
+    let mut out = BTreeMap::new();
+    for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+        let mut binds = bind_ids(chunk);
+        binds.push(num(now));
+        for window in windows {
+            binds.push(num(now.saturating_sub(window)));
+        }
+        let rows: Vec<Row> = db
+            .q(&uptime_sql(chunk.len()))
+            .bind(&binds)?
+            .all()
+            .await?
+            .results()?;
+        for row in rows {
+            out.insert(
+                row.id,
+                uptime_from_downs(
+                    row.open != 0,
+                    [row.down_day, row.down_week, row.down_month],
+                    windows,
+                ),
+            );
+        }
+    }
+    Ok(out)
+}
+
+/// Exact aggregate behind [`uptime_by_monitor`], exposed so tests execute
+/// the shipped SQL. `?1..?N` ids, then now, day start, week start, month
+/// start. Scalar `max`/`min` clamp each gap to the window; `MAX(CASE …)`
+/// reports whether any gap is still open.
+fn uptime_sql(n: usize) -> String {
+    let now = n + 1;
+    let day = n + 2;
+    let week = n + 3;
+    let month = n + 4;
+    format!(
+        "SELECT id, \
+         MAX(CASE WHEN upto IS NULL THEN 1 ELSE 0 END) AS open, \
+         COALESCE(CAST(SUM(max(0, min(COALESCE(upto, ?{now}), ?{now}) - max(at, ?{day}))) AS INTEGER), 0) AS down_day, \
+         COALESCE(CAST(SUM(max(0, min(COALESCE(upto, ?{now}), ?{now}) - max(at, ?{week}))) AS INTEGER), 0) AS down_week, \
+         COALESCE(CAST(SUM(max(0, min(COALESCE(upto, ?{now}), ?{now}) - max(at, ?{month}))) AS INTEGER), 0) AS down_month \
+         FROM gaps \
+         WHERE id IN ({}) AND at <= ?{now} AND (upto IS NULL OR upto >= ?{month}) \
+         GROUP BY id",
+        placeholders(n)
+    )
+}
+
+/// Shape SQL down-seconds into the same rounded percentages as
+/// [`Track::uptime_many`], so the API output does not drift.
+fn uptime_from_downs(open: bool, downs: [i64; 3], windows: [i64; 3]) -> Uptime {
+    let pct = |down: i64, window: i64| {
+        if window <= 0 {
+            return 100.0;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let pct = (window - down).max(0) as f64 / window as f64 * 100.0;
+        (pct * 10.0).round() / 10.0
+    };
+    Uptime {
+        open,
+        day: pct(downs[0], windows[0]),
+        week: pct(downs[1], windows[1]),
+        month: pct(downs[2], windows[2]),
+    }
 }
 
 /// Exact query behind [`series_by_monitor`], exposed so tests execute the
@@ -543,11 +649,13 @@ mod tests {
     use super::{
         daily_series_sql, data_at_of, effective_since, gaps_window_sql, latest_sql,
         recent_gaps_window_sql, region_daily_sql, region_latest_lookup_sql, region_latest_scan_sql,
-        series_ranged_sql, series_window_sql, stride_points, SampleOut,
+        series_ranged_sql, series_window_sql, stride_points, uptime_from_downs, uptime_sql,
+        SampleOut,
     };
     use rusqlite::types::Value;
     use rusqlite::{params, params_from_iter};
     use std::collections::BTreeMap;
+    use vigil_core::state::{Gap, Track};
 
     #[test]
     fn probed_clock_falls_back_to_tick_clock() {
@@ -646,6 +754,63 @@ mod tests {
             ]
         );
         assert!(!region_daily_sql().contains("OVER ("));
+    }
+
+    #[test]
+    fn uptime_aggregate_matches_track_math() {
+        // The health poll must not ship 500 gap rows per monitor. SQL sums
+        // each window's downtime, and this test pins that result to the
+        // in-memory Track math the UI used before.
+        let now = 2_000_000_i64;
+        let windows = [86_400, 604_800, 2_592_000];
+        let gaps = vec![
+            Gap { at: 0, to: Some(50), why: "old".into() },
+            Gap { at: now - 3_000, to: Some(now - 2_000), why: "closed".into() },
+            Gap { at: now - 500, to: None, why: "open".into() },
+            Gap { at: now + 100, to: None, why: "future".into() },
+        ];
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE gaps (id TEXT NOT NULL, at INTEGER NOT NULL, upto INTEGER, why TEXT NOT NULL);",
+        )
+        .unwrap();
+        for gap in &gaps {
+            conn.execute(
+                "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "m1",
+                    gap.at as f64,
+                    gap.to.map(|v| v as f64),
+                    gap.why
+                ],
+            )
+            .unwrap();
+        }
+        let mut stmt = conn.prepare(&uptime_sql(1)).unwrap();
+        let (open, downs): (i64, [i64; 3]) = stmt
+            .query_row(
+                params![
+                    "m1",
+                    now as f64,
+                    (now - windows[0]) as f64,
+                    (now - windows[1]) as f64,
+                    (now - windows[2]) as f64,
+                ],
+                |row| {
+                    Ok((
+                        row.get(1)?,
+                        [row.get(2)?, row.get(3)?, row.get(4)?],
+                    ))
+                },
+            )
+            .unwrap();
+        let got = uptime_from_downs(open != 0, downs, windows);
+        let expected = Track { gaps }.uptime_many(now, &windows);
+        assert!(got.open);
+        assert_eq!(got.day, expected[0]);
+        assert_eq!(got.week, expected[1]);
+        assert_eq!(got.month, expected[2]);
+        assert!(got.day < 100.0);
     }
 
     #[test]

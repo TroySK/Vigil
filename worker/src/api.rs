@@ -2,11 +2,10 @@
 
 use crate::db::Db;
 use crate::reads::{
-    clock, latest, latest_by_monitor, recent_gaps, recent_gaps_by_monitor, series, SampleOut,
+    clock, latest, latest_by_monitor, recent_gaps, series, uptime_by_monitor, SampleOut, Uptime,
 };
 use vigil_core::config::{Monitor, Site};
 use vigil_core::rollup::percentile_triple;
-use vigil_core::state::{Gap, Track};
 use worker::{Response, ResponseBody, Result};
 
 /// Seconds in one day / week / month windows for `/api/health` uptime.
@@ -39,13 +38,13 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
         .map(|monitor| monitor.id.as_str())
         .collect();
     let base = at.max(1);
-    // Month uptime needs 30 days of gaps; older closures cannot affect it.
-    // Each monitor's newest GAP_SCAN_ROWS rows are selected by an indexed
-    // ORDER BY ... LIMIT inside the union, so a flapping monitor no longer
-    // ranks (and reads) its whole window before the cap applies.
-    let (latest, gap_lists) = futures_util::try_join!(
+    // Month uptime needs 30 days of gaps, but the SQL aggregate clamps each
+    // gap to the day/week/month windows and returns three numbers per
+    // monitor — no gap rows cross the wire, and a flapping monitor cannot
+    // inflate the response or the Worker's memory.
+    let (latest, uptimes) = futures_util::try_join!(
         latest_by_monitor(db, &ids),
-        recent_gaps_by_monitor(db, &ids, GAP_SCAN_ROWS, base.saturating_sub(MONTH_SECS)),
+        uptime_by_monitor(db, &ids, base, [DAY_SECS, WEEK_SECS, MONTH_SECS]),
     )?;
     let mut items = serde_json::Map::new();
     for monitor in &site.monitors {
@@ -53,7 +52,7 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
             monitor.id.clone(),
             monitor_status(
                 latest.get(&monitor.id),
-                gap_lists.get(&monitor.id).map_or(&[], Vec::as_slice),
+                uptimes.get(&monitor.id),
                 base,
             ),
         );
@@ -67,28 +66,28 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
 /// Pure shaping over already-fetched rows, so the snapshot assembly is
 /// unit-testable without D1.
 ///
-/// Status comes from gaps (an open gap = down), NOT from the latest
-/// `samples` row: split cadence writes samples hourly but gaps every 5
-/// minutes, so the sample's `up` flag can lag reality by ~1h. Latency
+/// Status comes from the SQL gap summary (an open gap = down), NOT from the
+/// latest `samples` row: split cadence writes samples hourly but gaps every
+/// 5 minutes, so the sample's `up` flag can lag reality by ~1h. Latency
 /// (`ms`/`at`) still comes from the latest sample — hourly-stale by
 /// design. Missing samples read as up with zeroed readings, matching the
 /// old per-monitor path.
-fn monitor_status(current: Option<&SampleOut>, gaps: &[Gap], base: i64) -> serde_json::Value {
-    let track = Track {
-        gaps: gaps.to_vec(),
-    };
+fn monitor_status(current: Option<&SampleOut>, uptime: Option<&Uptime>, base: i64) -> serde_json::Value {
     // Open gap = down right now, even when the last hourly sample says up.
-    let is_up = track.open().is_none() && current.map_or(true, |r| r.up == 1);
-    // One pass over gaps for all three windows (was: three scans).
-    let uptimes = track.uptime_many(base, &[DAY_SECS, WEEK_SECS, MONTH_SECS]);
+    let (is_up, day, week, month) = uptime.map_or((true, 100.0, 100.0, 100.0), |u| {
+        (!u.open, u.day, u.week, u.month)
+    });
+    let is_up = is_up && current.map_or(true, |r| r.up == 1);
     serde_json::json!({
         "up": is_up,
         "ms": current.map_or(0, |r| r.ms),
         "at": current.map_or(base, |r| r.at),
+        "place": current.map_or("", |r| r.place.as_str()),
+        "hasData": current.is_some(),
         "uptime": {
-            "day": uptimes[0],
-            "week": uptimes[1],
-            "month": uptimes[2],
+            "day": day,
+            "week": week,
+            "month": month,
         },
     })
 }
@@ -225,9 +224,8 @@ mod tests {
         badge_markup, default_counts, monitor_status, parse_counts, query_ok, query_param,
         requested_monitor, UNKNOWN_BADGE_COLOR,
     };
-    use crate::reads::SampleOut;
+    use crate::reads::{SampleOut, Uptime};
     use vigil_core::config::Site;
-    use vigil_core::state::Gap;
 
     fn site() -> Site {
         serde_yaml::from_str(
@@ -293,31 +291,47 @@ mod tests {
         assert!(!svg.contains("404"));
     }
 
+    fn clean() -> Uptime {
+        Uptime {
+            open: false,
+            day: 100.0,
+            week: 100.0,
+            month: 100.0,
+        }
+    }
+
     #[test]
     fn status_shapes_up_monitor() {
-        let v = monitor_status(Some(&tried(1_000, 54, 1)), &[], 2_000);
+        let v = monitor_status(Some(&tried(1_000, 54, 1)), Some(&clean()), 2_000);
         assert_eq!(v["up"].as_bool(), Some(true));
         assert_eq!(v["ms"].as_i64(), Some(54));
         assert_eq!(v["at"].as_i64(), Some(1_000));
+        assert_eq!(v["place"].as_str(), Some("BOM"));
+        assert_eq!(v["hasData"].as_bool(), Some(true));
         assert_eq!(v["uptime"]["day"].as_f64(), Some(100.0));
     }
 
     #[test]
     fn status_falls_back_without_samples() {
-        let v = monitor_status(None, &[], 2_000);
+        let v = monitor_status(None, None, 2_000);
         assert_eq!(v["up"].as_bool(), Some(true));
         assert_eq!(v["ms"].as_i64(), Some(0));
         assert_eq!(v["at"].as_i64(), Some(2_000));
+        assert_eq!(v["hasData"].as_bool(), Some(false));
     }
 
     #[test]
     fn status_marks_down_monitor() {
-        let gap = Gap {
-            at: 1_000,
-            to: Some(1_500),
-            why: "refused".into(),
-        };
-        let v = monitor_status(Some(&tried(1_500, 0, 0)), &[gap], 2_000);
+        let v = monitor_status(
+            Some(&tried(1_500, 0, 0)),
+            Some(&Uptime {
+                open: false,
+                day: 99.4,
+                week: 99.9,
+                month: 100.0,
+            }),
+            2_000,
+        );
         assert_eq!(v["up"].as_bool(), Some(false));
         assert!(v["uptime"]["day"].as_f64().unwrap() < 100.0);
     }
@@ -327,12 +341,14 @@ mod tests {
         // Split cadence: samples land hourly, gaps every 5m. A monitor
         // that went down after its last hourly sample must read down,
         // not up, until the next sample lands.
-        let open = Gap {
-            at: 1_900,
-            to: None,
-            why: "refused".into(),
-        };
-        let v = monitor_status(Some(&tried(1_000, 54, 1)), &[open], 2_000);
+        let v = monitor_status(
+            Some(&tried(1_000, 54, 1)),
+            Some(&Uptime {
+                open: true,
+                ..clean()
+            }),
+            2_000,
+        );
         assert_eq!(v["up"].as_bool(), Some(false));
         // Latency still comes from the hourly sample (stale by design).
         assert_eq!(v["ms"].as_i64(), Some(54));
