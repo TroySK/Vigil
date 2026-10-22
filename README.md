@@ -107,9 +107,10 @@ Config rules (same YAML shape as before):
   The cron itself fires every 5 minutes and skips monitors that
   aren't due — first sightings spread across the interval so a fleet never
   synchronizes onto one tick.
-- `refresh_secs`: page auto-refresh interval in seconds (default 300,
-  `0` disables polling). Pages poll on this interval but reload only when
-  a tick probed new data.
+- `refresh_secs`: page auto-refresh interval in seconds (default 300;
+  values below 30 are raised to 30, and `0` disables polling). Pages poll
+  on this interval, patch counts/statuses in place when a tick probed new
+  data, and reload only if the monitor set changed.
 - `links` render as chips in file order (first link is leftmost) and open
   in a new tab. URLs must be `http`/`https`, `mailto:`, or a same-origin
   `/path`; dangerous schemes (`javascript:`, `data:`, …) are rejected.
@@ -280,6 +281,13 @@ if you want required reviewers before a deploy):
   monitor.
 - Recovery always notifies; down-transitions notify only after
   `grace_min` consecutive failing ticks.
+- Probes and webhook deliveries share Cloudflare's per-invocation
+  subrequest ceiling. Each tick reserves a conservative overhead plus one
+  request per due probe, and spends whatever remains on webhook
+  deliveries (up to 40). Probes are never dropped for webhooks: on the
+  free plan a tick with ~40 due monitors can leave no budget; deliveries
+  beyond the budget are skipped and logged (best effort, like all hook
+  delivery failures).
 - History bars show honest gaps: days/hours before a monitor's first
   recorded sample render as "no data", never as 100% uptime.
 - Every sample records its Cloudflare colo (resolved once per tick via
