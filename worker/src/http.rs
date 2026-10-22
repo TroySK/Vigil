@@ -197,18 +197,17 @@ fn range_param(url: &url::Url) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-/// Shared cache policy per path: probes run every 5 minutes but latency
-/// charts stay hourly, so pages and read APIs tolerate 5 minutes of
-/// staleness (the auto-refresh polls on the same interval), which caps
-/// D1 fan-out cost per visitor. `stale-while-revalidate` lets the
-/// Cloudflare edge (Workers Caching, enabled in `wrangler.toml`) absorb
-/// the tail (D1 variance is the P90) while browsers still refresh
-/// promptly. Do NOT add `s-maxage`/`must-revalidate`: Cloudflare documents
-/// both as disabling stale-while-revalidate. Icons set their own immutable
-/// policy and the badge (polled by external embeds) tolerates 5 minutes.
-/// When the auth gate is on (`gated`), responses are `private` so a
-/// shared cache never serves one visitor's page to another (see the
-/// `Vary` in `handle`).
+/// Shared cache policy per path. Pages are cached for one minute (and may
+/// serve 30 s stale) so a reload never stacks a full cache window on top of
+/// the poll interval; `/api/health` is the poll itself, so it gets the
+/// shortest TTL. History APIs change only when a sample lands (hourly) and
+/// keep the five-minute edge cache. Icons set their own immutable policy.
+/// `stale-while-revalidate` lets the Cloudflare edge absorb the tail (D1
+/// variance is the P90) while browsers still refresh promptly. Do NOT add
+/// `s-maxage`/`must-revalidate`: Cloudflare documents both as disabling
+/// stale-while-revalidate. When the auth gate is on (`gated`), responses
+/// are `private, no-store` so a shared cache never serves one visitor's
+/// page to another (see the `Vary` in `handle`).
 fn cache_control(path: &str, gated: bool) -> Option<&'static str> {
     if gated {
         return match path {
@@ -218,8 +217,9 @@ fn cache_control(path: &str, gated: bool) -> Option<&'static str> {
         };
     }
     match path {
-        "/" | "/index.html" | "/monitor" | "/api/health" | "/api/history" | "/api/badge"
-        | "/api/incidents" | "/api/latency" => {
+        "/" | "/index.html" | "/monitor" => Some("public, max-age=60, stale-while-revalidate=30"),
+        "/api/health" => Some("public, max-age=30"),
+        "/api/history" | "/api/badge" | "/api/incidents" | "/api/latency" => {
             Some("public, max-age=300, stale-while-revalidate=60")
         }
         _ => None,
@@ -263,20 +263,37 @@ mod tests {
     }
 
     #[test]
-    fn hourly_granular_routes_share_five_minute_cache() {
-        for path in [
-            "/",
-            "/index.html",
-            "/monitor",
-            "/api/health",
-            "/api/history",
-            "/api/incidents",
-            "/api/latency",
-        ] {
+    fn pages_revalidate_faster_than_the_poll_interval() {
+        // A page cached for the full 5-minute poll interval can serve data
+        // that is already one probe cycle old on reload. Keep page caching
+        // short enough that a reload never adds a second stale window.
+        for path in ["/", "/index.html", "/monitor"] {
+            assert_eq!(
+                cache_control(path, false),
+                Some("public, max-age=60, stale-while-revalidate=30"),
+                "{path} must revalidate within a poll cycle"
+            );
+        }
+    }
+
+    #[test]
+    fn health_is_cached_only_briefly() {
+        // The poller calls this every refresh; a 5-minute cache stacked on
+        // a 5-minute poll (and a 5-minute page cache) hid transitions for
+        // up to 15 minutes. Health must never outlive a poll cycle.
+        assert_eq!(
+            cache_control("/api/health", false),
+            Some("public, max-age=30")
+        );
+    }
+
+    #[test]
+    fn history_apis_keep_the_five_minute_cache() {
+        for path in ["/api/history", "/api/incidents", "/api/latency", "/api/badge"] {
             assert_eq!(
                 cache_control(path, false),
                 Some("public, max-age=300, stale-while-revalidate=60"),
-                "{path} must be cheap to serve"
+                "{path} is cheap to serve and tolerates a probe cycle"
             );
         }
     }
@@ -286,11 +303,11 @@ mod tests {
         // Cloudflare documents that `s-maxage` (and must-revalidate)
         // disables stale-while-revalidate. The public policy must not
         // re-add it, or the edge can only serve fresh-or-block.
-        for path in ["/", "/api/health", "/api/badge"] {
+        for path in ["/", "/api/badge"] {
             let policy = cache_control(path, false).expect("public route is cached");
             assert!(policy.starts_with("public, "), "{path}: {policy}");
             assert!(
-                policy.contains("stale-while-revalidate=60"),
+                policy.contains("stale-while-revalidate="),
                 "{path} must allow SWR: {policy}"
             );
             assert!(!policy.contains("s-maxage"), "{path} must not set s-maxage");
