@@ -230,13 +230,7 @@ pub async fn tick(env: Env) -> Result<()> {
         writes.extend(prune_stmts(&db, now)?);
     }
     db.batch(writes).await?;
-    notify_all(
-        &site,
-        &pending_hooks,
-        now,
-        hook_budget(due_monitors.len()),
-    )
-    .await;
+    notify_all(&site, &pending_hooks, now, hook_budget(due_monitors.len())).await;
     Ok(())
 }
 
@@ -430,9 +424,9 @@ mod tests {
         alert_for, cap_len, close_gap_sql, daily_upsert_sql, day_start, first_value, form_encode,
         gap_why_update, hook_budget, hook_host, is_due, muted_set, open_gaps_sql, plan_alert,
         plan_deliveries, plan_due, probe_wave, prune_daily_sql, prune_due, prune_gaps_sql,
-        prune_samples_sql, region_daily_upsert_sql, region_upsert_sql, sample_due,
-        schema_current, stagger_offset, state_keys, wave_bounds, why_gap_sql, Due,
-        MAX_HOOK_DELIVERIES, SUBREQUEST_CEILING, SUBREQUEST_OVERHEAD,
+        prune_samples_sql, region_daily_upsert_sql, region_upsert_sql, sample_due, schema_current,
+        stagger_offset, state_keys, wave_bounds, why_gap_sql, Due, MAX_HOOK_DELIVERIES,
+        SUBREQUEST_CEILING, SUBREQUEST_OVERHEAD,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;

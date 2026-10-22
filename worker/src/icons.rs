@@ -104,9 +104,7 @@ fn not_modified(header: Option<&str>, etag: &str) -> bool {
         return false;
     };
     header.split(',').map(str::trim).any(|candidate| {
-        candidate == "*"
-            || candidate == etag
-            || candidate.strip_prefix("W/") == Some(etag)
+        candidate == "*" || candidate == etag || candidate.strip_prefix("W/") == Some(etag)
     })
 }
 
@@ -224,5 +222,4 @@ mod tests {
             "tick must not rerun the full timezone pass"
         );
     }
-
 }

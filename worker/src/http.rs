@@ -68,9 +68,7 @@ async fn route(
     // lets a revalidating cache skip the body after a deploy.
     let if_none_match = req.headers().get("if-none-match").ok().flatten();
     match url.path() {
-        "/favicon.ico" => {
-            return Ok((crate::icons::favicon(if_none_match.as_deref())?, false))
-        }
+        "/favicon.ico" => return Ok((crate::icons::favicon(if_none_match.as_deref())?, false)),
         "/logo.svg" => return Ok((crate::icons::logo(if_none_match.as_deref())?, false)),
         "/style.css" => return Ok((crate::icons::style(if_none_match.as_deref())?, false)),
         "/app.js" => return Ok((crate::icons::app_js(if_none_match.as_deref())?, false)),
@@ -293,7 +291,12 @@ mod tests {
 
     #[test]
     fn history_apis_keep_the_five_minute_cache() {
-        for path in ["/api/history", "/api/incidents", "/api/latency", "/api/badge"] {
+        for path in [
+            "/api/history",
+            "/api/incidents",
+            "/api/latency",
+            "/api/badge",
+        ] {
             assert_eq!(
                 cache_control(path, false),
                 Some("public, max-age=300, stale-while-revalidate=60"),

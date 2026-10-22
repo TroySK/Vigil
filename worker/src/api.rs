@@ -50,11 +50,7 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
     for monitor in &site.monitors {
         items.insert(
             monitor.id.clone(),
-            monitor_status(
-                latest.get(&monitor.id),
-                uptimes.get(&monitor.id),
-                base,
-            ),
+            monitor_status(latest.get(&monitor.id), uptimes.get(&monitor.id), base),
         );
     }
     Response::from_json(&serde_json::json!({
@@ -72,7 +68,11 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
 /// (`ms`/`at`) still comes from the latest sample — hourly-stale by
 /// design. Missing samples read as up with zeroed readings, matching the
 /// old per-monitor path.
-fn monitor_status(current: Option<&SampleOut>, uptime: Option<&Uptime>, base: i64) -> serde_json::Value {
+fn monitor_status(
+    current: Option<&SampleOut>,
+    uptime: Option<&Uptime>,
+    base: i64,
+) -> serde_json::Value {
     // Open gap = down right now, even when the last hourly sample says up.
     let (is_up, day, week, month) = uptime.map_or((true, 100.0, 100.0, 100.0), |u| {
         (!u.open, u.day, u.week, u.month)

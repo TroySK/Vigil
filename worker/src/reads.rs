@@ -528,11 +528,7 @@ fn region_daily_sql() -> &'static str {
 /// Per-origin samples from the daily rollup, newest first. Long-range
 /// regional sparklines use this instead of striding raw samples globally
 /// (which could drop an entire origin).
-pub async fn region_daily_by_monitor(
-    db: &Db,
-    id: &str,
-    cutoff: i64,
-) -> Result<Vec<SampleOut>> {
+pub async fn region_daily_by_monitor(db: &Db, id: &str, cutoff: i64) -> Result<Vec<SampleOut>> {
     let cutoff_day = cutoff - cutoff.rem_euclid(vigil_core::rollup::SECS_PER_DAY);
     db.q(region_daily_sql())
         .bind(&[id.into(), num(cutoff_day)])?
@@ -764,10 +760,26 @@ mod tests {
         let now = 2_000_000_i64;
         let windows = [86_400, 604_800, 2_592_000];
         let gaps = vec![
-            Gap { at: 0, to: Some(50), why: "old".into() },
-            Gap { at: now - 3_000, to: Some(now - 2_000), why: "closed".into() },
-            Gap { at: now - 500, to: None, why: "open".into() },
-            Gap { at: now + 100, to: None, why: "future".into() },
+            Gap {
+                at: 0,
+                to: Some(50),
+                why: "old".into(),
+            },
+            Gap {
+                at: now - 3_000,
+                to: Some(now - 2_000),
+                why: "closed".into(),
+            },
+            Gap {
+                at: now - 500,
+                to: None,
+                why: "open".into(),
+            },
+            Gap {
+                at: now + 100,
+                to: None,
+                why: "future".into(),
+            },
         ];
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -777,12 +789,7 @@ mod tests {
         for gap in &gaps {
             conn.execute(
                 "INSERT INTO gaps VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    "m1",
-                    gap.at as f64,
-                    gap.to.map(|v| v as f64),
-                    gap.why
-                ],
+                params!["m1", gap.at as f64, gap.to.map(|v| v as f64), gap.why],
             )
             .unwrap();
         }
@@ -796,12 +803,7 @@ mod tests {
                     (now - windows[1]) as f64,
                     (now - windows[2]) as f64,
                 ],
-                |row| {
-                    Ok((
-                        row.get(1)?,
-                        [row.get(2)?, row.get(3)?, row.get(4)?],
-                    ))
-                },
+                |row| Ok((row.get(1)?, [row.get(2)?, row.get(3)?, row.get(4)?])),
             )
             .unwrap();
         let got = uptime_from_downs(open != 0, downs, windows);
