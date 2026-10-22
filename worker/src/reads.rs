@@ -88,12 +88,12 @@ fn bind_ids(ids: &[&str]) -> Vec<wasm_bindgen::JsValue> {
 }
 
 /// Newest sample per monitor, keyed by monitor id, from batched round
-/// trips (one query per [`MAX_PARAMS`](crate::db::MAX_PARAMS)-id chunk).
-/// Each id gets its own indexed `ORDER BY at DESC LIMIT 1`: a grouped
-/// `MAX(at)` would scan every retained sample for that monitor (64,800
-/// rows at 30 monitors × 90 days) to return one row. The earliest sample
-/// comes from the `first:` kv stamps (see [`effective_since`]), so this
-/// query never scans the full retention window.
+/// trips (one query per [`MAX_COMPOUND_TERMS`](crate::db::MAX_COMPOUND_TERMS)
+/// chunk). Each id gets its own indexed `ORDER BY at DESC LIMIT 1`: a
+/// grouped `MAX(at)` would scan every retained sample for that monitor
+/// (64,800 rows at 30 monitors × 90 days) to return one row. The earliest
+/// sample comes from the `first:` kv stamps (see [`effective_since`]), so
+/// this query never scans the full retention window.
 pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String, SampleOut>> {
     #[derive(Debug, Deserialize)]
     struct Row {
@@ -104,7 +104,7 @@ pub async fn latest_by_monitor(db: &Db, ids: &[&str]) -> Result<BTreeMap<String,
         place: String,
     }
     let mut latest = BTreeMap::new();
-    for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+    for chunk in ids.chunks(crate::db::MAX_COMPOUND_TERMS) {
         let rows: Vec<Row> = db
             .q(&latest_sql(chunk.len()))
             .bind(&bind_ids(chunk))?
@@ -260,7 +260,7 @@ pub async fn recent_gaps_by_monitor(
         why: String,
     }
     let mut out: BTreeMap<String, Vec<Gap>> = BTreeMap::new();
-    for chunk in ids.chunks(crate::db::MAX_PARAMS) {
+    for chunk in ids.chunks(crate::db::MAX_COMPOUND_TERMS) {
         let rows: Vec<Row> = db
             .q(&recent_gaps_window_sql(chunk.len()))
             .bind(
@@ -816,6 +816,27 @@ mod tests {
     }
 
     #[test]
+    fn compound_readers_stay_within_d1_term_limit() {
+        // D1 rejects compound SELECTs over five terms even though bundled
+        // SQLite accepts 500; keep every generated UNION ALL under that cap.
+        assert_eq!(crate::db::MAX_COMPOUND_TERMS, 5);
+        assert_eq!(
+            latest_sql(crate::db::MAX_COMPOUND_TERMS)
+                .matches("UNION ALL")
+                .count()
+                + 1,
+            crate::db::MAX_COMPOUND_TERMS
+        );
+        assert_eq!(
+            recent_gaps_window_sql(crate::db::MAX_COMPOUND_TERMS)
+                .matches("UNION ALL")
+                .count()
+                + 1,
+            crate::db::MAX_COMPOUND_TERMS
+        );
+    }
+
+    #[test]
     fn latest_sql_seeks_one_newest_row_per_id() {
         // Health needs only the newest sample per monitor. A grouped MAX
         // scanned every retained row; one indexed ORDER BY ... LIMIT 1 per
@@ -829,10 +850,10 @@ mod tests {
     }
 
     #[test]
-    fn latest_only_reads_chunk_within_param_budget() {
-        // 150 ids exceed one query's param budget: split into chunks and
-        // merge, exactly like `latest_by_monitor` must. Each id has a
-        // history: the query must return its newest row, not the first.
+    fn latest_only_reads_chunk_within_compound_limit() {
+        // 150 ids exceed D1's five-term compound-SELECT limit: split into
+        // chunks and merge, exactly like `latest_by_monitor` must. Each id
+        // has a history: the query must return its newest row, not the first.
         let ids: Vec<String> = (0..150).map(|i| format!("m{i}")).collect();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -858,8 +879,11 @@ mod tests {
         let mut found = 0_usize;
         let mut newest = 0_i64;
         let mut latest = BTreeMap::new();
-        for chunk in ids.chunks(crate::db::MAX_PARAMS) {
-            assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
+        for chunk in ids.chunks(crate::db::MAX_COMPOUND_TERMS) {
+            assert!(
+                !chunk.is_empty() && chunk.len() <= crate::db::MAX_COMPOUND_TERMS,
+                "latest query must stay within D1's compound-SELECT limit"
+            );
             let mut stmt = conn.prepare(&latest_sql(chunk.len())).unwrap();
             let mut rows = stmt.query(params_from_iter(id_binds(chunk, &[]))).unwrap();
             while let Some(row) = rows.next().unwrap() {
@@ -1011,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn recent_gaps_window_reads_chunk_within_param_budget() {
+    fn recent_gaps_window_reads_chunk_within_compound_limit() {
         let ids: Vec<String> = (0..150).map(|i| format!("m{i}")).collect();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -1027,8 +1051,11 @@ mod tests {
             .unwrap();
         }
         let mut found = 0_usize;
-        for chunk in ids.chunks(crate::db::MAX_PARAMS) {
-            assert!(!chunk.is_empty() && chunk.len() <= crate::db::MAX_PARAMS);
+        for chunk in ids.chunks(crate::db::MAX_COMPOUND_TERMS) {
+            assert!(
+                !chunk.is_empty() && chunk.len() <= crate::db::MAX_COMPOUND_TERMS,
+                "recent gaps query must stay within D1's compound-SELECT limit"
+            );
             let mut stmt = conn.prepare(&recent_gaps_window_sql(chunk.len())).unwrap();
             // Binds are cutoff, limit, then ids.
             let mut binds = vec![Value::Real(100.0), Value::Real(500.0)];

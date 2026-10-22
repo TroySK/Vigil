@@ -31,7 +31,8 @@ pub async fn health(db: &Db, site: &Site) -> Result<Response> {
     // cheap poll instead of a full page render.
     let (at, counts, probed) = clock(db).await?;
     let (up, down) = parse_counts(&counts.unwrap_or_else(default_counts));
-    // Two batched round trips cover every monitor (was: two per monitor).
+    // Two batched readers cover every monitor (each chunks internally; was:
+    // two per monitor).
     let ids: Vec<&str> = site
         .monitors
         .iter()

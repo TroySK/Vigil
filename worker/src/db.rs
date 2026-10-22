@@ -14,6 +14,12 @@ pub const DB_BINDING: &str = "DB";
 /// the fleet grows (see `kv_map` / `open_gaps` / `reads`).
 pub const MAX_PARAMS: usize = 90;
 
+/// Max terms per compound SELECT (`UNION ALL`) on D1. SQLite defaults to
+/// 500, but D1/workerd lowers `SQLITE_LIMIT_COMPOUND_SELECT` to 5; a
+/// per-monitor union larger than this fails at runtime with
+/// "too many terms in compound SELECT".
+pub const MAX_COMPOUND_TERMS: usize = 5;
+
 /// How long samples and closed gaps are kept (see the tick's prune pass):
 /// readers clamp "first seen" stamps to this edge so pre-retention days
 /// render as data instead of phantom history.

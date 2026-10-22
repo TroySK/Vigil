@@ -131,10 +131,10 @@ pub async fn sections(
             let _ = write!(out, "<div class=\"note {kind}\">{}</div>", esc(&text));
         }
     }
-    // Four batched D1 round trips cover every monitor (was: four per
-    // monitor, ~120 trips at 30 monitors). The homepage is the
-    // highest-traffic page; per-monitor fan-out risked the same CPU
-    // exhaustion that killed the tick.
+    // Four batched reader calls cover every monitor (each chunks internally
+    // to stay within D1 limits; was: four per monitor, ~120 trips at 30
+    // monitors). The homepage is the highest-traffic page; per-monitor
+    // fan-out risked the same CPU exhaustion that killed the tick.
     let ids: Vec<&str> = site
         .monitors
         .iter()
