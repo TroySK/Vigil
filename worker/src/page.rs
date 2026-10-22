@@ -533,7 +533,10 @@ pub fn shell(
         <link rel=stylesheet href=\"https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap\" media=print onload=\"this.media='all'\">\
         <script>(function(){{var t=null;try{{t=localStorage.getItem('vigil-theme');}}catch(e){{}}\
         if(!t)t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';\
-        document.documentElement.setAttribute('data-theme',t);}})();</script>\
+        document.documentElement.setAttribute('data-theme',t);}})();\
+        var FB=[\"/favicon.ico\",\"/favicon.png\",\"/favicon.svg\"];\
+        function nextFavicon(el){{var i=parseInt(el.getAttribute('data-fb')||'0',10)+1;\
+        if(i<FB.length){{el.setAttribute('data-fb',String(i));el.src=el.getAttribute('data-origin')+FB[i];}}else{{el.remove();}}}}</script>\
         <title>{}</title><link rel=stylesheet href=\"/style.css\">\
         <script>window.vigilRefresh={refresh_ms}</script><script src=\"/app.js\" defer></script>\
         {spec}</head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
@@ -820,6 +823,19 @@ mod tests {
             html.contains("media=print"),
             "font stylesheet must not render-block first paint"
         );
+    }
+
+    #[test]
+    fn shell_hoists_favicon_fallback_into_the_blocking_head() {
+        // The inline onerror handler can fire before the deferred app.js
+        // runs, so the fallback must be defined in the parser-blocking head.
+        let html = shell("T", "B", "", "1/1", 1_000, 30_000, "", "", "", 1_000, "");
+        let head_end = html.find("</head>").expect("head closes");
+        let body = html.find("<body>").expect("body opens");
+        let fallback = html.find("function nextFavicon").expect("fallback is inline");
+        assert!(fallback < head_end, "fallback must run during head parse");
+        assert!(head_end < body);
+        assert!(html.contains("var FB=[\"/favicon.ico\",\"/favicon.png\",\"/favicon.svg\"];"));
     }
 
     #[test]

@@ -87,7 +87,10 @@ mod tests {
     #[test]
     fn app_asset_is_plain_cacheable_js() {
         assert!(APP_JS.contains("applyTz"));
-        assert!(APP_JS.contains("nextFavicon"));
+        assert!(
+            !APP_JS.contains("nextFavicon"),
+            "favicon fallback lives in the blocking head, before deferred JS"
+        );
         assert!(APP_JS.contains("window.vigilRefresh"));
         assert!(!APP_JS.contains("{{"), "no format escapes may ship");
         assert!(!APP_JS.contains("</script"), "must not break out of HTML");
@@ -133,12 +136,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn app_limits_favicon_fallback_chain() {
-        assert!(
-            APP_JS.contains("var FB=[\"/favicon.ico\",\"/favicon.png\",\"/favicon.svg\"];"),
-            "fallback chain stays at three candidates"
-        );
-        assert!(!APP_JS.contains("apple-touch-icon.png"));
-    }
 }
