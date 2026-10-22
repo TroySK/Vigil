@@ -1,0 +1,25 @@
+# Reproducible test environment. The host toolchain is optional; CI and
+# local checks can run the same suite in a pinned Rust image:
+#
+#   docker compose run --rm test
+#   docker compose run --rm test cargo test -p vigil-worker
+#
+# `target` and the cargo registry are named volumes so rebuilds stay warm
+# without writing root-owned artifacts into the checkout.
+services:
+  test:
+    image: rust:1.98-bookworm
+    working_dir: /workspace
+    init: true
+    environment:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    volumes:
+      - .:/workspace
+      - vigil-target:/workspace/target
+      - vigil-cargo:/usr/local/cargo/registry
+    command: cargo test --workspace
+
+volumes:
+  vigil-target:
+  vigil-cargo:

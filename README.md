@@ -132,10 +132,17 @@ Config rules (same YAML shape as before):
 From the repository root:
 
 ```sh
-cargo test -p vigil-core -p vigil
+cargo test --workspace
 cargo clippy --workspace --all-targets
 cargo fmt --check
 cargo check -p vigil-worker --target wasm32-unknown-unknown
+```
+
+The same suite runs in a pinned Rust image if the host toolchain is
+missing or different:
+
+```sh
+docker compose run --rm test
 ```
 
 ## Set up the database and deploy
