@@ -70,6 +70,9 @@ pub const DEFAULT_SAMPLE_MIN: u64 = 60;
 /// the probe cadence so the page reloads on fresh uptime data without
 /// burning D1 reads between ticks.
 pub const DEFAULT_REFRESH_SECS: u64 = 300;
+/// Floor for a configured page refresh. Sub-minute polling multiplies
+/// health reads per open tab for no visible gain; `0` still disables.
+pub const MIN_REFRESH_SECS: u64 = 30;
 
 impl Site {
     /// Uptime-probe cadence for a monitor in minutes: its own
@@ -102,14 +105,15 @@ impl Site {
         sample.max(self.cadence_min(monitor))
     }
 
-    /// Page auto-refresh interval in milliseconds: configured seconds, or
-    /// the hourly default when unset; `0` disables polling.
+    /// Page auto-refresh interval in milliseconds: configured seconds
+    /// clamped to [`MIN_REFRESH_SECS`], or the hourly default when unset;
+    /// `0` disables polling.
     #[must_use]
     pub fn refresh_ms(&self) -> u64 {
         match self.refresh_secs {
             None => DEFAULT_REFRESH_SECS.saturating_mul(1_000),
             Some(0) => 0,
-            Some(secs) => secs.saturating_mul(1_000),
+            Some(secs) => secs.max(MIN_REFRESH_SECS).saturating_mul(1_000),
         }
     }
 }

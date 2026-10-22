@@ -295,6 +295,18 @@ fn refresh_interval_defaults_and_disables() {
         ..Site::default()
     };
     assert_eq!(custom.refresh_ms(), 45_000);
+    // A one-second poll would issue 86,400 health reads a day per tab.
+    for secs in [1, 5, 29, 30] {
+        let floored = Site {
+            refresh_secs: Some(secs),
+            ..Site::default()
+        };
+        assert_eq!(
+            floored.refresh_ms(),
+            vigil_core::config::MIN_REFRESH_SECS.saturating_mul(1_000),
+            "{secs}s must clamp to the floor"
+        );
+    }
     let huge = Site {
         refresh_secs: Some(u64::MAX),
         ..Site::default()
