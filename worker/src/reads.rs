@@ -807,9 +807,9 @@ mod tests {
         let got = uptime_from_downs(open != 0, downs, windows);
         let expected = Track { gaps }.uptime_many(now, &windows);
         assert!(got.open);
-        assert_eq!(got.day, expected[0]);
-        assert_eq!(got.week, expected[1]);
-        assert_eq!(got.month, expected[2]);
+        assert!((got.day - expected[0]).abs() < f64::EPSILON);
+        assert!((got.week - expected[1]).abs() < f64::EPSILON);
+        assert!((got.month - expected[2]).abs() < f64::EPSILON);
         assert!(got.day < 100.0);
     }
 

@@ -62,7 +62,7 @@ pub fn app_js(if_none_match: Option<&str>) -> Result<Response> {
 }
 
 /// Shared asset response: a matching `If-None-Match` gets a bodyless 304
-/// (the browser reuses its copy), otherwise the bytes plus a strong ETag.
+/// (the browser reuses its copy), otherwise the bytes plus a strong `ETag`.
 /// Unversioned URLs make the validator the deploy-safe half of the cache
 /// policy: `must-revalidate` still costs a request, but no longer 30KB.
 fn asset(
