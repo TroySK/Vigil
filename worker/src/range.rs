@@ -64,8 +64,9 @@ pub(crate) const RANGE_90D: Range = Range {
     param: "90d",
     short: "90D",
 };
-/// Default range: unknown or missing `?range=` values fall back here.
-pub(crate) const DEFAULT_RANGE: Range = RANGE_7D;
+/// Default range: a missing `?range=` falls back here. Unknown values are
+/// rejected by [`exact_range`] instead of being masked by this default.
+pub(crate) const DEFAULT_RANGE: Range = RANGE_90D;
 
 /// Exact `?range=` match (case-insensitive). `None` for unknown values so
 /// callers can return 400 instead of silently rendering the default and
@@ -179,13 +180,13 @@ mod tests {
     use super::{exact_range, menu, RANGES, RANGE_90D};
 
     #[test]
-    fn range_parses_known_params_and_defaults_to_seven_days() {
+    fn range_parses_known_params_and_defaults_to_90_days() {
         assert_eq!(exact_range("24h").map(|r| r.days), Some(1));
         assert_eq!(exact_range("7d").map(|r| r.days), Some(7));
         assert_eq!(exact_range("30d").map(|r| r.days), Some(30));
         assert_eq!(exact_range("90d").map(|r| r.days), Some(90));
         assert_eq!(exact_range("7D").map(|r| r.days), Some(7));
-        assert_eq!(super::DEFAULT_RANGE.days, 7);
+        assert_eq!(super::DEFAULT_RANGE.days, 90);
         assert_eq!(RANGES.len(), 4);
     }
 

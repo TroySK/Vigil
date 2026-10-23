@@ -1,7 +1,7 @@
 //! Per-monitor detail: status, range bars, latency chart, incidents.
 //!
 //! Every section covers the selected [`Range`] (24 hours plus 7/30/90 days,
-//! defaulting to 7): history bars switch hourly/daily granularity, the
+//! defaulting to 90): history bars switch hourly/daily granularity, the
 //! latency chart draws an honest spread of the window, the regional table
 //! and incident list filter to it, and pills after the monitor name switch
 //! ranges with a page reload.
