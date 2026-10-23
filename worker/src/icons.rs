@@ -195,19 +195,17 @@ mod tests {
     }
 
     #[test]
-    fn app_patches_health_without_reloading_stable_pages() {
-        assert!(APP_JS.contains("function patchHealth("));
-        assert!(APP_JS.contains("function patchRow("));
-        assert!(APP_JS.contains("data-place"));
-        assert!(APP_JS.contains("data-ms"));
-        assert!(APP_JS.contains("data-has"));
+    fn app_reloads_when_probe_data_changes() {
+        // A tick can open/close a gap, so history bars, sparklines, detail
+        // charts, and incidents change with it. Patching only the status
+        // text left all of those stale until a manual reload.
         assert!(
-            APP_JS.contains("if(!patchHealth(j))location.reload();"),
-            "reload stays a structural-change fallback"
+            APP_JS.contains("if(nxt>seen)location.reload();"),
+            "a data tick must reload the whole page"
         );
         assert!(
-            !APP_JS.contains("if(nxt>seen)location.reload();"),
-            "a data tick must patch, not reload"
+            !APP_JS.contains("patchHealth("),
+            "no in-place-only path may suppress the reload"
         );
     }
 

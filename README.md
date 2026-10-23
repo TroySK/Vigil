@@ -109,8 +109,9 @@ Config rules (same YAML shape as before):
   synchronizes onto one tick.
 - `refresh_secs`: page auto-refresh interval in seconds (default 300;
   values below 30 are raised to 30, and `0` disables polling). Pages poll
-  on this interval, patch counts/statuses in place when a tick probed new
-  data, and reload only if the monitor set changed.
+  on this interval and reload when a tick probed new data, so status,
+  history bars, and charts refresh together. Idle ticks cost one cheap
+  health check instead of a full render.
 - `links` render as chips in file order (first link is leftmost) and open
   in a new tab. URLs must be `http`/`https`, `mailto:`, or a same-origin
   `/path`; dangerous schemes (`javascript:`, `data:`, …) are rejected.
