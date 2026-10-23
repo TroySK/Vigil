@@ -68,6 +68,12 @@ pub(crate) const RANGE_90D: Range = Range {
 /// rejected by [`exact_range`] instead of being masked by this default.
 pub(crate) const DEFAULT_RANGE: Range = RANGE_90D;
 
+/// Home URL that keeps the selected range when navigating between pages.
+#[must_use]
+pub(crate) fn home_href(range: Range) -> String {
+    format!("/?range={}", range.param)
+}
+
 /// Exact `?range=` match (case-insensitive). `None` for unknown values so
 /// callers can return 400 instead of silently rendering the default and
 /// caching a cache-busting URL.
@@ -188,6 +194,14 @@ mod tests {
         assert_eq!(exact_range("7D").map(|r| r.days), Some(7));
         assert_eq!(super::DEFAULT_RANGE.days, 90);
         assert_eq!(RANGES.len(), 4);
+    }
+
+    #[test]
+    fn home_url_preserves_the_selected_range() {
+        use super::{home_href, RANGE_7D, RANGE_90D};
+
+        assert_eq!(home_href(RANGE_90D), "/?range=90d");
+        assert_eq!(home_href(RANGE_7D), "/?range=7d");
     }
 
     #[test]

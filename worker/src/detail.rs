@@ -215,8 +215,10 @@ pub async fn render(
     };
     // The id escapes once here, not once per range option below.
     let id = esc(&monitor.id);
+    // One range-preserving home URL for both the breadcrumb and the logo.
+    let home = crate::range::home_href(range);
     let body = format!(
-        "<nav class=crumb aria-label=Breadcrumb><a href=\"/?range={range_param}\">&lsaquo; all monitors</a></nav>\
+        "<nav class=crumb aria-label=Breadcrumb><a href=\"{home}\">&lsaquo; all monitors</a></nav>\
         <section class=detail-hero data-id=\"{id}\" aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>\
         {status}{notes}</section>\
         <h3 class=sect>Last {range_label}</h3><div class={bars_class} role=img aria-label=\"{bars_label}\" tabindex=0>{cells}</div>\
@@ -225,7 +227,6 @@ pub async fn render(
         <h3 class=sect>Incidents &middot; last {range_label}</h3><table class=inc><caption class=sr-only>Downtime windows for {name} over the last {range_label}</caption><thead><tr><th scope=col>From</th><th scope=col>To</th><th scope=col>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
         esc(&monitor.name),
         logo = crate::page::favicon_img(origin, 24),
-        range_param = range.param,
         status = status_line(is_up, current),
         p50 = p50,
         p95 = p95,
@@ -241,7 +242,6 @@ pub async fn render(
     let menu = crate::range::menu(range, |option| {
         format!("/monitor?id={id}&range={}", option.param)
     });
-    let home = "/";
     let speculation = crate::page::speculation_rule("/");
     Response::from_html(shell(
         &monitor.name,

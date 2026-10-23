@@ -44,7 +44,7 @@ pub async fn render(
     body.push_str(&sections(db, site, favicons, at, None, range).await?);
     let links = links_html(&site.links);
     let menu = crate::range::menu(range, |option| format!("/?range={}", option.param));
-    let home = "/";
+    let home = crate::range::home_href(range);
     let speculation = speculation_rule("/monitor*");
     Response::from_html(shell(
         &site.title,
