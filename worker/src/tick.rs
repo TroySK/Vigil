@@ -202,10 +202,20 @@ pub async fn tick(env: Env) -> Result<()> {
         }
         // First-seen stamp for the history bars: backfilled from retained
         // samples once, then trusted forever (steady ticks find the key in
-        // `kv` and write nothing).
-        if !kv.contains_key(&format!("first:{}", monitor.id)) {
+        // `kv` and write nothing). A reused id whose last probe is older
+        // than retention has no retained samples left, so its old stamp
+        // must be reset or the unmonitored years paint as 100% uptime.
+        let first_key = format!("first:{}", monitor.id);
+        if !kv.contains_key(&first_key) {
             let first = first_value(first_seen.get(monitor.id.as_str()), now);
-            writes.push(db.put_stmt(&format!("first:{}", monitor.id), &first.to_string())?);
+            writes.push(db.put_stmt(&first_key, &first.to_string())?);
+        } else if first_stamp_is_stale(
+            kv.get(&first_key).and_then(|s| s.parse().ok()),
+            kv.get(&format!("last:{}", monitor.id))
+                .and_then(|s| s.parse().ok()),
+            now,
+        ) {
+            writes.push(db.put_stmt(&first_key, &now.to_string())?);
         }
     }
     // A skip-only tick probed nothing, so its 0/0 would overwrite the last
@@ -317,6 +327,15 @@ fn first_value(backfilled: Option<&i64>, now: i64) -> i64 {
     backfilled.copied().unwrap_or(now)
 }
 
+/// Whether a `first:` stamp predates the retention window while the last
+/// probe does too. In that case every sample for the id has been pruned,
+/// so a reused monitor id must start its history now instead of inheriting
+/// the old stamp.
+fn first_stamp_is_stale(first: Option<i64>, last: Option<i64>, now: i64) -> bool {
+    let cutoff = now.saturating_sub(crate::db::RETENTION_SECS);
+    matches!((first, last), (Some(first), Some(last)) if first < cutoff && last < cutoff)
+}
+
 /// Exact query behind [`open_gaps`], exposed so tests execute the shipped
 /// text against bundled SQLite. Only unterminated gaps leave D1 — the
 /// record pass discards closed ones, so fetching 90 days of closed history
@@ -421,12 +440,13 @@ fn stagger_offset(id: &str, every_secs: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_for, cap_len, close_gap_sql, daily_upsert_sql, day_start, first_value, form_encode,
-        gap_why_update, hook_budget, hook_host, is_due, muted_set, open_gaps_sql, plan_alert,
-        plan_deliveries, plan_due, probe_wave, prune_daily_sql, prune_due, prune_gaps_sql,
-        prune_region_daily_sql, prune_samples_sql, region_daily_upsert_sql, region_upsert_sql,
-        sample_due, schema_current, stagger_offset, state_keys, wave_bounds, why_gap_sql, Due,
-        MAX_HOOK_DELIVERIES, SUBREQUEST_CEILING, SUBREQUEST_OVERHEAD,
+        alert_for, cap_len, close_gap_sql, daily_upsert_sql, day_start, first_stamp_is_stale,
+        first_value, form_encode, gap_why_update, hook_budget, hook_host, is_due, muted_set,
+        open_gaps_sql, plan_alert, plan_deliveries, plan_due, probe_wave, prune_daily_sql,
+        prune_due, prune_gaps_sql, prune_region_daily_sql, prune_samples_sql,
+        region_daily_upsert_sql, region_upsert_sql, sample_due, schema_current, stagger_offset,
+        state_keys, wave_bounds, why_gap_sql, Due, MAX_HOOK_DELIVERIES, SUBREQUEST_CEILING,
+        SUBREQUEST_OVERHEAD,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
@@ -1028,6 +1048,29 @@ mod tests {
     fn first_value_prefers_earliest_sample() {
         assert_eq!(first_value(Some(&1_000), 2_000), 1_000);
         assert_eq!(first_value(None, 2_000), 2_000);
+    }
+
+    #[test]
+    fn stale_first_stamp_resets_only_after_a_retention_gap() {
+        let now = 100 * 86_400;
+        let cutoff = now - crate::db::RETENTION_SECS;
+        // Both stamps predate retention: all samples were pruned, so the
+        // reused id must start a fresh history at the next probe.
+        assert!(first_stamp_is_stale(
+            Some(cutoff - 1),
+            Some(cutoff - 1),
+            now
+        ));
+        // A recent last probe means retained samples still justify the
+        // old first-seen stamp.
+        assert!(!first_stamp_is_stale(
+            Some(cutoff - 1),
+            Some(cutoff + 1),
+            now
+        ));
+        // Missing state is not enough evidence to rewrite the stamp.
+        assert!(!first_stamp_is_stale(None, Some(cutoff - 1), now));
+        assert!(!first_stamp_is_stale(Some(cutoff - 1), None, now));
     }
 
     #[test]
