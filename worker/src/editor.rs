@@ -28,6 +28,10 @@ fn same_origin(origin: Option<&str>, sec_fetch_site: Option<&str>, url: &url::Ur
         }
     }
     match origin {
+        // `Referrer-Policy: no-referrer` makes browsers send
+        // `Origin: null` on same-origin form POSTs. Trust it only when
+        // Fetch Metadata confirms the request is not cross-site.
+        Some("null") => sec_fetch_site.is_some_and(|site| site == "same-origin" || site == "none"),
         None => true,
         Some(origin) => url::Url::parse(origin).is_ok_and(|parsed| {
             parsed.scheme() == url.scheme()
@@ -312,7 +316,15 @@ mod security_tests {
             &url()
         ));
         assert!(same_origin(None, Some("none"), &url()));
+        // `Referrer-Policy: no-referrer` serializes a same-origin form
+        // POST's Origin as `null`; Fetch Metadata disambiguates it.
+        assert!(same_origin(Some("null"), Some("same-origin"), &url()));
+        assert!(same_origin(Some("null"), Some("none"), &url()));
         // Cross-site and sibling-origin posts are CSRF attempts.
+        assert!(!same_origin(Some("null"), Some("cross-site"), &url()));
+        assert!(!same_origin(Some("null"), Some("same-site"), &url()));
+        // Without Fetch Metadata a null Origin cannot be trusted.
+        assert!(!same_origin(Some("null"), None, &url()));
         assert!(!same_origin(None, Some("cross-site"), &url()));
         assert!(!same_origin(None, Some("same-site"), &url()));
         assert!(!same_origin(Some("https://evil.example"), None, &url()));
