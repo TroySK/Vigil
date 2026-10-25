@@ -27,12 +27,12 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
   from escaped origins.
 - The site config refuses sub-5-minute uptime cadences and documents that secrets
   pasted into headers end up in D1 (readable by anyone with DB access).
-- The config editor (`EDITOR=true`) is token-gated: `EDITOR_TOKEN` must
-  be a 16+ character worker secret, requests without it are rejected,
-  saves must carry same-origin metadata, bodies are capped at 1 MiB, and
-  every editor response is `no-store` + `noindex`. A missing/short token
-  disables the editor entirely (fail closed). Remove the flag and
-  redeploy immediately after saving.
+- The config editor (`EDITOR=true`) is gated by that flag alone: while
+  editor mode is on, `/editor` is unauthenticated and anyone who can
+  reach it can replace the config. Saves must carry same-origin
+  metadata, bodies are capped at 1 MiB, and every editor response is
+  `no-store` + `noindex`. Remove the flag and redeploy immediately after
+  saving.
 - Basic auth fails closed: a configured gate with a missing/empty
   `pass`/`pass_env` secret denies every request instead of accepting
   `user:` as credentials. Config validation also rejects empty users,
@@ -88,4 +88,4 @@ Cloudflare Workers + D1. Config authors are trusted; visitors are not.
   Remove or self-host them for privacy-sensitive deployments.
 - `serde_yaml 0.9` is unmaintained (no current advisory); CI runs
   `cargo audit`, and migrating to a maintained parser is a follow-up.
-  The editor still parses untrusted YAML, so keep its token and size cap.
+  The editor still parses untrusted YAML, so keep its size cap.

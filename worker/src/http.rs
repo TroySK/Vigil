@@ -64,7 +64,7 @@ async fn route(
 ) -> Result<(Response, bool)> {
     // Brand assets stay public so browsers can fetch the tab icon, the
     // header logo, and the shared stylesheet/script without credentials
-    // (pages link them, including the token-gated editor). The validator
+    // (pages link them, including the editor). The validator
     // lets a revalidating cache skip the body after a deploy.
     let if_none_match = req.headers().get("if-none-match").ok().flatten();
     match url.path() {
@@ -76,23 +76,19 @@ async fn route(
     }
     let db = Db::of(&env)?;
     if editor {
-        // Editor mode: the status site is offline. The editor requires
-        // EDITOR_TOKEN; a missing/short token denies every request rather
-        // than exposing the config. Saves additionally require
-        // same-origin browser metadata (see editor::authorized).
+        // Editor mode: the status site is offline. Access is gated by the
+        // EDITOR flag alone; saves additionally require same-origin
+        // browser metadata (see editor::permitted).
         // Only POST /editor saves: accepting a save on every path lets a
         // stray POST (pinger, prefetch) with a YAML-shaped body overwrite
         // the site config.
-        let Some(token) = crate::editor::authorized(&req, url, &env) else {
+        if !crate::editor::permitted(&req, url) {
             return Ok((crate::editor::deny()?, false));
-        };
-        if req.method() == worker::Method::Post && url.path() == "/editor" {
-            return Ok((crate::editor::save(&mut req, &db, &token).await?, false));
         }
-        return Ok((
-            crate::editor::render(&db, None, &[], false, &token).await?,
-            false,
-        ));
+        if req.method() == worker::Method::Post && url.path() == "/editor" {
+            return Ok((crate::editor::save(&mut req, &db).await?, false));
+        }
+        return Ok((crate::editor::render(&db, None, &[], false).await?, false));
     }
     if url.path() == "/editor" {
         // The editor exists only in editor mode.

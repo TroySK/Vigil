@@ -4,47 +4,23 @@
 //! renders this page — and the cron tick skips probing. The page says so
 //! explicitly: remove `EDITOR=true` and redeploy to restore the site.
 //!
-//! The editor is protected by `EDITOR_TOKEN` (a worker secret). Set a
-//! token of at least [`MIN_TOKEN_LEN`] characters and open
-//! `/editor?token=…`; saves additionally require same-origin browser
-//! metadata so a cross-site form cannot overwrite the config. If the
-//! token is missing or too short, editor mode denies every request
-//! (fail closed) instead of exposing the config.
+//! Editor access is gated by `EDITOR=true` alone: while it is set,
+//! anyone who can reach `/editor` can read and replace the site config.
+//! Saves additionally require same-origin browser metadata so a
+//! cross-site form cannot overwrite the config. Keep the window short.
 
-use crate::auth::{constant_time_eq, esc};
+use crate::auth::esc;
 use crate::db::Db;
 use crate::page::shell;
-use worker::{Env, Request, Response, ResponseBody, Result};
+use worker::{Request, Response, ResponseBody, Result};
 
 /// Maximum accepted editor body (config YAML). Large enough for any real
 /// config, small enough that a stray upload cannot exhaust the isolate.
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
-/// Minimum `EDITOR_TOKEN` length. Shorter tokens are rejected outright.
-pub const MIN_TOKEN_LEN: usize = 16;
-
-/// Read the editor token from the environment. Missing, empty, or short
-/// values yield `None`, which disables the editor (fail closed).
-pub fn token_from(env: &Env) -> Option<String> {
-    env.var("EDITOR_TOKEN")
-        .ok()
-        .map(|value| value.to_string())
-        .filter(|token| valid_token(token))
-}
-
-/// `true` when a configured token is long enough to be meaningful.
-fn valid_token(token: &str) -> bool {
-    token.len() >= MIN_TOKEN_LEN
-}
-
-/// Constant-time token comparison; missing input never matches.
-fn token_matches(provided: Option<&str>, expected: &str) -> bool {
-    provided.is_some_and(|token| constant_time_eq(token.as_bytes(), expected.as_bytes()))
-}
-
 /// `true` when the request's browser metadata permits a state change.
-/// Requests without metadata (curl) pass once the token matches; a
-/// present `Origin`/`Sec-Fetch-Site` must agree with this origin.
+/// Requests without metadata (curl) pass; a present
+/// `Origin`/`Sec-Fetch-Site` must agree with this origin.
 fn same_origin(origin: Option<&str>, sec_fetch_site: Option<&str>, url: &url::Url) -> bool {
     if let Some(site) = sec_fetch_site {
         if site != "same-origin" && site != "none" {
@@ -66,32 +42,16 @@ fn too_large(len: usize) -> bool {
     len > MAX_BODY_BYTES
 }
 
-/// Build the form action, keeping the token in the query string so a
-/// POST from the rendered page authenticates without another field.
-fn editor_action(token: &str) -> String {
-    let encoded: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
-    format!("/editor?token={encoded}")
-}
-
-/// Authorize an editor request, returning the token for re-rendering.
-/// `None` means deny (missing/short env token, wrong token, or a
-/// cross-origin POST).
-pub fn authorized(req: &Request, url: &url::Url, env: &Env) -> Option<String> {
-    let expected = token_from(env)?;
-    let provided = query_param(url, "token").or_else(|| bearer_token(req));
-    if !token_matches(provided.as_deref(), &expected) {
-        return None;
-    }
-    if req.method() == worker::Method::Post
-        && !same_origin(
+/// `true` when an editor request may proceed. Reads always may; a POST
+/// must carry same-origin browser metadata so a cross-site form cannot
+/// overwrite the config.
+pub fn permitted(req: &Request, url: &url::Url) -> bool {
+    req.method() != worker::Method::Post
+        || same_origin(
             header(req, "origin").as_deref(),
             header(req, "sec-fetch-site").as_deref(),
             url,
         )
-    {
-        return None;
-    }
-    Some(expected)
 }
 
 /// One request header, header absence, or malformed headers as `None`.
@@ -99,31 +59,13 @@ fn header(req: &Request, name: &str) -> Option<String> {
     req.headers().get(name).ok().flatten()
 }
 
-/// `Authorization: Bearer …` for non-browser clients.
-fn bearer_token(req: &Request) -> Option<String> {
-    header(req, "authorization").and_then(|value| {
-        value
-            .strip_prefix("Bearer ")
-            .map(str::to_owned)
-            .filter(|token| !token.is_empty())
-    })
-}
-
-/// One query parameter value (first match), percent-decoded by `url`.
-fn query_param(url: &url::Url, name: &str) -> Option<String> {
-    url.query_pairs()
-        .find(|(key, _)| key == name)
-        .map(|(_, value)| value.into_owned())
-}
-
-/// 401 challenge for missing/invalid editor credentials.
+/// 403 for a cross-origin editor submission.
 pub fn deny() -> Result<Response> {
     Ok(Response::builder()
-        .with_status(401)
-        .with_header("www-authenticate", "Bearer realm=\"editor\"")?
+        .with_status(403)
         .with_header("cache-control", "no-store")?
         .with_header("x-robots-tag", "noindex, nofollow")?
-        .body(ResponseBody::Body(b"editor token required".to_vec())))
+        .body(ResponseBody::Body(b"cross-origin editor request".to_vec())))
 }
 
 /// 413 for oversized editor submissions.
@@ -141,7 +83,6 @@ pub async fn render(
     current: Option<&str>,
     errors: &[String],
     saved: bool,
-    token: &str,
 ) -> Result<Response> {
     let stored = match current {
         Some(text) => Some(text.to_owned()),
@@ -170,20 +111,18 @@ pub async fn render(
          Paste your <code>site.yaml</code> below, save, then <b>remove \
          <code>EDITOR=true</code> and redeploy</b> so the app works again. \
          See <code>config/site.example.yaml</code> for the field reference.</div>\
-         <div class=\"note\">This editor requires the <code>EDITOR_TOKEN</code> worker \
-         secret. Requests without the token in the URL (or a \
-         <code>Bearer</code> header) are rejected, and saves must come from this \
-         origin. Keep the window short and redeploy without \
-         <code>EDITOR</code> as soon as you have saved.</div>\
+         <div class=\"note\">This editor is unauthenticated while \
+         <code>EDITOR=true</code> is set: anyone who can reach this page can replace \
+         the site config. Saves must come from this origin. Keep the window short \
+         and redeploy without <code>EDITOR</code> as soon as you have saved.</div>\
          {notices}\
          <h2 class=group>Site config (YAML)</h2>\
-         <form method=post action=\"{}\">\
+         <form method=post action=\"/editor\">\
          <label class=sr-only for=ed-yaml>Site YAML</label>\
          <textarea id=ed-yaml name=yaml rows=32 cols=80 style=\"width:100%;font-family:monospace\" \
          spellcheck=false>{}</textarea>\
          <p><button class=det type=submit>Save config</button></p>\
          </form>",
-        editor_action(token),
         esc(&value),
     );
     let links = String::new();
@@ -206,7 +145,7 @@ pub async fn render(
 
 /// Save handler for `POST /editor`: validate first, persist only when the
 /// YAML parses and passes [`vigil_core::config::Site::check`].
-pub async fn save(req: &mut Request, db: &Db, token: &str) -> Result<Response> {
+pub async fn save(req: &mut Request, db: &Db) -> Result<Response> {
     if header(req, "content-length")
         .and_then(|value| value.parse::<usize>().ok())
         .is_some_and(too_large)
@@ -225,9 +164,9 @@ pub async fn save(req: &mut Request, db: &Db, token: &str) -> Result<Response> {
             // Drop this isolate's cached raw/parsed config so the saved
             // bytes are used immediately if editor mode is still serving.
             crate::site_store::invalidate();
-            render(db, Some(&yaml), &[], true, token).await
+            render(db, Some(&yaml), &[], true).await
         }
-        Err(errors) => render(db, Some(&yaml), &errors, false, token).await,
+        Err(errors) => render(db, Some(&yaml), &errors, false).await,
     }
 }
 
@@ -356,30 +295,15 @@ mod tests {
 
 #[cfg(test)]
 mod security_tests {
-    use super::{
-        editor_action, same_origin, token_matches, too_large, valid_token, MAX_BODY_BYTES,
-    };
+    use super::{same_origin, too_large, MAX_BODY_BYTES};
 
     fn url() -> url::Url {
-        url::Url::parse("https://status.example/editor?token=x").unwrap()
-    }
-
-    #[test]
-    fn editor_token_must_be_long_and_exact() {
-        let token = "0123456789abcdef";
-        assert!(valid_token(token));
-        assert!(!valid_token("short"));
-        assert!(!valid_token(""));
-        assert!(token_matches(Some(token), token));
-        assert!(!token_matches(None, token));
-        assert!(!token_matches(Some(""), token));
-        assert!(!token_matches(Some("0123456789abcdeF"), token));
-        assert!(!token_matches(Some("0123456789abcdef "), token));
+        url::Url::parse("https://status.example/editor").unwrap()
     }
 
     #[test]
     fn editor_saves_require_a_same_origin_request() {
-        // No browser metadata (curl) is allowed once the token matches.
+        // No browser metadata (curl) is allowed.
         assert!(same_origin(None, None, &url()));
         // Same-origin form posts and direct navigations.
         assert!(same_origin(
@@ -399,18 +323,6 @@ mod security_tests {
             &url()
         ));
         assert!(!same_origin(Some("not a url"), None, &url()));
-    }
-
-    #[test]
-    fn editor_actions_keep_the_token_in_the_query() {
-        assert_eq!(
-            editor_action("0123456789abcdef"),
-            "/editor?token=0123456789abcdef"
-        );
-        assert_eq!(
-            editor_action("0123456789abc&def"),
-            "/editor?token=0123456789abc%26def"
-        );
     }
 
     #[test]
