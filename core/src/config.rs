@@ -70,9 +70,10 @@ pub const DEFAULT_SAMPLE_MIN: u64 = 60;
 /// the probe cadence so the page reloads on fresh uptime data without
 /// burning D1 reads between ticks.
 pub const DEFAULT_REFRESH_SECS: u64 = 300;
-/// Floor for a configured page refresh. Sub-minute polling multiplies
-/// health reads per open tab for no visible gain; `0` still disables.
-pub const MIN_REFRESH_SECS: u64 = 30;
+/// Floor for a configured page refresh. Polling faster than the 5-minute
+/// probe cadence cannot show new uptime data and multiplies health reads
+/// per open tab; `0` still disables polling.
+pub const MIN_REFRESH_SECS: u64 = 300;
 
 impl Site {
     /// Uptime-probe cadence for a monitor in minutes: its own

@@ -108,7 +108,7 @@ Config rules (same YAML shape as before):
   aren't due — first sightings spread across the interval so a fleet never
   synchronizes onto one tick.
 - `refresh_secs`: page auto-refresh interval in seconds (default 300;
-  values below 30 are raised to 30, and `0` disables polling). Pages poll
+  values below 300 are raised to 300, and `0` disables polling). Pages poll
   on this interval and reload when a tick probed new data, so status,
   history bars, and charts refresh together. Idle ticks cost one cheap
   health check instead of a full render.

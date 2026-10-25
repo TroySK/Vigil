@@ -163,7 +163,7 @@ fn cadence_fields_parse_and_clamp_to_uptime() {
         r"
 check_every_min: 15
 sample_every_min: 120
-refresh_secs: 45
+refresh_secs: 600
 monitors:
   - id: m
     name: M
@@ -179,8 +179,8 @@ monitors:
     .expect("cadence config parses");
     assert_eq!(site.check_every_min, 15);
     assert_eq!(site.sample_every_min, 120);
-    assert_eq!(site.refresh_secs, Some(45));
-    assert_eq!(site.refresh_ms(), 45_000);
+    assert_eq!(site.refresh_secs, Some(600));
+    assert_eq!(site.refresh_ms(), 600_000);
 
     let monitor = &site.monitors[0];
     assert_eq!(monitor.every_min, Some(30));

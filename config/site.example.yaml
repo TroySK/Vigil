@@ -33,7 +33,8 @@
 #           probes run for uptime, but `samples` rows for charts write at
 #           most once per hour to hold D1 rows down)
 #   refresh_secs  page auto-refresh interval in seconds (default: 300;
-#           0 disables polling entirely). Pages poll on this interval but
+#           values below 300 are raised to 300; 0 disables polling
+#           entirely). Pages poll on this interval but
 #           reload only when a tick probed new data, so idle ticks cost a
 #           cheap health check instead of a full render.
 #   monitors  list of monitors (see below)

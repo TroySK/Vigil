@@ -291,12 +291,13 @@ fn refresh_interval_defaults_and_disables() {
     };
     assert_eq!(off.refresh_ms(), 0);
     let custom = Site {
-        refresh_secs: Some(45),
+        refresh_secs: Some(600),
         ..Site::default()
     };
-    assert_eq!(custom.refresh_ms(), 45_000);
-    // A one-second poll would issue 86,400 health reads a day per tab.
-    for secs in [1, 5, 29, 30] {
+    assert_eq!(custom.refresh_ms(), 600_000);
+    // Polling faster than the probe cadence cannot show new uptime data,
+    // so every non-zero value below 5 minutes clamps to the floor.
+    for secs in [1, 5, 29, 30, 45, 299] {
         let floored = Site {
             refresh_secs: Some(secs),
             ..Site::default()
