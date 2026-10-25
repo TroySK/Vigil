@@ -64,9 +64,17 @@ pub async fn latest(db: &Db, id: &str) -> Result<Option<SampleOut>> {
     Ok(rows.into_iter().next())
 }
 
-/// Recent samples for a monitor, newest first.
+/// Exact query behind [`series`], exposed so tests execute the shipped
+/// text against bundled SQLite. `?1` monitor id, `?2` row limit.
+fn series_sql() -> &'static str {
+    "SELECT at, ms, up, place FROM samples WHERE id = ?1 AND up = 1 ORDER BY at DESC LIMIT ?2"
+}
+
+/// Recent successful samples for a monitor, newest first. Failed probes
+/// record time-to-failure, not latency, so chart and percentile reads
+/// leave them out.
 pub async fn series(db: &Db, id: &str, limit: i64) -> Result<Vec<SampleOut>> {
-    db.q("SELECT at, ms, up, place FROM samples WHERE id = ?1 ORDER BY at DESC LIMIT ?2")
+    db.q(series_sql())
         .bind(&[id.into(), num(limit.max(1))])?
         .all()
         .await?
@@ -392,7 +400,7 @@ fn uptime_from_downs(open: bool, downs: [i64; 3], windows: [i64; 3]) -> Uptime {
 /// `max_points` points over the full window, newest included.
 fn series_window_sql(n: usize) -> String {
     format!(
-        "SELECT id, at, ms, up, place FROM (SELECT id, at, ms, up, place, ROW_NUMBER() OVER (PARTITION BY id ORDER BY at DESC) AS rn, COUNT(*) OVER (PARTITION BY id) AS cnt FROM samples WHERE id IN ({}) AND at >= ?{}) WHERE (rn - 1) % ((cnt + ?{}) / ?{}) = 0 ORDER BY id ASC, at DESC",
+        "SELECT id, at, ms, up, place FROM (SELECT id, at, ms, up, place, ROW_NUMBER() OVER (PARTITION BY id ORDER BY at DESC) AS rn, COUNT(*) OVER (PARTITION BY id) AS cnt FROM samples WHERE id IN ({}) AND at >= ?{} AND up = 1) WHERE (rn - 1) % ((cnt + ?{}) / ?{}) = 0 ORDER BY id ASC, at DESC",
         placeholders(n),
         n + 1,
         n + 2,
@@ -400,9 +408,9 @@ fn series_window_sql(n: usize) -> String {
     )
 }
 
-/// Up to `max_points` samples per monitor inside `[cutoff, +inf)`, keyed
-/// by id, newest first. One window-function query replaces a round trip
-/// per monitor.
+/// Up to `max_points` successful samples per monitor inside `[cutoff,
+/// +inf)`, keyed by id, newest first. One window-function query replaces a
+/// round trip per monitor.
 pub async fn series_by_monitor(
     db: &Db,
     ids: &[&str],
@@ -454,16 +462,16 @@ pub const ROLLUP_MIN_DAYS: i64 = 30;
 /// in Rust, so there is no window-function sort over raw samples.
 fn daily_series_sql(n: usize) -> String {
     format!(
-        "SELECT id, at, ms, up, place FROM monitor_daily WHERE id IN ({}) AND day >= ?{} ORDER BY id ASC, day DESC",
+        "SELECT id, at, ms, up, place FROM monitor_daily WHERE id IN ({}) AND day >= ?{} AND up = 1 ORDER BY id ASC, day DESC",
         placeholders(n),
         n + 1,
     )
 }
 
-/// Up to `max_points` daily rollup samples per monitor inside `[cutoff,
-/// +inf)`, keyed by id, newest first. Reads one row per monitor per day
-/// (90 rows at the retention edge) instead of every raw sample in the
-/// range, then strides in memory.
+/// Up to `max_points` successful daily rollup samples per monitor inside
+/// `[cutoff, +inf)`, keyed by id, newest first. Reads one row per monitor
+/// per day (90 rows at the retention edge) instead of every raw sample in
+/// the range, then strides in memory.
 pub async fn daily_series_by_monitor(
     db: &Db,
     ids: &[&str],
@@ -522,12 +530,12 @@ fn stride_points(points: Vec<SampleOut>, max_points: i64) -> Vec<SampleOut> {
 /// shipped text. `?1` monitor id, `?2` cutoff day. Bounded by retention
 /// days x origins instead of raw samples.
 fn region_daily_sql() -> &'static str {
-    "SELECT at, ms, up, place FROM region_daily WHERE id = ?1 AND day >= ?2 ORDER BY at DESC"
+    "SELECT at, ms, up, place FROM region_daily WHERE id = ?1 AND day >= ?2 AND up = 1 ORDER BY at DESC"
 }
 
-/// Per-origin samples from the daily rollup, newest first. Long-range
-/// regional sparklines use this instead of striding raw samples globally
-/// (which could drop an entire origin).
+/// Per-origin successful samples from the daily rollup, newest first.
+/// Long-range regional sparklines use this instead of striding raw samples
+/// globally (which could drop an entire origin).
 pub async fn region_daily_by_monitor(db: &Db, id: &str, cutoff: i64) -> Result<Vec<SampleOut>> {
     let cutoff_day = cutoff - cutoff.rem_euclid(vigil_core::rollup::SECS_PER_DAY);
     db.q(region_daily_sql())
@@ -581,14 +589,14 @@ pub async fn clock(db: &Db) -> Result<(i64, Option<String>, i64)> {
 /// `rn % stride = 1` matches nothing when stride is 1 and once emptied
 /// every short-range chart in production.)
 fn series_ranged_sql() -> &'static str {
-    "SELECT at, ms, up, place FROM (SELECT at, ms, up, place, ROW_NUMBER() OVER (ORDER BY at DESC) AS rn, COUNT(*) OVER () AS cnt FROM samples WHERE id = ?1 AND at >= ?2) WHERE (rn - 1) % ((cnt + ?3) / ?4) = 0 ORDER BY at DESC LIMIT ?4"
+    "SELECT at, ms, up, place FROM (SELECT at, ms, up, place, ROW_NUMBER() OVER (ORDER BY at DESC) AS rn, COUNT(*) OVER () AS cnt FROM samples WHERE id = ?1 AND at >= ?2 AND up = 1) WHERE (rn - 1) % ((cnt + ?3) / ?4) = 0 ORDER BY at DESC LIMIT ?4"
 }
 
-/// Samples inside `[cutoff, +inf)` spread over at most `max_points` chart
-/// points, newest first, from a single D1 round trip. Short ranges keep
-/// every sample; long ranges (where cadence × span reaches tens of
-/// thousands of rows) take every Nth row by recency rank, so the chart
-/// always spans the full window honestly.
+/// Successful samples inside `[cutoff, +inf)` spread over at most
+/// `max_points` chart points, newest first, from a single D1 round trip.
+/// Short ranges keep every successful sample; long ranges (where cadence ×
+/// span reaches tens of thousands of rows) take every Nth row by recency
+/// rank, so the chart always spans the full window honestly.
 pub async fn series_ranged(
     db: &Db,
     id: &str,
@@ -645,8 +653,8 @@ mod tests {
     use super::{
         daily_series_sql, data_at_of, effective_since, gaps_window_sql, latest_sql,
         recent_gaps_window_sql, region_daily_sql, region_latest_lookup_sql, region_latest_scan_sql,
-        series_ranged_sql, series_window_sql, stride_points, uptime_from_downs, uptime_sql,
-        SampleOut,
+        series_ranged_sql, series_sql, series_window_sql, stride_points, uptime_from_downs,
+        uptime_sql, SampleOut,
     };
     use rusqlite::types::Value;
     use rusqlite::{params, params_from_iter};
@@ -1166,6 +1174,102 @@ mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap()
+    }
+
+    fn col1(conn: &rusqlite::Connection, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Vec<i64> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        stmt.query_map(args, |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    fn latency_tables() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);
+             CREATE TABLE monitor_daily (id TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL, PRIMARY KEY (id, day));
+             CREATE TABLE region_daily (id TEXT NOT NULL, place TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place, day));",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn latency_reads_ignore_failed_probes() {
+        let conn = latency_tables();
+        // m has a successful sample followed by a newer failed probe; n has
+        // only a successful sample.
+        for (id, at, ms, up, place) in [
+            ("m", 10, 10, 1, "SIN"),
+            ("m", 20, 20, 0, "SIN"),
+            ("n", 30, 30, 1, "BOM"),
+        ] {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, f64::from(at), f64::from(ms), f64::from(up), place],
+            )
+            .unwrap();
+        }
+        // m's day is a pre-0007 down row (hidden); n's day is successful.
+        conn.execute(
+            "INSERT INTO monitor_daily VALUES ('m', 0, 20, 20, 0, 'SIN')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO monitor_daily VALUES ('n', 0, 30, 30, 1, 'BOM')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO region_daily VALUES ('m', 'SIN', 0, 20, 20, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO region_daily VALUES ('m', 'BOM', 0, 10, 10, 1)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(col0(&conn, series_sql(), &[&"m", &10.0]), vec![10]);
+        assert_eq!(
+            col0(&conn, series_ranged_sql(), &[&"m", &0.0, &299.0, &300.0]),
+            vec![10]
+        );
+        assert_eq!(
+            col1(
+                &conn,
+                &series_window_sql(2),
+                &[&"m", &"n", &0.0, &29.0, &30.0]
+            ),
+            vec![10, 30]
+        );
+        // Daily reads: m's down-only rollup disappears, n's success stays.
+        assert_eq!(
+            col1(&conn, &daily_series_sql(2), &[&"m", &"n", &0.0]),
+            vec![30]
+        );
+        // Regional reads: the failed SIN row disappears, BOM's success stays.
+        assert_eq!(col0(&conn, region_daily_sql(), &[&"m", &0.0]), vec![10]);
+    }
+
+    #[test]
+    fn down_only_ranges_return_no_chart_points() {
+        let conn = latency_tables();
+        for sql in [
+            "INSERT INTO samples VALUES ('m', 10, 418, 0, 'SIN')",
+            "INSERT INTO monitor_daily VALUES ('m', 0, 10, 418, 0, 'SIN')",
+            "INSERT INTO region_daily VALUES ('m', 'SIN', 0, 10, 418, 0)",
+        ] {
+            conn.execute(sql, []).unwrap();
+        }
+        assert!(col0(&conn, series_sql(), &[&"m", &10.0]).is_empty());
+        assert!(col0(&conn, series_ranged_sql(), &[&"m", &0.0, &299.0, &300.0]).is_empty());
+        assert!(col1(&conn, &series_window_sql(1), &[&"m", &0.0, &29.0, &30.0]).is_empty());
+        assert!(col1(&conn, &daily_series_sql(1), &[&"m", &0.0]).is_empty());
+        assert!(col0(&conn, region_daily_sql(), &[&"m", &0.0]).is_empty());
     }
 
     #[test]

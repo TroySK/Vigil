@@ -30,7 +30,9 @@ pub const RETENTION_SECS: i64 = 90 * 86_400;
 /// DDL; the tick only covers fresh/manual databases).
 pub const SCHEMA_VERSION: &str = "5";
 
-/// DDL and one-time backfill for a fresh/manual database. Kept as a
+/// DDL and one-time backfill for a fresh/manual database. Latency rollups
+/// keep successful samples only; `region_latest` keeps the newest probe
+/// (including failures) because it drives current status. Kept as a
 /// constant so tests execute the exact SQL the tick runs (D1 has caught
 /// dialect differences that bundled SQLite accepts).
 pub const INIT_SQL: &str = "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);\
@@ -43,10 +45,11 @@ pub const INIT_SQL: &str = "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v
                  CREATE INDEX IF NOT EXISTS idx_gaps_upto ON gaps (upto);\
                  CREATE INDEX IF NOT EXISTS idx_gaps_open ON gaps (id, upto, at DESC);\
                  CREATE TABLE IF NOT EXISTS monitor_daily (id TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL, PRIMARY KEY (id, day));\
+                 INSERT OR REPLACE INTO monitor_daily (id, day, at, ms, up, place) SELECT id, (at / 86400) * 86400 AS day, MAX(at), ms, up, place FROM samples WHERE up = 1 GROUP BY id, day;\
                  CREATE TABLE IF NOT EXISTS region_latest (id TEXT NOT NULL, place TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place));\
                  INSERT OR REPLACE INTO region_latest (id, place, at, ms, up) SELECT id, place, MAX(at), ms, up FROM samples GROUP BY id, place;\
                  CREATE TABLE IF NOT EXISTS region_daily (id TEXT NOT NULL, place TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place, day));\
-                 INSERT OR REPLACE INTO region_daily (id, place, day, at, ms, up) SELECT id, place, (at / 86400) * 86400 AS day, MAX(at), ms, up FROM samples GROUP BY id, place, day;";
+                 INSERT OR REPLACE INTO region_daily (id, place, day, at, ms, up) SELECT id, place, (at / 86400) * 86400 AS day, MAX(at), ms, up FROM samples WHERE up = 1 GROUP BY id, place, day;";
 
 /// Bind an integer to D1 as a JS `Number`.
 ///
@@ -422,5 +425,115 @@ mod tests {
             rows,
             vec![("m1".to_owned(), 0, 30, 30), ("m2".to_owned(), 0, 40, 40),]
         );
+    }
+
+    #[test]
+    fn successful_rollup_migration_rebuilds_after_failed_days() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);",
+        )
+        .unwrap();
+        // m1's newest day-0 probe failed at 20 and must not mask its 10ms
+        // success; its whole next day failed and must disappear.
+        for (id, at, ms, up, place) in [
+            ("m1", 10, 10, 1, "SIN"),
+            ("m1", 20, 20, 0, "SIN"),
+            ("m1", 86_410, 30, 0, "SIN"),
+            ("m2", 12, 12, 1, "BOM"),
+        ] {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id, f64::from(at), f64::from(ms), f64::from(up), place],
+            )
+            .unwrap();
+        }
+        // Apply the old rollups first, then the rebuild migration.
+        conn.execute_batch(include_str!("../migrations/0003_daily_rollup.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../migrations/0006_region_daily.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!(
+            "../migrations/0007_successful_latency_rollups.sql"
+        ))
+        .unwrap();
+        let daily: Vec<(String, i64, i64, i64)> = conn
+            .prepare("SELECT id, day, at, up FROM monitor_daily ORDER BY id, day")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            daily,
+            vec![("m1".to_owned(), 0, 10, 1), ("m2".to_owned(), 0, 12, 1),]
+        );
+        let regional: Vec<(String, String, i64, i64, i64)> = conn
+            .prepare("SELECT id, place, day, at, up FROM region_daily ORDER BY id, place, day")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            regional,
+            vec![
+                ("m1".to_owned(), "SIN".to_owned(), 0, 10, 1),
+                ("m2".to_owned(), "BOM".to_owned(), 0, 12, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn init_sql_backfills_only_successful_latency_rollups() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE samples (id TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL);",
+        )
+        .unwrap();
+        for (at, ms, up) in [(10, 10, 1), (20, 20, 0), (86_410, 30, 0)] {
+            conn.execute(
+                "INSERT INTO samples VALUES ('m1', ?1, ?2, ?3, 'SIN')",
+                rusqlite::params![f64::from(at), f64::from(ms), f64::from(up)],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(INIT_SQL).unwrap();
+        // Status keeps the newest probe even when it failed.
+        let latest: (i64, i64) = conn
+            .query_row(
+                "SELECT at, up FROM region_latest WHERE id = 'm1' AND place = 'SIN'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(latest, (86_410, 0));
+        // Latency rollups keep the newest success and drop failed days.
+        let daily: Vec<(i64, i64)> = conn
+            .prepare("SELECT at, up FROM monitor_daily ORDER BY day")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(daily, vec![(10, 1)]);
+        let regional: Vec<(i64, i64)> = conn
+            .prepare("SELECT at, up FROM region_daily ORDER BY day")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(regional, vec![(10, 1)]);
     }
 }

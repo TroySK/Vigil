@@ -70,15 +70,10 @@ pub async fn render(
         async {
             if range.uses_rollup() {
                 Ok::<_, worker::Error>(
-                    crate::reads::daily_series_by_monitor(
-                        db,
-                        &[id],
-                        cutoff,
-                        DETAIL_LATENCY_POINTS,
-                    )
-                    .await?
-                    .remove(id)
-                    .unwrap_or_default(),
+                    crate::reads::daily_series_by_monitor(db, &[id], cutoff, DETAIL_LATENCY_POINTS)
+                        .await?
+                        .remove(id)
+                        .unwrap_or_default(),
                 )
             } else {
                 series_ranged(db, id, cutoff, DETAIL_LATENCY_POINTS).await
@@ -147,28 +142,7 @@ pub async fn render(
             strip.period
         )
     };
-    // One reverse pass builds chart points; latencies derive from them
-    // (was: two reverse passes plus a third copy inside the sort).
-    let points: Vec<(i64, i64, &str)> = lat
-        .iter()
-        .rev()
-        .map(|r| (r.at, r.ms, r.place.as_str()))
-        .collect();
-    let vals: Vec<i64> = points.iter().map(|&(_, ms, _)| ms).collect();
-    // One sort for both percentiles (was: one sort each).
-    let (p50, p95) = percentile_pair(&vals, 50.0, 95.0);
-    let spark = latency_chart(&points, 600, 150, range.hourly());
-    let spark_html = if spark.is_empty() {
-        "<p class=empty>No latency samples yet — the chart fills in after the next probe.</p>"
-            .to_owned()
-    } else {
-        format!(
-            "<span role=img aria-label=\"Latency over {} samples: P50 {}ms, P95 {}ms.\">{spark}</span>",
-            vals.len(),
-            p50,
-            p95
-        )
-    };
+    let latency = latency_panel(&lat, range.hourly(), !regions.is_empty());
     let mut rows = String::new();
     for gap in gaps
         .iter()
@@ -222,16 +196,13 @@ pub async fn render(
         <section class=detail-hero data-id=\"{id}\" aria-labelledby=detail-name><h2 id=detail-name>{logo}{}</h2>\
         {status}{notes}</section>\
         <h3 class=sect>Last {range_label}</h3><div class={bars_class} role=img aria-label=\"{bars_label}\" tabindex=0>{cells}</div>\
-        <h3 class=sect>Latency</h3><p class=tnum>P50 {p50}ms &middot; P95 {p95}ms &middot; {n} samples</p>{spark} \
+        <h3 class=sect>Latency</h3>{latency} \
         <h3 class=sect>Latency by region &middot; last {range_label}</h3><p class=tnum>Per-region latency over the last {range_label}, grouped by probe origin.</p>{geo_table} \
         <h3 class=sect>Incidents &middot; last {range_label}</h3><table class=inc><caption class=sr-only>Downtime windows for {name} over the last {range_label}</caption><thead><tr><th scope=col>From</th><th scope=col>To</th><th scope=col>Reason</th></tr></thead><tbody>{rows}</tbody></table>",
         esc(&monitor.name),
         logo = crate::page::favicon_img(origin, 24),
         status = status_line(is_up, current),
-        p50 = p50,
-        p95 = p95,
-        n = vals.len(),
-        spark = spark_html,
+        latency = latency,
         range_label = range.label,
         bars_class = strip.class,
         geo_table = geo_table,
@@ -258,6 +229,40 @@ pub async fn render(
     ))
 }
 
+/// Latency heading content: P50/P95 and the chart over successful samples
+/// only. A range with no successful probes stays blank instead of drawing
+/// failure durations as latency. `has_any_sample` distinguishes a brand-new
+/// monitor from one whose probes all failed.
+#[must_use]
+fn latency_panel(lat: &[SampleOut], hourly: bool, has_any_sample: bool) -> String {
+    // Defensive filter as well as the SQL `up = 1`: a caller that hands
+    // this raw history must still render successful latency only.
+    let points: Vec<(i64, i64, &str)> = lat
+        .iter()
+        .rev()
+        .filter(|r| r.up == 1)
+        .map(|r| (r.at, r.ms, r.place.as_str()))
+        .collect();
+    if points.is_empty() {
+        return if has_any_sample {
+            "<p class=empty>No successful latency samples in this range.</p>".to_owned()
+        } else {
+            "<p class=empty>No latency samples yet — the chart fills in after the next probe.</p>"
+                .to_owned()
+        };
+    }
+    let vals: Vec<i64> = points.iter().map(|&(_, ms, _)| ms).collect();
+    // One sort for both percentiles (was: one sort each).
+    let (p50, p95) = percentile_pair(&vals, 50.0, 95.0);
+    let spark = latency_chart(&points, 600, 150, hourly);
+    format!(
+        "<p class=tnum>P50 {p50}ms &middot; P95 {p95}ms &middot; {} samples</p>\
+         <span role=img aria-label=\"Latency over {} successful samples: P50 {p50}ms, P95 {p95}ms.\">{spark}</span>",
+        vals.len(),
+        vals.len(),
+    )
+}
+
 /// Sentence-case relative age for standalone display ("just now" →
 /// "Just now"; digit-led strings pass through). Mid-sentence uses stay
 /// lowercase via the `rel` kind; standalone cells use the `Rel` variant,
@@ -273,11 +278,13 @@ fn standalone_rel(now: i64, at: i64) -> String {
 }
 
 /// Per-region latency table: one row per probe origin (`place`) with its
-/// latest sample and a sparkline of its samples inside the selected window
-/// (`lat` is newest-first and already spans the window).
+/// latest successful sample and a sparkline of its successful samples
+/// inside the selected window (`lat` is newest-first and already spans the
+/// window).
 ///
-/// Rows sort by most recently seen region first. Regions with no samples
-/// inside the window keep their row with a placeholder instead of a chart.
+/// Rows sort by most recently seen region first. Regions with no successful
+/// samples inside the window keep their row with a placeholder instead of a
+/// chart.
 #[must_use]
 pub fn geo_latency_table(
     lat: &[SampleOut],
@@ -285,17 +292,20 @@ pub fn geo_latency_table(
     window_days: i64,
     window_label: &str,
 ) -> String {
-    if lat.is_empty() {
-        return "<p class=empty>No regional samples yet — the table fills in after the next probe.</p>"
-            .to_owned();
-    }
     let cutoff = at.max(1).saturating_sub(window_days.saturating_mul(86_400));
     let mut by_place: BTreeMap<&str, Vec<&SampleOut>> = BTreeMap::new();
-    for sample in lat {
+    // Latency by region is successful-only, like the global chart. Failed
+    // probes still drive status elsewhere, but their elapsed time is not a
+    // latency reading.
+    for sample in lat.iter().filter(|sample| sample.up == 1) {
         by_place
             .entry(sample.place.as_str())
             .or_default()
             .push(sample);
+    }
+    if by_place.is_empty() {
+        return "<p class=empty>No successful regional latency samples in this range.</p>"
+            .to_owned();
     }
     // Newest-first `lat` means each group's first entry is its latest.
     let mut groups: Vec<(&str, Vec<&SampleOut>)> = by_place.into_iter().collect();
@@ -310,7 +320,7 @@ pub fn geo_latency_table(
             .map(|s| (s.at, s.ms))
             .collect();
         let chart = if window.is_empty() {
-            format!("<span class=empty>No samples in last {window_label}</span>")
+            format!("<span class=empty>No successful samples in last {window_label}</span>")
         } else {
             sparkline_points(&window, 160, 36)
         };
@@ -352,20 +362,15 @@ fn status_line(is_up: bool, current: Option<&SampleOut>) -> String {
 fn last_probe_label(current: Option<&SampleOut>) -> String {
     current.map_or_else(
         || "No probes yet".to_owned(),
-        |sample| {
-            format!(
-                "{}ms last probe &middot; {}",
-                sample.ms,
-                esc(&sample.place)
-            )
-        },
+        |sample| format!("{}ms last probe &middot; {}", sample.ms, esc(&sample.place)),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        gap_in_range, geo_latency_table, last_probe_label, standalone_rel, status_line,
+        gap_in_range, geo_latency_table, last_probe_label, latency_panel, standalone_rel,
+        status_line,
     };
     use crate::reads::SampleOut;
 
@@ -385,6 +390,34 @@ mod tests {
             up: 1,
             place: place.into(),
         }
+    }
+
+    fn failed(at: i64, ms: i64, place: &str) -> SampleOut {
+        SampleOut {
+            at,
+            ms,
+            up: 0,
+            place: place.into(),
+        }
+    }
+
+    #[test]
+    fn latency_panel_is_blank_without_successful_samples() {
+        let html = latency_panel(&[failed(2_000, 418, "BOM")], true, true);
+        assert!(html.contains("No successful latency samples in this range"));
+        assert!(!html.contains("<svg"));
+        assert!(!html.contains("P50"));
+        let fresh = latency_panel(&[], true, false);
+        assert!(fresh.contains("No latency samples yet"));
+    }
+
+    #[test]
+    fn latency_panel_uses_successful_samples_only() {
+        let lat = [placed(1_000, 50, "SIN"), failed(2_000, 418, "BOM")];
+        let html = latency_panel(&lat, true, true);
+        assert!(html.contains("P50 50ms"));
+        assert!(html.contains("1 samples"));
+        assert!(!html.contains("418"));
     }
 
     #[test]
@@ -449,19 +482,31 @@ mod tests {
     fn geo_table_keeps_only_window_samples_in_charts() {
         let at = 10 * 86_400;
         let cutoff = at - 7 * 86_400;
-        let lat = vec![
-            placed(at, 100, "BOM"),
-            placed(cutoff - 1, 999, "OLD"),
-        ];
+        let lat = vec![placed(at, 100, "BOM"), placed(cutoff - 1, 999, "OLD")];
         let html = geo_latency_table(&lat, at, 7, "7 days");
         // OLD's only sample falls outside the window: row stays, chart does not.
         assert!(html.contains("OLD"));
-        assert!(html.contains("No samples in last 7 days"));
+        assert!(html.contains("No successful samples in last 7 days"));
     }
 
     #[test]
     fn geo_table_empty_without_samples() {
-        assert!(geo_latency_table(&[], 1_000, 7, "7 days").contains("No regional samples yet"));
+        assert!(geo_latency_table(&[], 1_000, 7, "7 days")
+            .contains("No successful regional latency samples"));
+    }
+
+    #[test]
+    fn geo_table_ignores_failed_samples() {
+        let lat = [
+            placed(1_900, 120, "BOM"),
+            failed(2_000, 418, "BOM"),
+            failed(1_950, 999, "SIN"),
+        ];
+        let html = geo_latency_table(&lat, 2_000, 7, "7 days");
+        assert!(html.contains("BOM"));
+        assert!(html.contains("120ms"));
+        assert!(!html.contains("418ms"));
+        assert!(!html.contains("SIN"), "down-only region must not chart");
     }
 
     #[test]

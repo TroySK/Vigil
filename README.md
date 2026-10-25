@@ -257,9 +257,10 @@ if you want required reviewers before a deploy):
 - `/api/health` — JSON aggregate: up/down counts plus per-monitor status
   and day/week/month uptime percentages.
 - `/api/badge?id=<id>` (or without `id` for the whole site) — SVG shield.
-- `/api/history?id=<id>` — raw latency samples for charts.
+- `/api/history?id=<id>` — successful latency samples for charts.
 - `/api/incidents?id=<id>&limit=<n>` — recent downtime windows.
-- `/api/latency?id=<id>` — latency percentiles plus raw samples.
+- `/api/latency?id=<id>` — latency percentiles over successful samples,
+  plus those samples.
   History/incidents/latency require a currently configured id (404 for
   missing or removed monitors). Unknown or duplicated query parameters,
   and unknown `?range=` values, are rejected with 400 so arbitrary URLs
@@ -291,6 +292,11 @@ if you want required reviewers before a deploy):
   delivery failures).
 - History bars show honest gaps: days/hours before a monitor's first
   recorded sample render as "no data", never as 100% uptime.
+- Latency charts and percentiles use successful probes only. Failed probes
+  still record their elapsed time with `up = 0` for current status and
+  downtime history, but they never become chart points or replace a day's
+  last successful daily rollup. A range with no successful samples renders
+  a blank chart instead of plotting time-to-failure as latency.
 - Every sample records its Cloudflare colo (resolved once per tick via
   `cdn-cgi/trace`); rows from before that change read `"CRON"`. The
   homepage and detail pages show the origin beside latency figures and in

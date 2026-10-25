@@ -333,30 +333,34 @@ fn one_row(
     if !monitor.quiet_chart {
         // One reverse pass builds chart points; latencies derive from
         // them (was: two reverse passes plus a third copy inside the
-        // percentile sort).
+        // percentile sort). Failed probes record time-to-failure, not
+        // latency, so only successes become dots or percentiles.
         let points: Vec<(i64, i64, &str)> = lat
             .iter()
             .rev()
+            .filter(|r| r.up == 1)
             .map(|r| (r.at, r.ms, r.place.as_str()))
             .collect();
-        let vals: Vec<i64> = points.iter().map(|&(_, ms, _)| ms).collect();
-        // One sort for both percentiles (was: one sort each).
-        let (p50, p95) = percentile_pair(&vals, 50.0, 95.0);
-        let spark = latency_chart(&points, 560, 120, range.hourly());
-        let chart = if spark.is_empty() {
-            "<s>No samples yet</s>".to_owned()
+        if points.is_empty() {
+            let empty = if current.is_some() {
+                "No successful samples in this range"
+            } else {
+                "No samples yet"
+            };
+            let _ = write!(extra, "<div class=lat><s>{empty}</s></div>");
         } else {
-            format!(
-                "<span role=img aria-label=\"Latency over last {} samples: P50 {}ms, P95 {}ms.\">{spark}</span>",
+            let vals: Vec<i64> = points.iter().map(|&(_, ms, _)| ms).collect();
+            // One sort for both percentiles (was: one sort each).
+            let (p50, p95) = percentile_pair(&vals, 50.0, 95.0);
+            let spark = latency_chart(&points, 560, 120, range.hourly());
+            let _ = write!(
+                extra,
+                "<div class=lat><span role=img aria-label=\"Latency over last {} successful samples: P50 {}ms, P95 {}ms.\">{spark}</span> <s>P50 {p50}ms &middot; P95 {p95}ms</s></div>",
                 vals.len(),
                 p50,
-                p95
-            )
-        };
-        let _ = write!(
-            extra,
-            "<div class=lat>{chart} <s>P50 {p50}ms &middot; P95 {p95}ms</s></div>",
-        );
+                p95,
+            );
+        }
     }
     let tip = monitor
         .tip
@@ -564,7 +568,10 @@ pub fn shell(
 
 #[cfg(test)]
 mod tests {
-    use super::{favicon_origin, hero_html, links_html, one_row, parse_counts, shell, speculation_rule, time_html, uses_daily_rollup};
+    use super::{
+        favicon_origin, hero_html, links_html, one_row, parse_counts, shell, speculation_rule,
+        time_html, uses_daily_rollup,
+    };
     use crate::range::{RANGE_24H, RANGE_30D, RANGE_7D, RANGE_90D};
     use crate::reads::SampleOut;
     use std::collections::BTreeMap;
@@ -622,9 +629,10 @@ mod tests {
 
     #[test]
     fn links_open_new_tab_without_opener() {
-        let html = links_html(
-            &indexmap::IndexMap::from([("Home".to_owned(), "https://example.com".to_owned())]),
-        );
+        let html = links_html(&indexmap::IndexMap::from([(
+            "Home".to_owned(),
+            "https://example.com".to_owned(),
+        )]));
         assert!(html.contains("target=_blank"));
         assert!(html.contains("noopener noreferrer"));
         let evil = links_html(&indexmap::IndexMap::from([(
@@ -634,13 +642,12 @@ mod tests {
         assert!(!evil.contains("<x>"));
     }
 
-#[test]
-    fn links_keep_file_order() {        let html = links_html(
-            &indexmap::IndexMap::from([
-                ("Home".to_owned(), "https://www.troysk.com".to_owned()),
-                ("Blog".to_owned(), "https://blog.troysk.com".to_owned()),
-            ]),
-        );
+    #[test]
+    fn links_keep_file_order() {
+        let html = links_html(&indexmap::IndexMap::from([
+            ("Home".to_owned(), "https://www.troysk.com".to_owned()),
+            ("Blog".to_owned(), "https://blog.troysk.com".to_owned()),
+        ]));
         assert!(html.find("Home").unwrap() < html.find("Blog").unwrap());
     }
 
@@ -657,7 +664,16 @@ mod tests {
     fn row_latency_uses_uppercase_percentile_labels() {
         let m = http_monitor("https://example.com");
         let lat = [tried(9_900, 54, 1), tried(9_800, 60, 1)];
-        let html = one_row(&m, RANGE_24H, 10_000, Some(&tried(9_900, 54, 1)), &[], None, &lat, None);
+        let html = one_row(
+            &m,
+            RANGE_24H,
+            10_000,
+            Some(&tried(9_900, 54, 1)),
+            &[],
+            None,
+            &lat,
+            None,
+        );
         assert!(html.contains("P50"), "labels read P50, not p50");
         assert!(html.contains("P95"), "labels read P95, not p95");
         assert!(!html.contains("p50"), "no lowercase percentile labels");
@@ -685,7 +701,7 @@ mod tests {
         assert!(up.contains("<i>UP</i>"));
         assert!(up.contains("54ms"));
         assert!(up.contains("BOM"));
-        assert!(up.contains("No samples yet"));
+        assert!(up.contains("No successful samples in this range"));
         // Range syncs across pages: the details link carries it.
         assert!(up.contains("/monitor?id=m&range=24h"));
         let down = one_row(
@@ -818,6 +834,26 @@ mod tests {
     }
 
     #[test]
+    fn row_chart_is_blank_without_successful_samples() {
+        let m = http_monitor("https://example.com");
+        let lat = [tried(9_900, 418, 0)];
+        let html = one_row(&m, RANGE_24H, 10_000, Some(&lat[0]), &[], None, &lat, None);
+        assert!(!html.contains("<svg"));
+        assert!(html.contains("No successful samples in this range"));
+        assert!(!html.contains("P50"));
+    }
+
+    #[test]
+    fn row_chart_uses_successful_samples_only() {
+        let m = http_monitor("https://example.com");
+        let lat = [tried(9_900, 54, 1), tried(9_800, 418, 0)];
+        let html = one_row(&m, RANGE_24H, 10_000, Some(&lat[0]), &[], None, &lat, None);
+        assert!(html.contains("<svg"));
+        assert!(html.contains("P50 54ms"));
+        assert!(!html.contains("418ms"));
+    }
+
+    #[test]
     fn row_escapes_monitor_name() {
         let mut m = http_monitor("https://example.com");
         m.name = "<img src=x>".into();
@@ -833,16 +869,18 @@ mod tests {
         let mut m = http_monitor("https://example.com");
         m.id = "a\"b".into();
         let html = one_row(&m, RANGE_24H, 10_000, None, &[], None, &[], None);
-        assert!(!html.contains("id=a\"b"), "raw quote must not break the attribute");
+        assert!(
+            !html.contains("id=a\"b"),
+            "raw quote must not break the attribute"
+        );
         assert!(html.contains("id=a%22b"), "id must be percent-encoded");
     }
 
     #[test]
     fn row_uses_precomputed_favicon_origin() {
         let m = http_monitor("https://example.com/some/page?x=1");
-        let row = |favicon: Option<&str>| {
-            one_row(&m, RANGE_24H, 10_000, None, &[], None, &[], favicon)
-        };
+        let row =
+            |favicon: Option<&str>| one_row(&m, RANGE_24H, 10_000, None, &[], None, &[], favicon);
         let precomputed = row(Some("https://example.com"));
         assert!(precomputed.contains("https://example.com/favicon.ico"));
         // Equivalence: a precomputed origin renders exactly like a live
@@ -871,7 +909,9 @@ mod tests {
         let html = shell("T", "B", "", "1/1", 1_000, 30_000, "", "", "", 1_000, "");
         let head_end = html.find("</head>").expect("head closes");
         let body = html.find("<body>").expect("body opens");
-        let fallback = html.find("function nextFavicon").expect("fallback is inline");
+        let fallback = html
+            .find("function nextFavicon")
+            .expect("fallback is inline");
         assert!(fallback < head_end, "fallback must run during head parse");
         assert!(head_end < body);
         assert!(html.contains("var FB=[\"/favicon.ico\",\"/favicon.png\",\"/favicon.svg\"];"));
@@ -898,9 +938,11 @@ mod tests {
         // mousedown/pointerdown, i.e. click start).
         let tag = speculation_rule("/monitor*");
         assert!(tag.starts_with("<script type=\"speculationrules\">"));
-        let json: serde_json::Value =
-            serde_json::from_str(tag.trim_start_matches("<script type=\"speculationrules\">").trim_end_matches("</script>"))
-                .unwrap();
+        let json: serde_json::Value = serde_json::from_str(
+            tag.trim_start_matches("<script type=\"speculationrules\">")
+                .trim_end_matches("</script>"),
+        )
+        .unwrap();
         assert_eq!(json["prerender"][0]["source"], "document");
         assert_eq!(json["prerender"][0]["where"]["href_matches"], "/monitor*");
         assert_eq!(json["prerender"][0]["eagerness"], "moderate");
@@ -914,8 +956,14 @@ mod tests {
         // prerender activations leave `navigation.activation.from` empty —
         // either failure silently collapses the slide to a fade.
         let html = shell("T", "B", "", "1/1", 1_000, 30_000, "", "", "", 1_000, "");
-        assert!(!html.contains("pageswap"), "no JS transition tagging in shell");
-        assert!(!html.contains("pagereveal"), "no JS transition tagging in shell");
+        assert!(
+            !html.contains("pageswap"),
+            "no JS transition tagging in shell"
+        );
+        assert!(
+            !html.contains("pagereveal"),
+            "no JS transition tagging in shell"
+        );
         assert!(!html.contains("vtDir"), "no JS transition tagging in shell");
         assert!(!html.contains("'fade'"), "no fade type either");
     }

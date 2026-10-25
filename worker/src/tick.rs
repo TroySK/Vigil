@@ -445,8 +445,8 @@ mod tests {
         open_gaps_sql, plan_alert, plan_deliveries, plan_due, probe_wave, prune_daily_sql,
         prune_due, prune_gaps_sql, prune_region_daily_sql, prune_samples_sql,
         region_daily_upsert_sql, region_upsert_sql, sample_due, schema_current, stagger_offset,
-        state_keys, wave_bounds, why_gap_sql, Due, MAX_HOOK_DELIVERIES, SUBREQUEST_CEILING,
-        SUBREQUEST_OVERHEAD,
+        state_keys, wave_bounds, why_gap_sql, writes_latency_rollups, Due, MAX_HOOK_DELIVERIES,
+        SUBREQUEST_CEILING, SUBREQUEST_OVERHEAD,
     };
     use rusqlite::params_from_iter;
     use std::collections::BTreeMap;
@@ -725,6 +725,64 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM monitor_daily", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn failed_probes_do_not_write_latency_rollups() {
+        assert!(!writes_latency_rollups(false));
+        assert!(writes_latency_rollups(true));
+    }
+
+    #[test]
+    fn successful_daily_rollups_survive_a_later_failed_probe() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE monitor_daily (id TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, place TEXT NOT NULL, PRIMARY KEY (id, day));
+             CREATE TABLE region_daily (id TEXT NOT NULL, place TEXT NOT NULL, day INTEGER NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, up INTEGER NOT NULL, PRIMARY KEY (id, place, day));",
+        )
+        .unwrap();
+        // Successful sample at 10: both daily rollups record it.
+        if writes_latency_rollups(true) {
+            conn.execute(
+                daily_upsert_sql(),
+                rusqlite::params!["m", 0.0, 10.0, 50.0, 1.0, "SIN"],
+            )
+            .unwrap();
+            conn.execute(
+                region_daily_upsert_sql(),
+                rusqlite::params!["m", "SIN", 0.0, 10.0, 50.0, 1.0],
+            )
+            .unwrap();
+        }
+        // Failed sample at 20 must not replace either point.
+        if writes_latency_rollups(false) {
+            conn.execute(
+                daily_upsert_sql(),
+                rusqlite::params!["m", 0.0, 20.0, 418.0, 0.0, "SIN"],
+            )
+            .unwrap();
+            conn.execute(
+                region_daily_upsert_sql(),
+                rusqlite::params!["m", "SIN", 0.0, 20.0, 418.0, 0.0],
+            )
+            .unwrap();
+        }
+        let daily: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT at, ms, up FROM monitor_daily WHERE id = 'm'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(daily, (10, 50, 1));
+        let regional: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT at, ms, up FROM region_daily WHERE id = 'm' AND place = 'SIN'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(regional, (10, 50, 1));
     }
 
     #[test]
@@ -1163,18 +1221,10 @@ fn record_stmts(
                     location.into(),
                 ])?,
         );
-        // One representative row per UTC day backs long-range sparklines:
-        // the newest sample wins, matching the raw-sample point it replaces.
-        out.push(db.q(daily_upsert_sql()).bind(&[
-            id.into(),
-            num(day_start(now)),
-            num(now),
-            num(elapsed_ms),
-            num(up_flag),
-            location.into(),
-        ])?);
         // Keep the detail page's per-region status a primary-key lookup
-        // instead of a scan of every retained sample (see reads.rs).
+        // instead of a scan of every retained sample (see reads.rs). This
+        // stays current on failures too: status needs the newest probe,
+        // not the newest successful one.
         out.push(db.q(region_upsert_sql()).bind(&[
             id.into(),
             location.into(),
@@ -1182,15 +1232,31 @@ fn record_stmts(
             num(elapsed_ms),
             num(up_flag),
         ])?);
-        // Long-range regional sparklines read one row per origin/day.
-        out.push(db.q(region_daily_upsert_sql()).bind(&[
-            id.into(),
-            location.into(),
-            num(day_start(now)),
-            num(now),
-            num(elapsed_ms),
-            num(up_flag),
-        ])?);
+        // Daily latency rollups are chart data: only a successful probe may
+        // create or replace the day's point. A failed probe's elapsed time
+        // is time-to-failure, not latency, and must not mask an earlier
+        // success.
+        if writes_latency_rollups(verdict.up) {
+            // One representative row per UTC day backs long-range
+            // sparklines: the newest successful sample wins.
+            out.push(db.q(daily_upsert_sql()).bind(&[
+                id.into(),
+                num(day_start(now)),
+                num(now),
+                num(elapsed_ms),
+                num(up_flag),
+                location.into(),
+            ])?);
+            // Long-range regional sparklines read one row per origin/day.
+            out.push(db.q(region_daily_upsert_sql()).bind(&[
+                id.into(),
+                location.into(),
+                num(day_start(now)),
+                num(now),
+                num(elapsed_ms),
+                num(up_flag),
+            ])?);
+        }
     }
     let mut track = Track::default();
     if let Some(gap) = open {
@@ -1227,9 +1293,17 @@ fn day_start(at: i64) -> i64 {
     at - at.rem_euclid(SECS_PER_DAY)
 }
 
-/// Daily rollup upsert used by [`record_stmts`]. The newest sample in a
-/// day replaces the previous representative (no averaging), so long-range
-/// charts keep an honest point-in-time reading.
+/// Whether this probe may write the daily latency rollups. Failed probes
+/// still land in `samples` (for status and downtime history) and
+/// `region_latest` (for current status), but their elapsed time is
+/// time-to-failure, not latency.
+fn writes_latency_rollups(up: bool) -> bool {
+    up
+}
+
+/// Daily rollup upsert used by [`record_stmts`]. The newest successful
+/// sample in a day replaces the previous representative (no averaging), so
+/// long-range charts keep an honest point-in-time reading.
 fn daily_upsert_sql() -> &'static str {
     "INSERT INTO monitor_daily (id, day, at, ms, up, place) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(id, day) DO UPDATE SET at = excluded.at, ms = excluded.ms, up = excluded.up, place = excluded.place"
 }
@@ -1242,7 +1316,7 @@ fn region_upsert_sql() -> &'static str {
 }
 
 /// Per-region daily upsert used by [`record_stmts`]. One row per monitor,
-/// origin, and UTC day, newest sample wins (same contract as
+/// origin, and UTC day, newest successful sample wins (same contract as
 /// [`daily_upsert_sql`]).
 fn region_daily_upsert_sql() -> &'static str {
     "INSERT INTO region_daily (id, place, day, at, ms, up) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(id, place, day) DO UPDATE SET at = excluded.at, ms = excluded.ms, up = excluded.up"

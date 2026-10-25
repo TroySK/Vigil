@@ -143,7 +143,9 @@ fn badge_markup(label: &str, word: &str, color: &str) -> String {
     vigil_core::views::svg(label, word, color)
 }
 
-/// Raw latency samples for charts (`?id=`, up to [`MAX_ROWS`]).
+/// Successful latency samples for charts (`?id=`, up to [`MAX_ROWS`]).
+/// Failed probes are recorded for status/downtime history but are not
+/// latency readings.
 pub async fn history(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
     let Some(monitor) = requested_monitor(site, url) else {
         return Response::error("unknown id", 404);
@@ -163,7 +165,8 @@ pub async fn incidents(db: &Db, site: &Site, url: &url::Url) -> Result<Response>
     Response::from_json(&recent_gaps(db, &monitor.id, limit).await?)
 }
 
-/// Latency percentiles plus raw samples (`?id=`).
+/// Latency percentiles over successful samples plus those samples
+/// (`?id=`).
 pub async fn latency(db: &Db, site: &Site, url: &url::Url) -> Result<Response> {
     let Some(monitor) = requested_monitor(site, url) else {
         return Response::error("unknown id", 404);
