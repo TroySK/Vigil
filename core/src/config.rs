@@ -52,7 +52,7 @@ pub struct Site {
     #[serde(default)]
     pub sample_every_min: u64,
     /// Auto-refresh interval in seconds for status pages (`None` means the
-    /// hourly default; `Some(0)` disables polling entirely).
+    /// 5-minute default; `Some(0)` disables polling entirely).
     #[serde(default)]
     pub refresh_secs: Option<u64>,
 }
@@ -106,7 +106,7 @@ impl Site {
     }
 
     /// Page auto-refresh interval in milliseconds: configured seconds
-    /// clamped to [`MIN_REFRESH_SECS`], or the hourly default when unset;
+    /// clamped to [`MIN_REFRESH_SECS`], or the 5-minute default when unset;
     /// `0` disables polling.
     #[must_use]
     pub fn refresh_ms(&self) -> u64 {
