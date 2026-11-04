@@ -38,6 +38,12 @@ day canvas with faint blooms. Light and dark both first-class via toggle.
 4-point named scale in `tokens.css`. Monitor entries breathe:
 `--space-xl` between entries, `--space-lg` inside. Never raw values.
 
+Mobile (`max-width: 40rem`) tightens entries to `--space-lg` between and
+`--space-md` inside so more than one monitor fits a phone viewport, while
+header controls keep their 44px coarse-pointer targets. At
+`max-width: 22rem` the wordmark reduces to the logo mark; the header's
+accessible name still reads the site title.
+
 ## Motion
 - Easings: `--ease-out` cubic-bezier(0.16, 1, 0.3, 1) et al.
 - One fade-in entrance + hero counter. Tooltips instant.
