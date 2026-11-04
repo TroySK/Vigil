@@ -163,6 +163,10 @@ mod tests {
             "very narrow phones keep only the logo mark"
         );
         assert!(
+            declarations(media_block("(max-width:30rem)"), ".links-label").contains("display:none"),
+            "phones drop the redundant quick-links label so pills fit one row"
+        );
+        assert!(
             STYLE_CSS.contains("env(safe-area-inset-left)"),
             "notched phones need horizontal safe-area padding"
         );
