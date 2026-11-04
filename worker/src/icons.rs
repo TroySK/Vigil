@@ -112,6 +112,102 @@ fn not_modified(header: Option<&str>, etag: &str) -> bool {
 mod tests {
     use super::{etag, not_modified, APP_JS, STYLE_CSS};
 
+    /// Declarations of the first exact `selector{…}` rule in `css`.
+    fn declarations<'a>(css: &'a str, selector: &str) -> &'a str {
+        let needle = format!("{selector}{{");
+        let start = css
+            .find(&needle)
+            .unwrap_or_else(|| panic!("missing rule {selector}"))
+            + needle.len();
+        let end = css[start..]
+            .find('}')
+            .unwrap_or_else(|| panic!("unclosed rule {selector}"))
+            + start;
+        &css[start..end]
+    }
+
+    /// Body of the top-level `@media <query>{…}` block, braces balanced.
+    fn media_block(query: &str) -> &str {
+        let needle = format!("@media {query}{{");
+        let start = STYLE_CSS
+            .find(&needle)
+            .unwrap_or_else(|| panic!("missing @media {query}"))
+            + needle.len();
+        let mut depth = 1_u32;
+        for (offset, byte) in STYLE_CSS[start..].bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &STYLE_CSS[start..start + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unclosed @media {query}");
+    }
+
+    #[test]
+    fn style_keeps_a_compact_mobile_header() {
+        let mobile = media_block("(max-width:40rem)");
+        // Touch-sized controls with tight gaps, and a brand that can
+        // truncate instead of colliding with the status pill.
+        assert!(declarations(mobile, ".nav-edge").contains("gap:var(--space-xs)"));
+        assert!(declarations(mobile, ".head-right").contains("gap:var(--space-2xs)"));
+        assert!(declarations(mobile, ".brand img").contains("28px"));
+        assert!(declarations(mobile, ".brand-name").contains("text-overflow:ellipsis"));
+        assert!(
+            declarations(media_block("(max-width:22rem)"), ".brand-name").contains("display:none"),
+            "very narrow phones keep only the logo mark"
+        );
+        assert!(
+            STYLE_CSS.contains("env(safe-area-inset-left)"),
+            "notched phones need horizontal safe-area padding"
+        );
+        assert!(
+            STYLE_CSS.contains("-webkit-backdrop-filter"),
+            "iOS Safari needs the prefixed sticky-header blur"
+        );
+        assert!(
+            STYLE_CSS.contains("-webkit-text-size-adjust:100%"),
+            "iOS must not inflate text in landscape"
+        );
+    }
+
+    #[test]
+    fn style_scales_sparklines_and_keeps_daily_bars_on_one_row() {
+        // The rule used to be scoped to `table.inc td .spark`, so index and
+        // detail sparklines kept their 560px intrinsic width on phones.
+        assert!(declarations(STYLE_CSS, ".spark").contains("max-width:100%"));
+        let mobile = media_block("(max-width:40rem)");
+        assert!(
+            declarations(mobile, ".spark").contains("display:block"),
+            "phones stack the sparkline above its percentile text"
+        );
+        assert!(declarations(mobile, ".bars90").contains("flex-wrap:nowrap"));
+        assert!(declarations(mobile, ".bars90 i").contains("min-width:0"));
+    }
+
+    #[test]
+    fn style_stacks_monitor_rows_without_overflowing() {
+        let mobile = media_block("(max-width:40rem)");
+        assert!(
+            declarations(mobile, ".r-head").contains("grid-template-columns:10px minmax(0,1fr)")
+        );
+        assert!(declarations(mobile, ".r-meta").contains("flex-wrap:wrap"));
+        assert!(declarations(mobile, ".r-meta s").contains("flex:1 1 100%"));
+        assert!(declarations(mobile, ".r-state").contains("justify-content:space-between"));
+    }
+
+    #[test]
+    fn style_lays_mobile_tables_out_as_label_value_rows() {
+        let mobile = media_block("(max-width:40rem)");
+        assert!(declarations(mobile, "table.inc td")
+            .contains("grid-template-columns:7rem minmax(0,1fr)"));
+    }
+
     #[test]
     fn etag_matches_only_the_same_asset() {
         let css = etag(STYLE_CSS.as_bytes());
