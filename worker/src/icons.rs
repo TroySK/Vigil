@@ -203,6 +203,19 @@ mod tests {
     }
 
     #[test]
+    fn style_keeps_mobile_quick_links_compact() {
+        // Coarse-pointer sizing made the quick-link pills 44px tall ovals.
+        // On phones they read as compact chips: 36px, content centered,
+        // with the same 44px row target reserved for the header controls.
+        let mobile = media_block("(max-width:40rem)");
+        let links = declarations(mobile, ".links a");
+        assert!(links.contains("min-height:2.25rem"));
+        assert!(links.contains("display:inline-flex"));
+        assert!(links.contains("align-items:center"));
+        assert!(links.contains("line-height:1.2"));
+    }
+
+    #[test]
     fn style_stacks_monitor_rows_without_overflowing() {
         let mobile = media_block("(max-width:40rem)");
         assert!(
