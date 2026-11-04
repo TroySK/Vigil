@@ -167,6 +167,14 @@ mod tests {
             "notched phones need horizontal safe-area padding"
         );
         assert!(
+            STYLE_CSS.contains("env(safe-area-inset-top)"),
+            "standalone phones must clear the notch above the header"
+        );
+        assert!(
+            STYLE_CSS.contains("env(safe-area-inset-bottom)"),
+            "home-indicator phones need bottom safe-area padding"
+        );
+        assert!(
             STYLE_CSS.contains("-webkit-backdrop-filter"),
             "iOS Safari needs the prefixed sticky-header blur"
         );
