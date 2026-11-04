@@ -374,7 +374,7 @@ fn one_row(
     format!(
         "<article class=r data-up=\"{flag}\" data-id=\"{id}\" data-place=\"{place}\" data-ms=\"{ms}\" data-has=\"{has}\"{tip}>\
         <div class=r-head><span class=d aria-hidden=true></span>\
-        <b>{name}</b><div class=r-meta><s>{detail}</s><i>{word}</i><a class=det href=\"/monitor?id={}&range={}\">details &rsaquo;</a></div></div>\
+        <b>{name}</b><div class=r-meta><s>{detail}</s><span class=r-state><i>{word}</i><a class=det href=\"/monitor?id={}&range={}\">details &rsaquo;</a></span></div></div>\
         {extra}</article>",
         encode_monitor_id(&monitor.id),
         range.param,
@@ -551,7 +551,7 @@ pub fn shell(
         <title>{}</title><link rel=stylesheet href=\"/style.css\">\
         <script>window.vigilRefresh={refresh_ms}</script><script src=\"/app.js\" defer></script>\
         {spec}</head><body><a class=skip href=\"#main\">Skip to status</a><div class=wrap>\
-        <header class=nav-edge><a class=wordmark href=\"{home}\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32>{}</span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=tz-toggle id=tz-toggle type=button aria-label=\"Toggle time zone\" aria-pressed=\"false\" title=\"Times shown in UTC\">UTC</button>{menu}<button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
+        <header class=nav-edge><a class=wordmark href=\"{home}\" aria-label=\"Vigil home\"><span class=brand><img src=\"/logo.svg\" alt=\"\" width=32 height=32><span class=brand-name>{}</span></span></a><span class=head-right><span class=pill data-up=\"{pill}\" title=\"{uptip}\" role=status>{uptotal}</span><button class=tz-toggle id=tz-toggle type=button aria-label=\"Toggle time zone\" aria-pressed=\"false\" title=\"Times shown in UTC\">UTC</button>{menu}<button class=theme-toggle id=theme-toggle type=button aria-label=\"Toggle color theme\" aria-pressed=\"false\"><svg class=icon-moon viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=icon-sun viewBox=\"0 0 24 24\" stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=12 cy=12 r=\"4\" /><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button></span></header>\
         <nav class=links aria-label=\"Site\"><span class=links-label>Quick links:</span>{links}</nav>\
         <main id=main data-probed=\"{probed_at}\" tabindex=-1>{body}</main>\
         <footer class=foot-mast><span class=wordmark>{}</span><span class=meta>Checked {time}</span></footer>\
@@ -723,6 +723,27 @@ mod tests {
     }
 
     #[test]
+    fn row_meta_groups_status_and_details_for_mobile() {
+        // Mobile puts the detail line on its own row and keeps the status
+        // word + details link together, so neither can overflow the card.
+        let m = http_monitor("https://example.com");
+        let html = one_row(
+            &m,
+            RANGE_24H,
+            10_000,
+            Some(&tried(9_900, 54, 1)),
+            &[],
+            None,
+            &[],
+            None,
+        );
+        let state = html.find("<span class=r-state>").expect("grouped state");
+        assert!(html[state..].contains("<i>UP</i>"));
+        assert!(html[state..].contains("<a class=det"));
+        assert!(html.find("</span></div>").is_some(), "state is closed");
+    }
+
+    #[test]
     fn row_status_comes_from_open_gap_not_stale_sample() {
         let m = http_monitor("https://example.com");
         let current = tried(9_900, 54, 1);
@@ -887,6 +908,14 @@ mod tests {
         // parse (None falls back to parsing the monitor URL).
         assert_eq!(precomputed, row(favicon_origin(&m).as_deref()));
         assert_eq!(precomputed, row(None));
+    }
+
+    #[test]
+    fn shell_wraps_the_brand_name_for_mobile_truncation() {
+        // The wordmark text is its own element so narrow headers can
+        // ellipsize it instead of colliding with the status pill.
+        let html = shell("T", "B", "", "1/1", 1_000, 30_000, "", "", "", 1_000, "");
+        assert!(html.contains("<span class=brand-name>B</span>"));
     }
 
     #[test]
