@@ -20,14 +20,14 @@ serde_json = "1"
 indexmap = { version = "2", features = ["serde"] }
 futures-util = "0.3"
 wasm-bindgen = "0.2"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 url = "2"
 
 [dev-dependencies]
 # Bundled-SQLite harness executing the shipped query text: D1 is SQLite
 # but unit tests have no D1, and an untested modulo predicate once emptied
 # every detail chart in production.
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 
 
 

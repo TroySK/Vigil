@@ -13,7 +13,7 @@ pub const SITE_KV_KEY: &str = "site_yaml";
 
 /// Parse raw YAML into a [`Site`], returning a human-readable error.
 pub fn parse(yaml: &str) -> Result<Site, String> {
-    serde_yaml::from_str(yaml).map_err(|e| e.to_string())
+    serde_yaml_ng::from_str(yaml).map_err(|e| e.to_string())
 }
 
 /// Parse and validate: YAML syntax plus [`Site::check`].

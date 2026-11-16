@@ -198,7 +198,7 @@ fn global() -> &'static SiteCache {
 
 /// Parse plus validate one YAML document, deriving favicon origins.
 fn parse_raw(raw: &str) -> std::result::Result<Loaded, SiteError> {
-    let site: Site = serde_yaml::from_str(raw).map_err(|e| SiteError::Parse(e.to_string()))?;
+    let site: Site = serde_yaml_ng::from_str(raw).map_err(|e| SiteError::Parse(e.to_string()))?;
     if let Err(errors) = site.check() {
         return Err(SiteError::Invalid(
             errors.iter().map(ToString::to_string).collect(),

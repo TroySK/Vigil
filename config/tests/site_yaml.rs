@@ -47,7 +47,7 @@ upkeep:
 
 #[test]
 fn example_yaml_matches_documented_site() {
-    let site: Site = serde_yaml::from_str(EXAMPLE_YAML).expect("fixture parses");
+    let site: Site = serde_yaml_ng::from_str(EXAMPLE_YAML).expect("fixture parses");
     assert_eq!(site.title, "Example Status");
     assert_eq!(site.monitors.len(), 2);
     assert_eq!(site.monitors[0].id, "site");
@@ -81,9 +81,9 @@ fn example_yaml_matches_documented_site() {
 fn gated_matches_site_auth_without_cloning() {
     // The worker derives its gate from the DB-loaded config; the `auth`
     // flag must survive a parse round trip.
-    let site: Site = serde_yaml::from_str(EXAMPLE_YAML).expect("fixture parses");
+    let site: Site = serde_yaml_ng::from_str(EXAMPLE_YAML).expect("fixture parses");
     assert!(site.auth.is_none());
-    let gated: Site = serde_yaml::from_str(
+    let gated: Site = serde_yaml_ng::from_str(
         "auth:\n  user: admin\n  pass_env: STATUS_PASSWORD\nmonitors:\n  - id: m\n    name: M\n    check:\n      via: tcp\n      host: example.com\n      port: 80\n",
     )
     .expect("gated parses");
@@ -103,7 +103,7 @@ fn parse_helpers_accept_and_reject_yaml() {
 
 #[test]
 fn links_keep_file_order() {
-    let site: Site = serde_yaml::from_str(
+    let site: Site = serde_yaml_ng::from_str(
         r"
 links:
   Home: https://www.troysk.com
@@ -117,7 +117,7 @@ links:
 
 #[test]
 fn omitted_fields_take_documented_defaults() {
-    let site: Site = serde_yaml::from_str(
+    let site: Site = serde_yaml_ng::from_str(
         r"
 monitors:
   - id: m
@@ -159,7 +159,7 @@ monitors:
 
 #[test]
 fn cadence_fields_parse_and_clamp_to_uptime() {
-    let site: Site = serde_yaml::from_str(
+    let site: Site = serde_yaml_ng::from_str(
         r"
 check_every_min: 15
 sample_every_min: 120

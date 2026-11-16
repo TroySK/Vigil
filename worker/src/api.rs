@@ -232,7 +232,7 @@ mod tests {
     use vigil_core::config::Site;
 
     fn site() -> Site {
-        serde_yaml::from_str(
+        serde_yaml_ng::from_str(
             "monitors:\n  - id: a\n    name: A\n    check:\n      via: tcp\n      host: example.com\n      port: 80\n",
         )
         .expect("fixture parses")
